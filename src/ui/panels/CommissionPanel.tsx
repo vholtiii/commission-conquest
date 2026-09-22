@@ -8,7 +8,7 @@ import {
   diplomacyHint,
   type DiplomacyAction,
 } from "@/engine/diplomacy";
-import { familyHq, isCrewVisible } from "@/engine/intel";
+import { emptyIntel, familyHq, isCrewVisible } from "@/engine/intel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import PanelShell from "./PanelShell";
@@ -54,7 +54,7 @@ export default function CommissionPanel() {
     routes,
     operations,
     playerFamily,
-    intel: intel ?? { known: {}, districtReveal: {}, familyReveal: {}, reports: {} },
+    intel: intel ?? emptyIntel(),
     turn,
   };
 

@@ -4,7 +4,7 @@ import { FAMILY_HEX, MAP_STATUS } from "@/types/game";
 import { useGameStore } from "@/engine/store";
 import { calculateHitOddsBreakdown, defendersFor, estimateFirefightRisk, getawayRisk, territoryHops } from "@/engine/hitOps";
 import { resolveCrewTerritoryId } from "@/engine/crewLocation";
-import { hasFreshCasing, visibleCrewIn } from "@/engine/intel";
+import { emptyIntel, hasFreshCasing, visibleCrewIn } from "@/engine/intel";
 import {
   approachSpec,
   exposedCrewIds,
@@ -47,7 +47,7 @@ export default function HitPlanner() {
         routes: state.routes,
         operations: state.operations,
         playerFamily,
-        intel: state.intel ?? { known: {}, districtReveal: {}, familyReveal: {}, reports: {} },
+        intel: state.intel ?? emptyIntel(),
         turn: state.turn,
       },
       territory.id,

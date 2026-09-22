@@ -18,6 +18,7 @@ import {
 } from "./economy";
 import { getRelation, setRelationDelta } from "./relations";
 import { hasPact } from "./diplomacy";
+import { captureAllowance, recordCapture } from "./capture";
 import { planHit } from "./hitOps";
 import { resolveCrewTerritoryId } from "./crewLocation";
 import {
@@ -136,8 +137,12 @@ function tryExpand(
   family: FamilyName,
   rng: Rng,
 ): { state: GameState; log?: TurnLogEntry } {
+  // One district a turn, same as the player. Once the base move is spent, only
+  // special-case grabs (leadership vacuum, vendetta target) stay on the table.
   const targets = adjacentNeutralOrEnemy(state, family).filter(
-    (t) => !t.owner || !hasPact(state, family, t.owner),
+    (t) =>
+      (!t.owner || !hasPact(state, family, t.owner)) &&
+      captureAllowance(state, family, t).ok,
   );
   if (targets.length === 0) return { state };
 
@@ -189,9 +194,9 @@ function tryExpand(
   }
 
   return {
-    state: { ...state, territories, relations },
+    state: recordCapture({ ...state, territories, relations }, family),
     log: {
-      id: `ai_expand_${family}_${state.turn}`,
+      id: `ai_expand_${family}_${state.turn}_${target.id}`,
       turn: state.turn,
       category: "ai",
       text: `${family} seized ${target.name}${prevOwner ? ` from ${prevOwner}` : ""}${softness < 1 ? " (lightly held)" : ""}.`,

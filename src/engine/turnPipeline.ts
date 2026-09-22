@@ -24,6 +24,7 @@ import { decayRelations } from "./relations";
 import { activePactKeys, expirePacts } from "./diplomacy";
 import { getBoss, pruneManagers, tickAssignmentXp, grantXpToCrew } from "./crew";
 import { emptyIntel, pruneIntel } from "./intel";
+import { pruneGrudges, releaseHeldCrew } from "./casing";
 
 function applyLookoutReports(state: GameState, reports: LookoutReport[]): GameState {
   if (reports.length === 0) return state;
@@ -153,6 +154,11 @@ export function endTurn(state: GameState, rng?: Rng): GameState {
     category: "system",
     text: `— Turn ${current.turn}: ${current.date.month}/${current.date.day}/${current.date.year} —`,
   });
+
+  // Anyone whose hold ran out walks home before the week's business starts.
+  const released = releaseHeldCrew(current);
+  current = { ...current, crew: released.crew };
+  logs.push(...released.logs);
 
   const ops = resolvePendingOperations(current, random);
   current = applyLookoutReports(ops.state, ops.reports);
@@ -399,6 +405,7 @@ export function endTurn(state: GameState, rng?: Rng): GameState {
   }
 
   current = pruneIntel(current);
+  current = pruneGrudges(current);
   current.victory = checkVictory(current);
   current = appendLogs(current, logs);
 

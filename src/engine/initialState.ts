@@ -15,6 +15,7 @@ import {
 } from "./crew";
 import { initialRelations } from "./relations";
 import { emptyDiplomacy } from "./diplomacy";
+import { emptyIntel } from "./intel";
 import {
   createRacket,
   mapBusinessTypeToRacket,
@@ -267,6 +268,10 @@ export function buildInitialState(
       mayor: { isActive: false, turnsRemaining: 0, cost: 0, successRate: 0 },
     },
     vendettas: [],
+    grudges: [],
+    captureTally: { turn: 1, byFamily: {} },
+    incidents: [],
+    rumors: [],
     victory: { won: false, lost: false, commissionChairTurns: 0 },
     liquorStock: 20,
     pendingShipments: [],
@@ -286,7 +291,7 @@ export function buildInitialState(
     focusReason: null,
     pendingHitResult: null,
     pendingReports: [],
-    intel: { known: {}, districtReveal: {}, familyReveal: {}, reports: {} },
+    intel: emptyIntel(),
     rivalTreasury: {},
     started: false,
   };

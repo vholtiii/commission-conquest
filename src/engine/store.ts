@@ -60,7 +60,8 @@ import {
   resolveDiplomacy,
   type DiplomacyAction,
 } from "./diplomacy";
-import { resolveCapture } from "./capture";
+import { captureAllowance, resolveCapture } from "./capture";
+import { normalizeIntel } from "./intel";
 import { getFamilyDef } from "@/data/families";
 import { hitCrewIds } from "@/data/hitApproaches";
 import type { CrewRole } from "@/types/game";
@@ -1117,6 +1118,11 @@ export const useGameStore = create<GameStore>()(
         if (!s.playerFamily || attackerIds.length < 1) return;
         const t = s.territories.find((x) => x.id === territoryId);
         if (!t || t.owner === s.playerFamily) return;
+        const allowance = captureAllowance(s, s.playerFamily, t);
+        if (!allowance.ok) {
+          toast.error("Not this week", { description: allowance.blocked });
+          return;
+        }
         const brokePact = !!t.owner && hasPact(s, s.playerFamily, t.owner);
         const base = brokePact && t.owner ? breakPact(s, t.owner) : s;
         const rng = createRng(s.seed + s.turn * 44 + territoryId.length);
@@ -1183,12 +1189,11 @@ export const useGameStore = create<GameStore>()(
             flyToNonce: loaded.flyToNonce ?? 0,
             flyToFocus: null,
             focusReason: loaded.focusReason ?? null,
-            intel: {
-              known: loaded.intel?.known ?? {},
-              districtReveal: loaded.intel?.districtReveal ?? {},
-              familyReveal: loaded.intel?.familyReveal ?? {},
-              reports: loaded.intel?.reports ?? {},
-            },
+            intel: normalizeIntel(loaded.intel),
+            grudges: loaded.grudges ?? [],
+            incidents: loaded.incidents ?? [],
+            rumors: loaded.rumors ?? [],
+            captureTally: loaded.captureTally ?? { turn: loaded.turn, byFamily: {} },
             pendingReports: loaded.pendingReports ?? [],
             rivalTreasury: loaded.rivalTreasury ?? {},
             diplomacy: {
@@ -1284,12 +1289,12 @@ export const useGameStore = create<GameStore>()(
           cinematicQueue: p.cinematicQueue ?? [],
           hitTargetPreviewId: p.hitTargetPreviewId ?? null,
           focusReason: p.focusReason ?? null,
-          intel: {
-            known: p.intel?.known ?? {},
-            districtReveal: p.intel?.districtReveal ?? {},
-            familyReveal: p.intel?.familyReveal ?? {},
-            reports: p.intel?.reports ?? {},
-          },
+          intel: normalizeIntel(p.intel),
+          grudges: p.grudges ?? current.grudges ?? [],
+          incidents: p.incidents ?? current.incidents ?? [],
+          rumors: p.rumors ?? current.rumors ?? [],
+          captureTally:
+            p.captureTally ?? current.captureTally ?? { turn: p.turn ?? 0, byFamily: {} },
           pendingReports: p.pendingReports ?? [],
           rivalTreasury: p.rivalTreasury ?? {},
           diplomacy: {

@@ -1,7 +1,92 @@
-import type { CrewMember, GameState } from "@/types/game";
+import type { CaptureTally, CrewMember, FamilyName, GameState, Territory } from "@/types/game";
+import { CAPTURE_LIMIT_BASE, CAPTURE_LIMIT_MAX } from "@/types/game";
 import { getFamilyDef } from "@/data/families";
 import { assignCrew } from "./crew";
 import type { Rng } from "./rng";
+
+/* ------------------------------------------------------------------ */
+/* Per-turn capture limit                                              */
+/* ------------------------------------------------------------------ */
+
+type TallyState = Pick<GameState, "turn" | "captureTally">;
+
+function liveTally(state: TallyState): CaptureTally {
+  const t = state.captureTally;
+  if (!t || t.turn !== state.turn) return { turn: state.turn, byFamily: {} };
+  return t;
+}
+
+/** Districts this family has already taken this turn. */
+export function capturesThisTurn(state: TallyState, family: FamilyName): number {
+  return liveTally(state).byFamily[family] ?? 0;
+}
+
+export interface CaptureAllowance {
+  ok: boolean;
+  used: number;
+  /** Base moves for this family this turn (1, or 2 for expansionists). */
+  limit: number;
+  /** Why a second grab is allowed beyond the base, if it is. */
+  bonusReason?: "expansionist" | "vacuum" | "vendetta";
+  /** Why the grab is blocked, if it is. */
+  blocked?: string;
+}
+
+/**
+ * One district per family per turn. Two only in special cases:
+ *  - an expansionist family (Valenti) always gets two moves;
+ *  - a district with a leadership vacuum is blood in the water — it can be a second grab;
+ *  - a district owned by a family you're in a vendetta with can be a second grab.
+ * Never more than CAPTURE_LIMIT_MAX.
+ */
+export function captureAllowance(
+  state: Pick<GameState, "turn" | "captureTally" | "vendettas">,
+  family: FamilyName,
+  target?: Pick<Territory, "owner" | "leadershipVacuum">,
+): CaptureAllowance {
+  const used = capturesThisTurn(state, family);
+  let limit = CAPTURE_LIMIT_BASE;
+  let bonusReason: CaptureAllowance["bonusReason"];
+
+  if (getFamilyDef(family).personality === "expansionist") {
+    limit = CAPTURE_LIMIT_MAX;
+    bonusReason = "expansionist";
+  } else if (target) {
+    const vendetta =
+      !!target.owner &&
+      state.vendettas.includes(family) &&
+      state.vendettas.includes(target.owner);
+    if (target.leadershipVacuum > 0) {
+      limit = CAPTURE_LIMIT_MAX;
+      bonusReason = "vacuum";
+    } else if (vendetta) {
+      limit = CAPTURE_LIMIT_MAX;
+      bonusReason = "vendetta";
+    }
+  }
+  limit = Math.min(CAPTURE_LIMIT_MAX, limit);
+
+  if (used >= limit) {
+    const blocked =
+      used >= CAPTURE_LIMIT_MAX
+        ? "Two districts in one week is already pushing it. Consolidate."
+        : "One district a week. Garrison what you took — or find a block with no boss.";
+    return { ok: false, used, limit, bonusReason, blocked };
+  }
+  return { ok: true, used, limit, bonusReason };
+}
+
+/** Record a successful grab against this turn's tally. */
+export function recordCapture<S extends TallyState>(state: S, family: FamilyName): S {
+  const tally = liveTally(state);
+  return {
+    ...state,
+    captureTally: {
+      turn: state.turn,
+      byFamily: { ...tally.byFamily, [family]: (tally.byFamily[family] ?? 0) + 1 },
+    },
+  };
+}
 
 export function eligibleCaptureCrew(
   state: Pick<GameState, "crew" | "playerFamily">,
@@ -76,13 +161,18 @@ export function resolveCapture(
   territoryId: string,
   attackerIds: string[],
   rng: Rng,
-): { state: GameState; success: boolean } {
+): { state: GameState; success: boolean; blocked?: string } {
   if (!state.playerFamily || attackerIds.length === 0) {
     return { state, success: false };
   }
   const t = state.territories.find((x) => x.id === territoryId);
   if (!t || t.owner === state.playerFamily) {
     return { state, success: false };
+  }
+
+  const allowance = captureAllowance(state, state.playerFamily, t);
+  if (!allowance.ok) {
+    return { state, success: false, blocked: allowance.blocked };
   }
 
   const eligible = new Set(eligibleCaptureCrew(state, territoryId).map((c) => c.id));
@@ -114,7 +204,7 @@ export function resolveCapture(
 
   const leadId = validIds[0]!;
   return {
-    state: {
+    state: recordCapture({
       ...state,
       territories: state.territories.map((x) =>
         x.id === territoryId
@@ -152,7 +242,7 @@ export function resolveCapture(
           family: state.playerFamily,
         },
       ],
-    },
+    }, state.playerFamily),
     success: true,
   };
 }

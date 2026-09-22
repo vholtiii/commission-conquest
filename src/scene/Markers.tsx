@@ -10,6 +10,7 @@ import { RACKET_VISUALS } from "@/data/racketVisuals";
 import { useGameStore } from "@/engine/store";
 import PortraitAvatar from "@/ui/PortraitAvatar";
 import {
+  emptyIntel,
   familyHq,
   hasActiveIntel,
   hiddenCountIn,
@@ -181,7 +182,7 @@ function TerritoryMarker({ territory, cx, cz }: { territory: Territory; cx: numb
     routes,
     operations,
     playerFamily,
-    intel: intel ?? { known: {}, districtReveal: {}, familyReveal: {}, reports: {} },
+    intel: intel ?? emptyIntel(),
     turn,
   };
 

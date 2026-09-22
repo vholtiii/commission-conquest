@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { useGameStore } from "@/engine/store";
 import { FAMILY_HEX } from "@/types/game";
 import {
+  captureAllowance,
   captureOdds,
   captureStrength,
   eligibleCaptureCrew,
@@ -44,6 +45,15 @@ export default function CapturePanel() {
   const strength = captureStrength(state, territory.id, picked);
   const odds = captureOdds(strength.atk, strength.def);
   const oddsPct = Math.round(odds * 100);
+  const allowance = captureAllowance(state, playerFamily, territory);
+  const bonusNote =
+    allowance.bonusReason === "expansionist"
+      ? "Your family moves fast: two districts a week."
+      : allowance.bonusReason === "vacuum"
+        ? "No boss on this block — it can be a second grab this week."
+        : allowance.bonusReason === "vendetta"
+          ? "Vendetta: their turf can be a second grab this week."
+          : null;
 
   function toggle(id: string) {
     setPicked((prev) => {
@@ -68,6 +78,13 @@ export default function CapturePanel() {
         </div>
         {territory.owner === null && (
           <div className="text-money">Empty block — base garrison resistance only.</div>
+        )}
+        <div className={allowance.ok ? "" : "text-heat"}>
+          Moves this week: {allowance.used}/{allowance.limit}
+          {bonusNote ? ` · ${bonusNote}` : ""}
+        </div>
+        {!allowance.ok && allowance.blocked && (
+          <div className="text-heat">{allowance.blocked}</div>
         )}
       </div>
 
@@ -159,7 +176,7 @@ export default function CapturePanel() {
         </Button>
         <Button
           className="flex-1 bg-emerald-700 font-ui font-bold uppercase hover:bg-emerald-600"
-          disabled={picked.length < 1}
+          disabled={picked.length < 1 || !allowance.ok}
           onClick={() => captureTerritory(territory.id, picked)}
         >
           Attack

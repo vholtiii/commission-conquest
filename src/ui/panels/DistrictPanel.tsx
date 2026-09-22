@@ -7,7 +7,7 @@ import { racketIncome, racketPayment, isLegitBusiness, isRacketFrozen, launderCa
 import { isProducerType, isStorageType, planFeedSpeakeasy, stockCap, warehouseManagerEffectText } from "@/engine/liquor";
 import { isUnguarded, maxRacketsFor, lotTier, lotTierHint, lotTierLabel, allowedRacketTypes } from "@/engine/territoryValue";
 import { RACKET_VISUALS } from "@/data/racketVisuals";
-import { hiddenCountIn, hasFreshCasing, visibleCrewIn } from "@/engine/intel";
+import { emptyIntel, hiddenCountIn, hasFreshCasing, visibleCrewIn } from "@/engine/intel";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import PortraitAvatar from "@/ui/PortraitAvatar";
@@ -78,7 +78,7 @@ export default function DistrictPanel() {
     routes,
     operations,
     playerFamily,
-    intel: intel ?? { known: {}, districtReveal: {}, familyReveal: {}, reports: {} },
+    intel: intel ?? emptyIntel(),
     turn,
   };
 

@@ -7,6 +7,7 @@
   HitCasualtyDetail,
   HitOutcome,
   HitResult,
+  LookoutOutcome,
   LookoutReport,
   Operation,
   TurnLogEntry,
@@ -16,10 +17,35 @@ import { approachSpec, exposedCrewIds, hitCrewIds } from "@/data/hitApproaches";
 import type { Rng } from "./rng";
 import { aggregateTraitEffects, crewCombatScore, funeralLoyaltyHit, grantXpToCrew } from "./crew";
 import { setRelationDelta } from "./relations";
-import { crewPresentIn } from "./crewLocation";
-import { hasFreshCasing, recordIntel } from "./intel";
-import { buildLookoutReport } from "./lookout";
+import { crewPresentIn, resolveCrewTerritoryId } from "./crewLocation";
+import { emptyIntel, recordIntel } from "./intel";
+import { buildLookoutReport, runCasing, rungToOutcome, type CasingResult } from "./lookout";
 import { applySuccession } from "./succession";
+import {
+  ALERT_TURNS,
+  BURN_TURNS,
+  GRUDGE_TURNS,
+  HELD_TURNS,
+  cluesFor,
+  findClue,
+  garrisonWindowReduction,
+  isDistrictAlerted,
+  isLookoutBurned,
+  lastName,
+  clueHolds,
+} from "./casing";
+import { applyRetaliationJudgment, openIncidentFromHit } from "./incidents";
+import { hasPact, breakPact } from "./diplomacy";
+
+/** Odds options: `truth` ignores poisoned clues (used when a hit actually resolves). */
+export interface OddsOptions {
+  truth?: boolean;
+}
+
+/** Clue bookkeeping only applies to the player's own operations. */
+function usesClues(state: GameState, op: Operation): boolean {
+  return !!state.playerFamily && op.family === state.playerFamily;
+}
 
 const APPROACH_MODS: Record<
   HitApproach,
@@ -57,16 +83,22 @@ function findCrew(state: GameState, id?: string): CrewMember | undefined {
 }
 
 /** Active garrison soldiers of the target family in the hit district (excludes the mark). */
-export function defendersFor(state: GameState, op: Operation): number {
+export function defendersFor(state: GameState, op: Operation, opts?: OddsOptions): number {
   const territory = state.territories.find((t) => t.id === op.targetTerritoryId);
   if (!territory) return 0;
   // Only count when the district belongs to the target family
   if (territory.owner !== op.targetFamily) return 0;
-  return territory.garrisonIds.filter((id) => {
+  const raw = territory.garrisonIds.filter((id) => {
     if (id === op.targetCrewId) return false;
     const c = state.crew.find((m) => m.id === id);
     return !!c && c.status === "active" && c.family === op.targetFamily;
   }).length;
+  if (!usesClues(state, op)) return raw;
+  // A garrison-window clue thins the block on its turn (unless it was planted).
+  const reduction = garrisonWindowReduction(state, op.targetTerritoryId, {
+    includePoisoned: !opts?.truth,
+  });
+  return Math.max(0, raw - reduction);
 }
 
 /** BFS hop count between territories via adjacency; 0 if same, large if unreachable. */
@@ -94,8 +126,12 @@ export function territoryHops(
   return 5;
 }
 
-export function getawayRisk(state: GameState, op: Operation): number {
-  const hops = territoryHops(state, op.originTerritoryId, op.targetTerritoryId);
+export function getawayRisk(state: GameState, op: Operation, opts?: OddsOptions): number {
+  let hops = territoryHops(state, op.originTerritoryId, op.targetTerritoryId);
+  if (usesClues(state, op)) {
+    const getaway = findClue(state, op.targetTerritoryId, "getaway");
+    if (clueHolds(getaway, opts?.truth)) hops = Math.max(1, hops - (getaway.value ?? 1));
+  }
   const wheelman = findCrew(state, op.wheelmanId);
   const driving = wheelman?.skills.driving ?? 0;
   const raw = (hops - 1) * 0.08 - driving / 250;
@@ -123,7 +159,11 @@ function weightedShooterBonus(
   return total;
 }
 
-export function calculateHitOddsBreakdown(state: GameState, op: Operation): HitOddsBreakdown {
+export function calculateHitOddsBreakdown(
+  state: GameState,
+  op: Operation,
+  opts?: OddsOptions,
+): HitOddsBreakdown {
   const approach = op.approach ?? "ambush";
   const mods = APPROACH_MODS[approach];
   const spec = approachSpec(approach);
@@ -132,7 +172,8 @@ export function calculateHitOddsBreakdown(state: GameState, op: Operation): HitO
     : undefined;
   const territory = state.territories.find((t) => t.id === op.targetTerritoryId);
   const exposed = exposedCrewIds(op);
-  const defenders = defendersFor(state, op);
+  const defenders = defendersFor(state, op, opts);
+  const clues = usesClues(state, op);
 
   let base = 0.35;
   let roles = 0;
@@ -196,21 +237,25 @@ export function calculateHitOddsBreakdown(state: GameState, op: Operation): HitO
   if (op.surveilled) other += 0.12;
   if (op.blind) intel -= 0.12;
 
-  // Fresh district casing (standalone lookout) — does not stack with Surveil-first
-  if (!op.surveilled) {
-    if (op.targetCrewId) {
-      const k = state.intel?.known[op.targetCrewId];
-      if (
-        k &&
-        k.territoryId === op.targetTerritoryId &&
-        k.source === "surveillance" &&
-        k.turn >= state.turn - 2
-      ) {
-        intel += 0.06;
-      }
-    } else if (hasFreshCasing(state, op.targetTerritoryId)) {
-      intel += 0.06;
+  // Casing clues. The routine is the main payoff, and it only pays if you match it.
+  // Does not stack with Surveil-first (the hit team cased it themselves).
+  if (clues && !op.surveilled) {
+    const routine = op.targetCrewId
+      ? findClue(state, op.targetTerritoryId, "routine", op.targetCrewId)
+      : cluesFor(state, op.targetTerritoryId).find((c) => c.kind === "routine");
+    if (clueHolds(routine, opts?.truth)) {
+      intel += routine.approach === approach ? 0.08 : 0.02;
     }
+  }
+  if (clues) {
+    // A weak link comes to the table.
+    if (approach === "sitdown_betrayal" && op.targetCrewId) {
+      const weak = findClue(state, op.targetTerritoryId, "weak_link", op.targetCrewId);
+      if (clueHolds(weak, opts?.truth)) other += 0.1;
+    }
+    // They know a face on your crew.
+    const burned = hitCrewIds(op).some((id) => isLookoutBurned(state, id, op.targetFamily));
+    if (burned) intel -= 0.05;
   }
 
   if (target && approach !== "car_bomb") {
@@ -232,7 +277,7 @@ export function calculateHitOddsBreakdown(state: GameState, op: Operation): HitO
   }
 
   // Getaway distance (small odds hit)
-  const gRisk = getawayRisk(state, op);
+  const gRisk = getawayRisk(state, op, opts);
   getaway = -Math.max(0, gRisk) * 0.5;
 
   if (op.tippedOff) tipped = -0.2;
@@ -286,8 +331,8 @@ export function calculateHitOddsBreakdown(state: GameState, op: Operation): HitO
   };
 }
 
-export function calculateHitOdds(state: GameState, op: Operation): number {
-  return calculateHitOddsBreakdown(state, op).total;
+export function calculateHitOdds(state: GameState, op: Operation, opts?: OddsOptions): number {
+  return calculateHitOddsBreakdown(state, op, opts).total;
 }
 
 /** Estimated per-member firefight hit chance for planner display. */
@@ -324,8 +369,53 @@ export function tipOffChance(state: GameState, op: Operation): number {
 
   if (approach === "car_bomb" || approach === "sitdown_betrayal") chance *= 0.7;
   if (op.blind) chance *= 0.6;
-  if (hasFreshCasing(state, op.targetTerritoryId)) chance -= 0.03;
+  // The block is watching for you after a spotted lookout.
+  if (isDistrictAlerted(state, op.targetTerritoryId)) chance += 0.05;
+  if (usesClues(state, op)) {
+    // You found your rat and sat him down: the leak is plugged.
+    const rat = findClue(state, op.targetTerritoryId, "rat");
+    if (rat?.ratCrewId) {
+      const leaker = findCrew(state, rat.ratCrewId);
+      const benched =
+        !leaker ||
+        leaker.status !== "active" ||
+        (leaker.assignment.type === "idle" && !hitCrewIds(op).includes(leaker.id));
+      if (benched) chance -= 0.05;
+    }
+  }
   return Math.max(0.03, Math.min(0.45, chance));
+}
+
+/** Arrest-weight modifier from cop/patrol clues; extra heat when the corner cop is theirs. */
+export function copCluesFor(
+  state: GameState,
+  op: Operation,
+  opts?: OddsOptions,
+): { arrestMod: number; extraHeat: number; notes: string[] } {
+  const out = { arrestMod: 0, extraHeat: 0, notes: [] as string[] };
+  if (!usesClues(state, op)) return out;
+  const approach = op.approach ?? "ambush";
+  const exposure = approachSpec(approach).garrisonExposure;
+
+  const patrol = findClue(state, op.targetTerritoryId, "patrol");
+  if (clueHolds(patrol, opts?.truth) && exposure >= 0.7) {
+    out.arrestMod += 0.15;
+    out.notes.push("Patrol pattern: loud work here draws the wagon.");
+  }
+  const cop = findClue(state, op.targetTerritoryId, "cop_on_payroll");
+  if (clueHolds(cop, opts?.truth)) {
+    const bribedHere = (state.intel?.districtReveal?.[op.targetTerritoryId] ?? 0) > state.turn;
+    if (cop.copBuyable && bribedHere) {
+      out.arrestMod -= 0.2;
+      out.notes.push("Corner cop paid off: he'll be around the block when it happens.");
+    } else if (!cop.copBuyable) {
+      out.extraHeat += 3;
+      out.notes.push("Corner cop is theirs: expect the whistle early.");
+    } else {
+      out.notes.push("Corner cop would take an envelope — bribe the cops here first.");
+    }
+  }
+  return out;
 }
 
 export function planHit(
@@ -413,7 +503,8 @@ export function resolveHit(
   const mods = APPROACH_MODS[approach];
   const spec = approachSpec(approach);
   const exposed = exposedCrewIds(op);
-  const gRisk = getawayRisk(state, op);
+  const TRUTH: OddsOptions = { truth: true };
+  const gRisk = getawayRisk(state, op, TRUTH);
   const tippedOff = !!op.tippedOff;
   const blind = !!op.blind;
 
@@ -426,12 +517,27 @@ export function resolveHit(
     else workingOp = { ...op, targetCrewId: picked.id };
   }
 
-  const defenders = defendersFor(state, workingOp);
-  const markAbsent = !emptyBlock && tippedOff && rng.chance(0.35);
+  const defenders = defendersFor(state, workingOp, TRUTH);
 
-  let successChance = calculateHitOdds(state, workingOp);
-  let outcome: HitOutcome =
-    emptyBlock || markAbsent ? "target_escaped" : rollOutcome(rng, successChance, gRisk);
+  // The mark isn't where you planned for him (moved, jailed, dead, or held): no body tonight.
+  const plannedTarget = workingOp.targetCrewId
+    ? state.crew.find((c) => c.id === workingOp.targetCrewId)
+    : undefined;
+  const markMoved =
+    !!plannedTarget &&
+    !blind &&
+    (plannedTarget.status === "dead" ||
+      plannedTarget.status === "jailed" ||
+      plannedTarget.status === "held" ||
+      resolveCrewTerritoryId(state, plannedTarget.id) !== op.targetTerritoryId);
+  const markAbsent = !emptyBlock && (markMoved || (tippedOff && rng.chance(0.35)));
+
+  const copClues = copCluesFor(state, workingOp, TRUTH);
+  const successChance = calculateHitOdds(state, workingOp, TRUTH);
+  const outcome: HitOutcome =
+    emptyBlock || markAbsent
+      ? "target_escaped"
+      : rollOutcome(rng, successChance, gRisk, copClues.arrestMod);
 
   const trap = tippedOff && !markAbsent && !emptyBlock && outcome === "botched_killed";
 
@@ -450,7 +556,7 @@ export function resolveHit(
   const casualties: string[] = [];
   const casualtyDetail: HitCasualtyDetail[] = [];
   let crew = [...state.crew];
-  let heatGain = mods.heat + Math.max(0, exposed.length - 2) * 3;
+  let heatGain = mods.heat + Math.max(0, exposed.length - 2) * 3 + copClues.extraHeat;
   let fearGain = 5;
   let targetDead = false;
   let headline = "";
@@ -495,7 +601,7 @@ export function resolveHit(
       fearGain = 2;
       heatGain += 18;
       headline = trap
-        ? `Ambush reversed — ${op.family} muscle cut down in a trap.`
+        ? `Ambush reversed — the hit squad cut down in a trap.`
         : `Disaster — the hit squad is cut down, target survives.`;
       if (exposed.length > 0) {
         const killed = rng.pick(exposed);
@@ -512,6 +618,8 @@ export function resolveHit(
       heatGain += 6;
       if (emptyBlock) {
         headline = `Blind hit on ${districtName} found nothing.`;
+      } else if (markMoved) {
+        headline = `${targetName} wasn't there — he'd already moved on.`;
       } else if (markAbsent) {
         headline = `${targetName} never showed — someone tipped them.`;
       } else {
@@ -671,6 +779,30 @@ export function resolveHit(
 
   newState = recordIntel(newState, revealedIds, op.targetTerritoryId, "hit");
 
+  let finalResult = result;
+
+  // A rival hit on the player opens a case. The headline never names them.
+  if (
+    state.playerFamily &&
+    op.targetFamily === state.playerFamily &&
+    op.family !== state.playerFamily
+  ) {
+    newState = openIncidentFromHit(newState, op, result, rng).state;
+  }
+
+  // A player hit declared as the answer to an open case gets judged.
+  if (state.playerFamily && op.family === state.playerFamily && op.answersIncidentId) {
+    const judged = applyRetaliationJudgment(newState, op, rng);
+    newState = judged.state;
+    if (judged.logs.length) {
+      newState = { ...newState, turnLog: [...newState.turnLog, ...judged.logs].slice(-200) };
+    }
+    if (judged.judgment.band !== "none") {
+      finalResult = { ...finalResult, caseJudgment: judged.judgment.text };
+      newState = { ...newState, pendingHitResult: finalResult };
+    }
+  }
+
   // Succession when any boss is killed this hit (mark or firefight casualty)
   const deadBossFamilies = new Set<FamilyName>();
   if (targetDead && target?.role === "boss") deadBossFamilies.add(target.family);
@@ -680,7 +812,6 @@ export function resolveHit(
     if (m?.role === "boss") deadBossFamilies.add(m.family);
   }
 
-  let finalResult = result;
   for (const fam of deadBossFamilies) {
     const stillBoss = newState.crew.find(
       (c) => c.family === fam && c.role === "boss" && c.status !== "dead",
@@ -813,12 +944,13 @@ function rollOutcome(
   rng: Rng,
   successChance: number,
   gRisk: number,
+  arrestMod = 0,
 ): HitOutcome {
   const roll = rng.next();
   if (roll > successChance + 0.15) return "target_escaped";
   if (roll > successChance) {
-    // Arrest weight rises with getaway risk
-    const arrestWeight = Math.max(0.15, Math.min(0.75, 0.5 + gRisk));
+    // Arrest weight rises with getaway risk; cop/patrol clues push it either way
+    const arrestWeight = Math.max(0.15, Math.min(0.75, 0.5 + gRisk + arrestMod));
     if (rng.chance(0.4)) return "botched_wounded";
     if (rng.chance(arrestWeight)) return "botched_arrested";
     return "botched_killed";
@@ -845,14 +977,16 @@ export function resolvePendingOperations(
       const chance = tipOffChance(current, o);
       if (!rng.chance(chance)) return o;
 
-      if (o.targetFamily === current.playerFamily) {
+      // Rival casing your turf still gets called out. Pending hits do not:
+      // warnings about those come through the rumor mill, and not always.
+      if (o.targetFamily === current.playerFamily && o.kind === "surveillance") {
         const district =
           current.territories.find((t) => t.id === o.targetTerritoryId)?.name ?? "your turf";
         tipLogs.push({
           id: `tip_${o.id}_${current.turn}`,
           turn: current.turn,
           category: "hit",
-          text: `Your lookouts report ${o.family} muscle casing ${district}.`,
+          text: `Your boys chased a stranger off ${district}. Somebody's casing you.`,
           family: current.playerFamily ?? undefined,
         });
       }
@@ -877,62 +1011,40 @@ export function resolvePendingOperations(
   );
   for (const op of pendingSurv) {
     const stateBefore = current;
-    const territory = current.territories.find((t) => t.id === op.targetTerritoryId);
-    const present = crewPresentIn(current, op.targetTerritoryId).filter(
-      (c) => c.family === op.targetFamily,
-    );
-    const presentIds = present.map((c) => c.id);
-    current = recordIntel(current, presentIds, op.targetTerritoryId, "surveillance");
-
-    let crew = current.crew;
-    let relations = current.relations;
-    let relationDelta = 0;
-    let wounded = false;
-    if (op.tippedOff) {
-      relations = setRelationDelta(relations, op.family, op.targetFamily, -5);
-      relationDelta = -5;
-      if (op.lookoutId && rng.chance(0.15)) {
-        wounded = true;
-        crew = crew.map((c) =>
-          c.id === op.lookoutId ? { ...c, status: "wounded" as const } : c,
-        );
-      }
+    const casing = runCasing(current, op, rng);
+    current = casing.state;
+    const presentIds = casing.present.map((c) => c.id);
+    if (casing.roll.copTrouble !== "arrested") {
+      current = recordIntel(current, presentIds, op.targetTerritoryId, "surveillance");
     }
+
+    const fallout = applyCasingFallout(current, op, casing);
+    current = fallout.state;
+
     // Free lookout assignment
     if (op.lookoutId) {
-      crew = crew.map((c) =>
-        c.id === op.lookoutId && c.assignment.operationId === op.id
-          ? { ...c, assignment: { type: "idle" as const } }
-          : c,
-      );
+      current = {
+        ...current,
+        crew: current.crew.map((c) =>
+          c.id === op.lookoutId && c.assignment.operationId === op.id
+            ? { ...c, assignment: { type: "idle" as const } }
+            : c,
+        ),
+      };
     }
 
-    const outcome = op.tippedOff
-      ? wounded
-        ? ("spotted_wounded" as const)
-        : ("spotted" as const)
-      : ("clean" as const);
-
-    const district = territory?.name ?? "the district";
-    const logText =
-      outcome === "clean"
-        ? `Your lookout reports ${present.length} ${op.targetFamily} men in ${district} (clean).`
-        : outcome === "spotted_wounded"
-          ? `Your lookout was spotted casing ${district} and wounded — the block is on alert.`
-          : `Your lookout was spotted casing ${district} — the block is on alert.`;
-
+    const district =
+      current.territories.find((t) => t.id === op.targetTerritoryId)?.name ?? "the district";
     tipLogs.push({
       id: `surv_${op.id}_${current.turn}`,
       turn: current.turn,
       category: "hit",
-      text: logText,
+      text: casingLogText(op, casing, fallout, district),
       family: op.family,
     });
 
     current = {
       ...current,
-      crew,
-      relations,
       operations: current.operations.map((o) =>
         o.id === op.id ? { ...o, resolved: true, pendingTurns: 0 } : o,
       ),
@@ -940,7 +1052,10 @@ export function resolvePendingOperations(
 
     if (op.family === current.playerFamily) {
       reports.push(
-        buildLookoutReport(stateBefore, current, op, presentIds, outcome, relationDelta),
+        buildLookoutReport(stateBefore, current, op, presentIds, fallout.outcome, fallout.relationDelta, {
+          casing,
+          consequences: fallout.consequences,
+        }),
       );
     }
   }
@@ -962,19 +1077,27 @@ export function resolvePendingOperations(
     })
     .filter((o) => !o.resolved);
 
+  // Ops list must be swapped in before casing fallout touches crew/intel.
+  current = { ...current, operations: nextOps };
+
   for (const o of casingFinished) {
     const stateBefore = current;
-    const present = crewPresentIn(current, o.targetTerritoryId).filter(
-      (c) => c.family === o.targetFamily,
-    );
-    const presentIds = present.map((c) => c.id);
-    current = recordIntel(current, presentIds, o.targetTerritoryId, "surveillance");
+    const casing = runCasing(current, o, rng, { forHit: true });
+    current = casing.state;
+    const presentIds = casing.present.map((c) => c.id);
+    if (casing.roll.copTrouble !== "arrested") {
+      current = recordIntel(current, presentIds, o.targetTerritoryId, "surveillance");
+    }
+
+    const fallout = applyCasingFallout(current, o, casing);
+    current = fallout.state;
 
     if (o.family === current.playerFamily) {
-      const outcome = o.tippedOff ? ("spotted" as const) : ("clean" as const);
       reports.push(
-        buildLookoutReport(stateBefore, current, o, presentIds, outcome, 0, {
+        buildLookoutReport(stateBefore, current, o, presentIds, fallout.outcome, fallout.relationDelta, {
           forHit: true,
+          casing,
+          consequences: fallout.consequences,
         }),
       );
       const district =
@@ -984,8 +1107,8 @@ export function resolvePendingOperations(
         turn: current.turn,
         category: "hit",
         text:
-          outcome === "clean"
-            ? `Casing complete: ${present.length} ${o.targetFamily} men in ${district}. Hit ready next turn.`
+          fallout.outcome === "clean"
+            ? `Casing complete: ${presentIds.length} ${o.targetFamily} men in ${district}. Hit ready next turn.`
             : `Casing complete but you were spotted in ${district}. Hit ready — block is alert.`,
         family: o.family,
       });
@@ -994,9 +1117,195 @@ export function resolvePendingOperations(
 
   current = {
     ...current,
-    operations: nextOps,
     turnLog: [...current.turnLog, ...tipLogs],
   };
 
   return { state: current, results, tipLogs, reports };
+}
+
+/* ------------------------------------------------------------------ */
+/* Casing fallout                                                      */
+/* ------------------------------------------------------------------ */
+
+interface CasingFallout {
+  state: GameState;
+  outcome: LookoutOutcome;
+  relationDelta: number;
+  consequences: string[];
+}
+
+/**
+ * Apply what the detection rung and the cops did to the lookout, the district,
+ * and relations. Shared by standalone casing and surveil-first hits.
+ */
+function applyCasingFallout(
+  state: GameState,
+  op: Operation,
+  casing: CasingResult,
+): CasingFallout {
+  const turn = state.turn;
+  const lookout = casing.lookout;
+  const consequences: string[] = [];
+  let relationDelta = 0;
+  let crew = state.crew;
+  let relations = state.relations;
+  let grudges = state.grudges ?? [];
+  const intel = { ...(state.intel ?? emptyIntel()) };
+  let next = state;
+
+  const setCrew = (id: string, patch: Partial<CrewMember>) => {
+    crew = crew.map((c) => (c.id === id ? { ...c, ...patch } : c));
+  };
+  const territoryName =
+    state.territories.find((t) => t.id === op.targetTerritoryId)?.name ?? "the district";
+  const lookoutName = lookout ? lastName(lookout) : "Your man";
+
+  // Cops.
+  if (lookout && casing.roll.copTrouble === "wanted") {
+    setCrew(lookout.id, { wanted: lookout.wanted + 1 });
+    consequences.push(`${lookoutName} got his name taken by a beat cop.`);
+  } else if (lookout && casing.roll.copTrouble === "arrested") {
+    setCrew(lookout.id, { status: "jailed", wanted: lookout.wanted + 1, assignment: { type: "idle" } });
+    consequences.push(`${lookoutName} was picked up loitering. He saw nothing.`);
+    return {
+      state: { ...next, crew },
+      outcome: "clean",
+      relationDelta,
+      consequences,
+    };
+  }
+
+  // A legacy tip-off on the op counts as at least "noticed".
+  let rung = casing.roll.rung;
+  if (op.tippedOff && rung === "clean") rung = "noticed";
+
+  if (rung === "turned" && lookout) {
+    // He came back smiling. He's theirs now.
+    setCrew(lookout.id, {
+      loyalty: Math.max(0, lookout.loyalty - 10),
+      traits: lookout.traits.includes("rat_risk") ? lookout.traits : [...lookout.traits, "rat_risk"],
+    });
+    return { state: { ...next, crew }, outcome: "clean", relationDelta, consequences };
+  }
+
+  if (rung === "clean") {
+    return { state: next, outcome: "clean", relationDelta, consequences };
+  }
+
+  // noticed / made / grabbed all put the block on alert.
+  intel.alerted = { ...intel.alerted, [op.targetTerritoryId]: turn + ALERT_TURNS };
+  consequences.push(`${territoryName} is on alert for ${ALERT_TURNS} turns.`);
+
+  // The mark saw him: his habits change.
+  if (casing.roll.markSawHim) {
+    const mark = casing.clues.find((c) => c.kind === "routine")?.targetCrewId;
+    if (mark) {
+      const live = (intel.clues[op.targetTerritoryId] ?? []).filter(
+        (c) => !(c.kind === "routine" && c.targetCrewId === mark),
+      );
+      intel.clues = { ...intel.clues, [op.targetTerritoryId]: live };
+      const markCrew = state.crew.find((c) => c.id === mark);
+      consequences.push(`${markCrew ? lastName(markCrew) : "The mark"} saw him and changed his routine.`);
+    }
+  }
+
+  if (rung === "noticed") {
+    relationDelta = -5;
+  } else {
+    // made or grabbed
+    relationDelta = rung === "made" ? -10 : -15;
+    if (lookout) {
+      intel.burned = {
+        ...intel.burned,
+        [lookout.id]: { family: op.targetFamily, expiresTurn: turn + BURN_TURNS },
+      };
+      consequences.push(`${op.targetFamily} knows ${lookoutName}'s face now.`);
+    }
+    // Only rivals hold grudges the AI acts on.
+    if (op.family === state.playerFamily) {
+      grudges = [
+        ...grudges,
+        {
+          id: `grudge_casing_${op.id}_${turn}`,
+          family: op.targetFamily,
+          against: op.family,
+          crewId: lookout?.id,
+          territoryId: op.originTerritoryId ?? op.targetTerritoryId,
+          reason: "casing",
+          turn,
+          expiresTurn: turn + GRUDGE_TURNS,
+        },
+      ];
+      consequences.push(`${op.targetFamily} are asking about you. They want ${lookoutName}.`);
+    }
+
+    if (hasPact(next, op.family, op.targetFamily) && op.family === state.playerFamily) {
+      next = breakPact(next, op.targetFamily);
+      relations = next.relations;
+      consequences.push(`Your pact with ${op.targetFamily} is finished.`);
+    }
+  }
+
+  let wounded = false;
+  if (rung === "grabbed" && lookout) {
+    switch (casing.roll.grabbedFate) {
+      case "killed":
+        setCrew(lookout.id, { status: "dead", assignment: { type: "idle" } });
+        crew = funeralLoyaltyHit(crew, lookout.id);
+        consequences.push(`${lookoutName} was found in the river.`);
+        break;
+      case "held":
+        setCrew(lookout.id, {
+          status: "held",
+          heldUntilTurn: turn + HELD_TURNS,
+          heldBy: op.targetFamily,
+          assignment: { type: "idle" },
+        });
+        consequences.push(`${lookoutName} is being held by ${op.targetFamily}. ${HELD_TURNS} turns, if he's lucky.`);
+        break;
+      default:
+        wounded = true;
+        setCrew(lookout.id, { status: "wounded" });
+        consequences.push(`${lookoutName} took a beating and crawled home.`);
+        break;
+    }
+  }
+
+  relations = setRelationDelta(relations, op.family, op.targetFamily, relationDelta);
+
+  next = {
+    ...next,
+    crew,
+    relations,
+    grudges,
+    intel: op.family === state.playerFamily ? intel : next.intel,
+  };
+
+  return { state: next, outcome: rungToOutcome(rung, wounded), relationDelta, consequences };
+}
+
+function casingLogText(
+  op: Operation,
+  casing: CasingResult,
+  fallout: CasingFallout,
+  district: string,
+): string {
+  const n = casing.present.length;
+  const rung = fallout.outcome === "clean" ? "clean" : casing.roll.rung;
+  if (casing.roll.copTrouble === "arrested") {
+    return `Your lookout was picked up by the cops before he saw anything in ${district}.`;
+  }
+  switch (rung) {
+    case "clean":
+    case "turned":
+      return `Your lookout reports ${n} ${op.targetFamily} men in ${district} (clean).`;
+    case "noticed":
+      return `Your lookout was noticed casing ${district} — the block is on alert.`;
+    case "made":
+      return `Your lookout was made casing ${district}. They know his face.`;
+    case "grabbed":
+      return `Your lookout was grabbed casing ${district}. ${fallout.consequences[fallout.consequences.length - 1] ?? ""}`.trim();
+    default:
+      return `Your lookout reports from ${district}.`;
+  }
 }

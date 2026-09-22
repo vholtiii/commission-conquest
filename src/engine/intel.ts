@@ -15,7 +15,21 @@ import {
 export { familyHq } from "./crewLocation";
 
 export function emptyIntel(): IntelState {
-  return { known: {}, districtReveal: {}, familyReveal: {}, reports: {} };
+  return {
+    known: {},
+    districtReveal: {},
+    familyReveal: {},
+    reports: {},
+    clues: {},
+    business: {},
+    alerted: {},
+    burned: {},
+  };
+}
+
+/** Fill in fields missing from older saves / partial literals. */
+export function normalizeIntel(intel?: Partial<IntelState> | null): IntelState {
+  return { ...emptyIntel(), ...(intel ?? {}) };
 }
 
 type VisibilityState = Pick<
@@ -101,13 +115,34 @@ export function pruneIntel(state: GameState): GameState {
     }
   }
 
+  // Casing residue: clues expire on their own clock, alerts and burned faces fade.
+  const clues: IntelState["clues"] = {};
+  for (const [tid, list] of Object.entries(intel.clues ?? {})) {
+    const live = (list ?? []).filter((c) => c.expiresTurn > state.turn);
+    if (live.length > 0) clues[tid] = live;
+  }
+  const alerted: IntelState["alerted"] = {};
+  for (const [tid, exp] of Object.entries(intel.alerted ?? {})) {
+    if (exp > state.turn) alerted[tid] = exp;
+  }
+  const burned: IntelState["burned"] = {};
+  for (const [crewId, b] of Object.entries(intel.burned ?? {})) {
+    const c = state.crew.find((m) => m.id === crewId);
+    if (!c || c.status === "dead") continue;
+    if (b.expiresTurn > state.turn) burned[crewId] = b;
+  }
+
   return {
     ...state,
     intel: {
+      ...intel,
       known,
       districtReveal,
       familyReveal,
       reports: intel.reports ?? {},
+      clues,
+      alerted,
+      burned,
     },
   };
 }
