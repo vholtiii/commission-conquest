@@ -1,0 +1,1013 @@
+[
+  {
+    "id": "manhattan",
+    "name": "Manhattan",
+    "owner": null,
+    "baseIncome": 1000,
+    "defenseBonus": 0.2,
+    "isStrategic": true,
+    "x": 35,
+    "y": 45,
+    "adjacentTerritories": [
+      "brooklyn",
+      "queens",
+      "bronx",
+      "little_italy",
+      "chinatown",
+      "east_village"
+    ],
+    "businessType": null,
+    "strategicBonus": {
+      "type": "income",
+      "value": 500,
+      "description": "Financial District"
+    }
+  },
+  {
+    "id": "little_italy",
+    "name": "Little Italy",
+    "owner": "Moretti",
+    "baseIncome": 800,
+    "defenseBonus": 0.15,
+    "isStrategic": true,
+    "x": 30,
+    "y": 40,
+    "adjacentTerritories": [
+      "manhattan",
+      "chinatown",
+      "east_village",
+      "soho"
+    ],
+    "businessType": "loan_sharking",
+    "strategicBonus": {
+      "type": "combat",
+      "value": 0.2,
+      "description": "Family Stronghold"
+    }
+  },
+  {
+    "id": "chinatown",
+    "name": "Chinatown",
+    "owner": "Valenti",
+    "baseIncome": 700,
+    "defenseBonus": 0.1,
+    "isStrategic": false,
+    "x": 40,
+    "y": 35,
+    "adjacentTerritories": [
+      "manhattan",
+      "little_italy",
+      "east_village",
+      "lower_east_side"
+    ],
+    "businessType": "gambling"
+  },
+  {
+    "id": "east_village",
+    "name": "East Village",
+    "owner": null,
+    "baseIncome": 400,
+    "defenseBonus": 0.05,
+    "isStrategic": false,
+    "x": 45,
+    "y": 50,
+    "adjacentTerritories": [
+      "manhattan",
+      "little_italy",
+      "chinatown",
+      "lower_east_side",
+      "alphabet_city"
+    ],
+    "businessType": "brothel"
+  },
+  {
+    "id": "soho",
+    "name": "SoHo",
+    "owner": "Ferraro",
+    "baseIncome": 900,
+    "defenseBonus": 0.1,
+    "isStrategic": true,
+    "x": 25,
+    "y": 35,
+    "adjacentTerritories": [
+      "little_italy",
+      "tribeca",
+      "west_village"
+    ],
+    "businessType": "store_front",
+    "strategicBonus": {
+      "type": "income",
+      "value": 400,
+      "description": "Art District"
+    }
+  },
+  {
+    "id": "tribeca",
+    "name": "TriBeCa",
+    "owner": null,
+    "baseIncome": 600,
+    "defenseBonus": 0.1,
+    "isStrategic": false,
+    "x": 20,
+    "y": 30,
+    "adjacentTerritories": [
+      "soho",
+      "west_village",
+      "financial_district"
+    ],
+    "businessType": "gambling"
+  },
+  {
+    "id": "west_village",
+    "name": "West Village",
+    "owner": "Salvati",
+    "baseIncome": 750,
+    "defenseBonus": 0.15,
+    "isStrategic": false,
+    "x": 15,
+    "y": 40,
+    "adjacentTerritories": [
+      "soho",
+      "tribeca",
+      "chelsea",
+      "greenwich_village"
+    ],
+    "businessType": "loan_sharking"
+  },
+  {
+    "id": "financial_district",
+    "name": "Financial District",
+    "owner": null,
+    "baseIncome": 1200,
+    "defenseBonus": 0.3,
+    "isStrategic": true,
+    "x": 25,
+    "y": 25,
+    "adjacentTerritories": [
+      "tribeca",
+      "battery_park"
+    ],
+    "businessType": "store_front",
+    "strategicBonus": {
+      "type": "income",
+      "value": 800,
+      "description": "Wall Street"
+    }
+  },
+  {
+    "id": "battery_park",
+    "name": "Battery Park",
+    "owner": null,
+    "baseIncome": 500,
+    "defenseBonus": 0.2,
+    "isStrategic": false,
+    "x": 20,
+    "y": 20,
+    "adjacentTerritories": [
+      "financial_district"
+    ],
+    "businessType": "gambling"
+  },
+  {
+    "id": "chelsea",
+    "name": "Chelsea",
+    "owner": "Rinaldi",
+    "baseIncome": 650,
+    "defenseBonus": 0.1,
+    "isStrategic": false,
+    "x": 10,
+    "y": 35,
+    "adjacentTerritories": [
+      "west_village",
+      "greenwich_village",
+      "hells_kitchen"
+    ],
+    "businessType": "brothel"
+  },
+  {
+    "id": "greenwich_village",
+    "name": "Greenwich Village",
+    "owner": null,
+    "baseIncome": 450,
+    "defenseBonus": 0.05,
+    "isStrategic": false,
+    "x": 12,
+    "y": 45,
+    "adjacentTerritories": [
+      "west_village",
+      "chelsea",
+      "hells_kitchen",
+      "alphabet_city"
+    ],
+    "businessType": "store_front"
+  },
+  {
+    "id": "hells_kitchen",
+    "name": "Hell's Kitchen",
+    "owner": null,
+    "baseIncome": 550,
+    "defenseBonus": 0.15,
+    "isStrategic": false,
+    "x": 8,
+    "y": 50,
+    "adjacentTerritories": [
+      "chelsea",
+      "greenwich_village",
+      "alphabet_city",
+      "upper_west_side"
+    ],
+    "businessType": "loan_sharking"
+  },
+  {
+    "id": "alphabet_city",
+    "name": "Alphabet City",
+    "owner": null,
+    "baseIncome": 350,
+    "defenseBonus": 0.05,
+    "isStrategic": false,
+    "x": 50,
+    "y": 55,
+    "adjacentTerritories": [
+      "east_village",
+      "lower_east_side",
+      "greenwich_village",
+      "hells_kitchen"
+    ],
+    "businessType": "gambling"
+  },
+  {
+    "id": "lower_east_side",
+    "name": "Lower East Side",
+    "owner": null,
+    "baseIncome": 400,
+    "defenseBonus": 0.1,
+    "isStrategic": false,
+    "x": 55,
+    "y": 40,
+    "adjacentTerritories": [
+      "chinatown",
+      "east_village",
+      "alphabet_city",
+      "williamsburg"
+    ],
+    "businessType": "brothel"
+  },
+  {
+    "id": "brooklyn",
+    "name": "Brooklyn",
+    "owner": "Valenti",
+    "baseIncome": 800,
+    "defenseBonus": 0.1,
+    "isStrategic": false,
+    "x": 55,
+    "y": 65,
+    "adjacentTerritories": [
+      "manhattan",
+      "queens",
+      "staten",
+      "williamsburg",
+      "downtown_brooklyn"
+    ],
+    "businessType": "mixed"
+  },
+  {
+    "id": "williamsburg",
+    "name": "Williamsburg",
+    "owner": null,
+    "baseIncome": 450,
+    "defenseBonus": 0.05,
+    "isStrategic": false,
+    "x": 60,
+    "y": 50,
+    "adjacentTerritories": [
+      "lower_east_side",
+      "brooklyn",
+      "downtown_brooklyn",
+      "bushwick"
+    ],
+    "businessType": "store_front"
+  },
+  {
+    "id": "downtown_brooklyn",
+    "name": "Downtown Brooklyn",
+    "owner": "Valenti",
+    "baseIncome": 700,
+    "defenseBonus": 0.1,
+    "isStrategic": true,
+    "x": 50,
+    "y": 60,
+    "adjacentTerritories": [
+      "brooklyn",
+      "williamsburg",
+      "bushwick",
+      "prospect_heights"
+    ],
+    "businessType": "gambling",
+    "strategicBonus": {
+      "type": "recruitment",
+      "value": 1,
+      "description": "Business District"
+    }
+  },
+  {
+    "id": "bushwick",
+    "name": "Bushwick",
+    "owner": null,
+    "baseIncome": 400,
+    "defenseBonus": 0.1,
+    "isStrategic": false,
+    "x": 65,
+    "y": 45,
+    "adjacentTerritories": [
+      "williamsburg",
+      "downtown_brooklyn",
+      "prospect_heights",
+      "crown_heights"
+    ],
+    "businessType": "brothel"
+  },
+  {
+    "id": "prospect_heights",
+    "name": "Prospect Heights",
+    "owner": "Ferraro",
+    "baseIncome": 600,
+    "defenseBonus": 0.1,
+    "isStrategic": false,
+    "x": 45,
+    "y": 55,
+    "adjacentTerritories": [
+      "downtown_brooklyn",
+      "bushwick",
+      "crown_heights",
+      "park_slope"
+    ],
+    "businessType": "loan_sharking"
+  },
+  {
+    "id": "crown_heights",
+    "name": "Crown Heights",
+    "owner": null,
+    "baseIncome": 350,
+    "defenseBonus": 0.15,
+    "isStrategic": false,
+    "x": 70,
+    "y": 40,
+    "adjacentTerritories": [
+      "bushwick",
+      "prospect_heights",
+      "park_slope",
+      "flatbush"
+    ],
+    "businessType": "gambling"
+  },
+  {
+    "id": "park_slope",
+    "name": "Park Slope",
+    "owner": null,
+    "baseIncome": 500,
+    "defenseBonus": 0.05,
+    "isStrategic": false,
+    "x": 40,
+    "y": 50,
+    "adjacentTerritories": [
+      "prospect_heights",
+      "crown_heights",
+      "flatbush",
+      "bay_ridge"
+    ],
+    "businessType": "store_front"
+  },
+  {
+    "id": "flatbush",
+    "name": "Flatbush",
+    "owner": "Salvati",
+    "baseIncome": 550,
+    "defenseBonus": 0.1,
+    "isStrategic": false,
+    "x": 75,
+    "y": 35,
+    "adjacentTerritories": [
+      "crown_heights",
+      "park_slope",
+      "bay_ridge",
+      "coney_island"
+    ],
+    "businessType": "loan_sharking"
+  },
+  {
+    "id": "bay_ridge",
+    "name": "Bay Ridge",
+    "owner": null,
+    "baseIncome": 600,
+    "defenseBonus": 0.2,
+    "isStrategic": false,
+    "x": 35,
+    "y": 45,
+    "adjacentTerritories": [
+      "park_slope",
+      "flatbush",
+      "coney_island",
+      "staten"
+    ],
+    "businessType": "gambling"
+  },
+  {
+    "id": "coney_island",
+    "name": "Coney Island",
+    "owner": null,
+    "baseIncome": 400,
+    "defenseBonus": 0.05,
+    "isStrategic": false,
+    "x": 80,
+    "y": 30,
+    "adjacentTerritories": [
+      "flatbush",
+      "bay_ridge",
+      "staten"
+    ],
+    "businessType": "brothel"
+  },
+  {
+    "id": "queens",
+    "name": "Queens",
+    "owner": "Salvati",
+    "baseIncome": 600,
+    "defenseBonus": 0.1,
+    "isStrategic": true,
+    "x": 70,
+    "y": 40,
+    "adjacentTerritories": [
+      "manhattan",
+      "brooklyn",
+      "bronx",
+      "astoria",
+      "long_island_city"
+    ],
+    "businessType": "gambling",
+    "strategicBonus": {
+      "type": "recruitment",
+      "value": 1,
+      "description": "Airport Access"
+    }
+  },
+  {
+    "id": "astoria",
+    "name": "Astoria",
+    "owner": null,
+    "baseIncome": 500,
+    "defenseBonus": 0.1,
+    "isStrategic": false,
+    "x": 75,
+    "y": 35,
+    "adjacentTerritories": [
+      "queens",
+      "long_island_city",
+      "woodside",
+      "flushing"
+    ],
+    "businessType": "store_front"
+  },
+  {
+    "id": "long_island_city",
+    "name": "Long Island City",
+    "owner": "Ferraro",
+    "baseIncome": 650,
+    "defenseBonus": 0.1,
+    "isStrategic": false,
+    "x": 65,
+    "y": 30,
+    "adjacentTerritories": [
+      "queens",
+      "astoria",
+      "woodside",
+      "hunters_point"
+    ],
+    "businessType": "loan_sharking"
+  },
+  {
+    "id": "woodside",
+    "name": "Woodside",
+    "owner": null,
+    "baseIncome": 450,
+    "defenseBonus": 0.15,
+    "isStrategic": false,
+    "x": 80,
+    "y": 30,
+    "adjacentTerritories": [
+      "astoria",
+      "long_island_city",
+      "flushing",
+      "corona"
+    ],
+    "businessType": "gambling"
+  },
+  {
+    "id": "flushing",
+    "name": "Flushing",
+    "owner": null,
+    "baseIncome": 550,
+    "defenseBonus": 0.1,
+    "isStrategic": false,
+    "x": 85,
+    "y": 25,
+    "adjacentTerritories": [
+      "astoria",
+      "woodside",
+      "corona",
+      "jamaica"
+    ],
+    "businessType": "brothel"
+  },
+  {
+    "id": "corona",
+    "name": "Corona",
+    "owner": "Salvati",
+    "baseIncome": 400,
+    "defenseBonus": 0.1,
+    "isStrategic": false,
+    "x": 90,
+    "y": 35,
+    "adjacentTerritories": [
+      "woodside",
+      "flushing",
+      "jamaica",
+      "elmhurst"
+    ],
+    "businessType": "loan_sharking"
+  },
+  {
+    "id": "jamaica",
+    "name": "Jamaica",
+    "owner": null,
+    "baseIncome": 350,
+    "defenseBonus": 0.15,
+    "isStrategic": false,
+    "x": 95,
+    "y": 30,
+    "adjacentTerritories": [
+      "flushing",
+      "corona",
+      "elmhurst",
+      "st_albans"
+    ],
+    "businessType": "gambling"
+  },
+  {
+    "id": "elmhurst",
+    "name": "Elmhurst",
+    "owner": null,
+    "baseIncome": 300,
+    "defenseBonus": 0.05,
+    "isStrategic": false,
+    "x": 88,
+    "y": 40,
+    "adjacentTerritories": [
+      "corona",
+      "jamaica",
+      "st_albans",
+      "richmond_hill"
+    ],
+    "businessType": "brothel"
+  },
+  {
+    "id": "st_albans",
+    "name": "St. Albans",
+    "owner": null,
+    "baseIncome": 250,
+    "defenseBonus": 0.1,
+    "isStrategic": false,
+    "x": 92,
+    "y": 45,
+    "adjacentTerritories": [
+      "jamaica",
+      "elmhurst",
+      "richmond_hill",
+      "ozone_park"
+    ],
+    "businessType": "store_front"
+  },
+  {
+    "id": "richmond_hill",
+    "name": "Richmond Hill",
+    "owner": "Rinaldi",
+    "baseIncome": 400,
+    "defenseBonus": 0.1,
+    "isStrategic": false,
+    "x": 85,
+    "y": 50,
+    "adjacentTerritories": [
+      "elmhurst",
+      "st_albans",
+      "ozone_park",
+      "howard_beach"
+    ],
+    "businessType": "brothel"
+  },
+  {
+    "id": "ozone_park",
+    "name": "Ozone Park",
+    "owner": null,
+    "baseIncome": 450,
+    "defenseBonus": 0.1,
+    "isStrategic": false,
+    "x": 90,
+    "y": 55,
+    "adjacentTerritories": [
+      "st_albans",
+      "richmond_hill",
+      "howard_beach",
+      "jfk_airport"
+    ],
+    "businessType": "gambling"
+  },
+  {
+    "id": "howard_beach",
+    "name": "Howard Beach",
+    "owner": null,
+    "baseIncome": 500,
+    "defenseBonus": 0.05,
+    "isStrategic": false,
+    "x": 88,
+    "y": 60,
+    "adjacentTerritories": [
+      "richmond_hill",
+      "ozone_park",
+      "jfk_airport",
+      "staten"
+    ],
+    "businessType": "loan_sharking"
+  },
+  {
+    "id": "jfk_airport",
+    "name": "JFK Airport",
+    "owner": null,
+    "baseIncome": 800,
+    "defenseBonus": 0.3,
+    "isStrategic": true,
+    "x": 95,
+    "y": 65,
+    "adjacentTerritories": [
+      "ozone_park",
+      "howard_beach",
+      "staten"
+    ],
+    "businessType": "store_front",
+    "strategicBonus": {
+      "type": "recruitment",
+      "value": 2,
+      "description": "Airport Hub"
+    }
+  },
+  {
+    "id": "bronx",
+    "name": "The Bronx",
+    "owner": "Ferraro",
+    "baseIncome": 500,
+    "defenseBonus": 0.15,
+    "isStrategic": false,
+    "x": 45,
+    "y": 20,
+    "adjacentTerritories": [
+      "manhattan",
+      "queens",
+      "yonkers",
+      "south_bronx",
+      "fordham"
+    ],
+    "businessType": "brothel"
+  },
+  {
+    "id": "south_bronx",
+    "name": "South Bronx",
+    "owner": null,
+    "baseIncome": 300,
+    "defenseBonus": 0.2,
+    "isStrategic": false,
+    "x": 50,
+    "y": 15,
+    "adjacentTerritories": [
+      "bronx",
+      "fordham",
+      "hunts_point",
+      "mott_haven"
+    ],
+    "businessType": "gambling"
+  },
+  {
+    "id": "fordham",
+    "name": "Fordham",
+    "owner": null,
+    "baseIncome": 400,
+    "defenseBonus": 0.1,
+    "isStrategic": false,
+    "x": 40,
+    "y": 25,
+    "adjacentTerritories": [
+      "bronx",
+      "south_bronx",
+      "hunts_point",
+      "tremont"
+    ],
+    "businessType": "store_front"
+  },
+  {
+    "id": "hunts_point",
+    "name": "Hunts Point",
+    "owner": "Salvati",
+    "baseIncome": 350,
+    "defenseBonus": 0.1,
+    "isStrategic": false,
+    "x": 55,
+    "y": 10,
+    "adjacentTerritories": [
+      "south_bronx",
+      "fordham",
+      "mott_haven",
+      "port_morris"
+    ],
+    "businessType": "loan_sharking"
+  },
+  {
+    "id": "mott_haven",
+    "name": "Mott Haven",
+    "owner": null,
+    "baseIncome": 250,
+    "defenseBonus": 0.15,
+    "isStrategic": false,
+    "x": 60,
+    "y": 5,
+    "adjacentTerritories": [
+      "south_bronx",
+      "hunts_point",
+      "port_morris",
+      "yankee_stadium"
+    ],
+    "businessType": "brothel"
+  },
+  {
+    "id": "port_morris",
+    "name": "Port Morris",
+    "owner": null,
+    "baseIncome": 400,
+    "defenseBonus": 0.2,
+    "isStrategic": false,
+    "x": 65,
+    "y": 8,
+    "adjacentTerritories": [
+      "hunts_point",
+      "mott_haven",
+      "yankee_stadium",
+      "concourse"
+    ],
+    "businessType": "gambling"
+  },
+  {
+    "id": "yankee_stadium",
+    "name": "Yankee Stadium",
+    "owner": null,
+    "baseIncome": 600,
+    "defenseBonus": 0.25,
+    "isStrategic": true,
+    "x": 70,
+    "y": 12,
+    "adjacentTerritories": [
+      "mott_haven",
+      "port_morris",
+      "concourse",
+      "highbridge"
+    ],
+    "businessType": "store_front",
+    "strategicBonus": {
+      "type": "income",
+      "value": 300,
+      "description": "Sports Venue"
+    }
+  },
+  {
+    "id": "concourse",
+    "name": "Concourse",
+    "owner": "Ferraro",
+    "baseIncome": 450,
+    "defenseBonus": 0.1,
+    "isStrategic": false,
+    "x": 75,
+    "y": 18,
+    "adjacentTerritories": [
+      "port_morris",
+      "yankee_stadium",
+      "highbridge",
+      "tremont"
+    ],
+    "businessType": "loan_sharking"
+  },
+  {
+    "id": "highbridge",
+    "name": "Highbridge",
+    "owner": null,
+    "baseIncome": 300,
+    "defenseBonus": 0.1,
+    "isStrategic": false,
+    "x": 80,
+    "y": 22,
+    "adjacentTerritories": [
+      "yankee_stadium",
+      "concourse",
+      "tremont",
+      "washington_heights"
+    ],
+    "businessType": "gambling"
+  },
+  {
+    "id": "tremont",
+    "name": "Tremont",
+    "owner": null,
+    "baseIncome": 350,
+    "defenseBonus": 0.15,
+    "isStrategic": false,
+    "x": 35,
+    "y": 30,
+    "adjacentTerritories": [
+      "fordham",
+      "concourse",
+      "highbridge",
+      "washington_heights"
+    ],
+    "businessType": "brothel"
+  },
+  {
+    "id": "washington_heights",
+    "name": "Washington Heights",
+    "owner": null,
+    "baseIncome": 400,
+    "defenseBonus": 0.1,
+    "isStrategic": false,
+    "x": 30,
+    "y": 35,
+    "adjacentTerritories": [
+      "highbridge",
+      "tremont",
+      "yonkers",
+      "inwood"
+    ],
+    "businessType": "store_front"
+  },
+  {
+    "id": "inwood",
+    "name": "Inwood",
+    "owner": null,
+    "baseIncome": 300,
+    "defenseBonus": 0.05,
+    "isStrategic": false,
+    "x": 25,
+    "y": 40,
+    "adjacentTerritories": [
+      "washington_heights",
+      "yonkers",
+      "manhattan"
+    ],
+    "businessType": "gambling"
+  },
+  {
+    "id": "staten",
+    "name": "Staten Island",
+    "owner": "Rinaldi",
+    "baseIncome": 400,
+    "defenseBonus": 0.25,
+    "isStrategic": true,
+    "x": 25,
+    "y": 75,
+    "adjacentTerritories": [
+      "brooklyn",
+      "bay_ridge",
+      "coney_island",
+      "howard_beach",
+      "jfk_airport",
+      "newark"
+    ],
+    "businessType": "gambling",
+    "strategicBonus": {
+      "type": "combat",
+      "value": 0.15,
+      "description": "Isolated Stronghold"
+    }
+  },
+  {
+    "id": "st_george",
+    "name": "St. George",
+    "owner": null,
+    "baseIncome": 350,
+    "defenseBonus": 0.1,
+    "isStrategic": false,
+    "x": 20,
+    "y": 70,
+    "adjacentTerritories": [
+      "staten",
+      "newark",
+      "hoboken"
+    ],
+    "businessType": "store_front"
+  },
+  {
+    "id": "tottenville",
+    "name": "Tottenville",
+    "owner": null,
+    "baseIncome": 250,
+    "defenseBonus": 0.05,
+    "isStrategic": false,
+    "x": 15,
+    "y": 80,
+    "adjacentTerritories": [
+      "staten",
+      "st_george"
+    ],
+    "businessType": "brothel"
+  },
+  {
+    "id": "newark",
+    "name": "Newark",
+    "owner": "Ferraro",
+    "baseIncome": 700,
+    "defenseBonus": 0.1,
+    "isStrategic": true,
+    "x": 15,
+    "y": 55,
+    "adjacentTerritories": [
+      "staten",
+      "st_george",
+      "hoboken",
+      "jersey_city"
+    ],
+    "businessType": "loan_sharking",
+    "strategicBonus": {
+      "type": "income",
+      "value": 300,
+      "description": "Industrial Hub"
+    }
+  },
+  {
+    "id": "jersey_city",
+    "name": "Jersey City",
+    "owner": null,
+    "baseIncome": 500,
+    "defenseBonus": 0.1,
+    "isStrategic": false,
+    "x": 10,
+    "y": 50,
+    "adjacentTerritories": [
+      "newark",
+      "hoboken",
+      "union_city"
+    ],
+    "businessType": "gambling"
+  },
+  {
+    "id": "union_city",
+    "name": "Union City",
+    "owner": null,
+    "baseIncome": 300,
+    "defenseBonus": 0.05,
+    "isStrategic": false,
+    "x": 5,
+    "y": 45,
+    "adjacentTerritories": [
+      "jersey_city",
+      "hoboken"
+    ],
+    "businessType": "store_front"
+  },
+  {
+    "id": "hoboken",
+    "name": "Hoboken",
+    "owner": null,
+    "baseIncome": 300,
+    "defenseBonus": 0.05,
+    "isStrategic": false,
+    "x": 20,
+    "y": 45,
+    "adjacentTerritories": [
+      "newark",
+      "jersey_city",
+      "union_city",
+      "yonkers",
+      "washington_heights"
+    ],
+    "businessType": "brothel"
+  },
+  {
+    "id": "yonkers",
+    "name": "Yonkers",
+    "owner": null,
+    "baseIncome": 350,
+    "defenseBonus": 0.05,
+    "isStrategic": false,
+    "x": 35,
+    "y": 15,
+    "adjacentTerritories": [
+      "bronx",
+      "hoboken",
+      "washington_heights",
+      "inwood"
+    ],
+    "businessType": "gambling"
+  }
+]

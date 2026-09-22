@@ -1,0 +1,140 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* THE COMMISSION - Art Deco Noir Strategy Game Design System
+All colors MUST be HSL.
+*/
+
+@layer base {
+  :root {
+    /* Commission Conquest — Dark Slate / Steel-Blue Noir Palette */
+    --background: 222 12% 10%;
+    --foreground: 40 20% 92%;
+
+    --card: 222 13% 13%;
+    --card-foreground: 40 20% 92%;
+
+    --popover: 222 14% 12%;
+    --popover-foreground: 40 20% 92%;
+
+    /* Steel-blue accent as primary action color */
+    --primary: 205 45% 48%;
+    --primary-foreground: 210 30% 97%;
+
+    --secondary: 222 12% 22%;
+    --secondary-foreground: 40 20% 92%;
+
+    --muted: 222 12% 18%;
+    --muted-foreground: 220 10% 62%;
+
+    --accent: 205 55% 42%;
+    --accent-foreground: 210 30% 97%;
+
+    --destructive: 0 68% 45%;
+    --destructive-foreground: 40 20% 96%;
+
+    --border: 222 12% 22%;
+    --input: 222 12% 18%;
+    --ring: 205 55% 48%;
+
+    --radius: 0.4rem;
+
+    /* Dark slate panels + accent tokens */
+    --panel: 222 14% 11%;
+    --panel-elevated: 222 13% 15%;
+    --panel-border: 222 12% 24%;
+
+    --steel: 205 45% 48%;
+    --steel-light: 205 55% 62%;
+    --steel-dark: 205 40% 30%;
+
+    --money-gold: 43 55% 58%;
+    --money-gold-dim: 43 35% 40%;
+
+    --heat-red: 0 68% 50%;
+    --heat-red-dim: 0 45% 35%;
+
+    /* Legacy game-specific tokens (kept for compatibility with family colors) */
+    --commission-burgundy: 0 65% 35%;
+    --commission-gold: 43 55% 58%;
+    --commission-dark: 222 14% 11%;
+    --commission-dark-elevated: 222 13% 15%;
+    --commission-territory: 120 20% 28%;
+    --commission-neutral: 210 8% 45%;
+
+    /* Gradients */
+    --gradient-hero: linear-gradient(135deg, hsl(var(--steel-dark)), hsl(222 20% 14%));
+    --gradient-gold: linear-gradient(135deg, hsl(var(--money-gold)), hsl(43 55% 42%));
+    --gradient-card: linear-gradient(145deg, hsl(var(--panel-elevated)), hsl(222 14% 9%));
+
+    /* Shadows */
+    --shadow-commission: 0 10px 30px -10px hsl(var(--steel) / 0.35);
+    --shadow-gold: 0 5px 20px -5px hsl(var(--money-gold) / 0.4);
+    --shadow-card: 0 8px 25px -8px hsl(0 0% 0% / 0.55);
+
+    /* Animations */
+    --transition-smooth: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    --transition-bounce: all 0.4s cubic-bezier(0.68, -0.55, 0.265, 1.55);
+
+    --sidebar-background: 222 14% 11%;
+    --sidebar-foreground: 40 15% 85%;
+    --sidebar-primary: 205 45% 48%;
+    --sidebar-primary-foreground: 210 30% 97%;
+    --sidebar-accent: 222 12% 18%;
+    --sidebar-accent-foreground: 40 15% 85%;
+    --sidebar-border: 222 12% 22%;
+    --sidebar-ring: 205 55% 48%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html,
+  body {
+    @apply bg-background text-foreground font-ui;
+    background: #14161a;
+  }
+
+  #root {
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  h1,
+  h2,
+  .font-display {
+    font-family: "Limelight", serif;
+    letter-spacing: 0.02em;
+  }
+}
+
+@layer utilities {
+  .panel-surface {
+    background: hsl(var(--panel) / 0.92);
+    border: 1px solid hsl(var(--panel-border));
+    backdrop-filter: blur(6px);
+  }
+
+  .panel-surface-elevated {
+    background: hsl(var(--panel-elevated) / 0.95);
+    border: 1px solid hsl(var(--panel-border));
+    backdrop-filter: blur(6px);
+  }
+
+  .text-money {
+    color: hsl(var(--money-gold));
+  }
+
+  .text-heat {
+    color: hsl(var(--heat-red));
+  }
+
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--panel-border)) transparent;
+  }
+}

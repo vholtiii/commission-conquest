@@ -1,0 +1,118 @@
+import { Suspense, useMemo, useRef } from "react";
+import { Canvas } from "@react-three/fiber";
+import { MapControls } from "@react-three/drei";
+import { useGameStore } from "@/engine/store";
+import { buildCityLayout } from "@/engine/cityLayout";
+import ProceduralBuildings from "./ProceduralBuildings";
+import DistrictOverlay from "./DistrictOverlay";
+import Markers from "./Markers";
+import HitFx from "./HitFx";
+import BuildFx from "./BuildFx";
+import KenneyProps from "./KenneyProps";
+import MapCamera from "./MapCamera";
+import RacketBuildings, { useOccupiedRacketBlocks } from "./RacketBuildings";
+import PendingOpsOverlay from "./PendingOpsOverlay";
+import HitCinematic from "./HitCinematic";
+import StrategicOverlay from "./StrategicOverlay";
+import BoroughOverlay from "./BoroughOverlay";
+import StreetLabels from "./StreetLabels";
+import BlockPlumbing from "./BlockPlumbing";
+import AmbientTells from "./AmbientTells";
+
+/** Canvas wrapper for the city view. Reads territories and crew from the store. */
+export default function CityScene() {
+  const territories = useGameStore((s) => s.territories);
+  const seed = useGameStore((s) => s.seed);
+  const selectTerritory = useGameStore((s) => s.selectTerritory);
+  const cinematicPlaying = useGameStore(
+    (s) => s.cinematicQueue.length > 0 && !s.pendingHitResult,
+  );
+
+  // Layout geometry only depends on static position/borough fields, not on owner/rackets,
+  // so we key the memo off those to avoid rebuilding the whole city grid every turn.
+  const layoutKey = useMemo(
+    () => territories.map((t) => `${t.id}:${t.x}:${t.y}:${t.borough}`).join("|"),
+    [territories],
+  );
+  const layout = useMemo(() => buildCityLayout(territories, seed), [layoutKey, seed]);
+  const occupied = useOccupiedRacketBlocks(layout, territories);
+
+  const controlsRef = useRef<any>(null);
+
+  return (
+    <div className="absolute inset-0 z-0 h-full w-full">
+      <Canvas
+        shadows
+        frameloop="always"
+        dpr={[1, 1.75]}
+        camera={{ position: [0, 34, 30], fov: 42, near: 0.1, far: 300 }}
+        onPointerMissed={() => {
+          if (!cinematicPlaying) selectTerritory(null);
+        }}
+        style={{ width: "100%", height: "100%", display: "block" }}
+        className="h-full w-full bg-[#0d0e10]"
+        gl={{ antialias: true, alpha: false, powerPreference: "high-performance" }}
+        onCreated={({ gl }) => {
+          gl.setClearColor("#11141a");
+        }}
+      >
+        <color attach="background" args={["#11141a"]} />
+        <fog attach="fog" args={["#11141a", 42, 130]} />
+
+        <hemisphereLight args={["#cbd7e8", "#241d16", 0.55]} />
+        <ambientLight intensity={0.22} />
+        <directionalLight
+          position={[30, 45, 20]}
+          intensity={1.35}
+          color="#ffd9a8"
+          castShadow
+          shadow-mapSize-width={2048}
+          shadow-mapSize-height={2048}
+          shadow-camera-left={-60}
+          shadow-camera-right={60}
+          shadow-camera-top={60}
+          shadow-camera-bottom={-60}
+          shadow-camera-near={1}
+          shadow-camera-far={150}
+        />
+
+        <MapControls
+          ref={controlsRef}
+          makeDefault
+          enabled={!cinematicPlaying}
+          maxPolarAngle={Math.PI / 3}
+          minPolarAngle={Math.PI / 8}
+          minDistance={12}
+          maxDistance={150}
+          enableDamping
+          dampingFactor={0.08}
+          screenSpacePanning
+        />
+
+        <MapCamera layout={layout} controlsRef={controlsRef} />
+
+        <ProceduralBuildings
+          layout={layout}
+          seed={seed}
+          occupied={occupied}
+          territories={territories}
+        />
+        <RacketBuildings layout={layout} territories={territories} />
+        <BlockPlumbing layout={layout} territories={territories} />
+        <AmbientTells layout={layout} territories={territories} />
+        <DistrictOverlay layout={layout} territories={territories} />
+        <Markers layout={layout} territories={territories} />
+        <StreetLabels layout={layout} />
+        <BoroughOverlay layout={layout} territories={territories} />
+        <StrategicOverlay layout={layout} territories={territories} />
+        <PendingOpsOverlay layout={layout} />
+        <HitFx layout={layout} />
+        <BuildFx layout={layout} />
+        <HitCinematic layout={layout} controlsRef={controlsRef} />
+        <Suspense fallback={null}>
+          <KenneyProps layout={layout} />
+        </Suspense>
+      </Canvas>
+    </div>
+  );
+}
