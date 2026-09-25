@@ -23,6 +23,7 @@ import {
   launderCap,
 } from "./economy";
 import { computeTerritorySlots, maxRacketsFor, allowedRacketTypes } from "./territoryValue";
+import { emptyVictory, finalTurnFor } from "./victory";
 
 interface TerritoryRaw {
   id: string;
@@ -36,6 +37,7 @@ interface TerritoryRaw {
   adjacentTerritories: string[];
   businessType: string | null;
   strategicBonus?: Territory["strategicBonus"];
+  emptyLot?: boolean;
 }
 
 const BOROUGH_MAP: Record<string, string> = {
@@ -128,6 +130,7 @@ function loadTerritories(rng: ReturnType<typeof createRng>): Territory[] {
       strategicBonus: raw.strategicBonus,
       x: raw.x,
       y: raw.y,
+      emptyLot: raw.emptyLot,
       adjacentTerritories: raw.adjacentTerritories,
       heatLevel: raw.owner ? rng.int(1, 4) : 0,
       rackets,
@@ -204,9 +207,12 @@ function garrisonFamilyCrew(
 
 const DEFAULT_SETTINGS: GameSettings = {
   difficulty: "normal",
+  gameLength: "medium",
   aiAggression: 0.5,
   seed: 42,
   skipCinematics: false,
+  rivalCinematics: "brief",
+  sfxVolume: 0.7,
 };
 
 export function buildInitialState(
@@ -226,7 +232,7 @@ export function buildInitialState(
   }
 
   return {
-    version: 4,
+    version: 5,
     seed,
     settings: mergedSettings,
     playerFamily: null,
@@ -266,13 +272,26 @@ export function buildInitialState(
       captains: { isActive: false, turnsRemaining: 0, cost: 0, successRate: 0 },
       chiefs: { isActive: false, turnsRemaining: 0, cost: 0, successRate: 0 },
       mayor: { isActive: false, turnsRemaining: 0, cost: 0, successRate: 0 },
+      judge: { isActive: false, turnsRemaining: 0, cost: 0, successRate: 0 },
     },
+    rivalInfluence: {},
     vendettas: [],
     grudges: [],
     captureTally: { turn: 1, byFamily: {} },
+    crewRequests: [],
     incidents: [],
     rumors: [],
-    victory: { won: false, lost: false, commissionChairTurns: 0 },
+    sitdowns: [],
+    pendingSitdownResults: [],
+    sitdownCinematicQueue: [],
+    sitdownPhase: null,
+    deals: [],
+    pendingDealSettlements: [],
+    supplyRoutes: [],
+    passageDeals: [],
+    passageLeverage: {},
+    messageHitTurns: {},
+    victory: emptyVictory(finalTurnFor(mergedSettings.gameLength)),
     liquorStock: 20,
     pendingShipments: [],
     liquorLedger: null,
@@ -285,9 +304,13 @@ export function buildInitialState(
     hitFxTerritoryId: null,
     buildFx: null,
     cinematicQueue: [],
+    incomingHitReel: [],
+    pendingHitCinematic: null,
     activePanel: "none",
     selectedCrewId: null,
     hitTargetPreviewId: null,
+    supplyRouteFocusId: null,
+    supplyRoutePreview: null,
     focusReason: null,
     pendingHitResult: null,
     pendingReports: [],
@@ -331,8 +354,10 @@ export function startGame(state: GameState, family: FamilyName): GameState {
   const adjacentIds = new Set(
     territories.find((t) => t.id === startTerritoryId)?.adjacentTerritories ?? [],
   );
+  // Neighbours are known from day one, and so is every empty lot: vacant
+  // ground is public — anyone driving past can see there's nothing on it.
   territories = territories.map((t) =>
-    adjacentIds.has(t.id) ? { ...t, discovered: true } : t,
+    adjacentIds.has(t.id) || t.emptyLot ? { ...t, discovered: true } : t,
   );
 
   let crew = state.crew.map((c) =>
@@ -396,10 +421,12 @@ export function startGame(state: GameState, family: FamilyName): GameState {
 
   // Seed rival treasuries
   const rivalTreasury: Partial<Record<FamilyName, number>> = {};
+  const rivalInfluence: Partial<Record<FamilyName, number>> = {};
   for (const f of FAMILIES.map((x) => x.name)) {
     if (f === family) continue;
     const owned = territories.filter((t) => t.owner === f).length;
     rivalTreasury[f] = 2000 + owned * 400;
+    rivalInfluence[f] = 120;
   }
 
   // Seed starting legit businesses for laundering
@@ -473,5 +500,9 @@ export function startGame(state: GameState, family: FamilyName): GameState {
     flyToTerritoryId: startTerritoryId,
     flyToNonce: (state.flyToNonce ?? 0) + 1,
     rivalTreasury,
+    rivalInfluence,
+    victory: {
+      ...emptyVictory(finalTurnFor(state.settings.gameLength)),
+    },
   };
 }

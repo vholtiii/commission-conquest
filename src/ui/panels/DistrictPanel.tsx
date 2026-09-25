@@ -1,13 +1,25 @@
-import { Swords, Hammer, ShieldPlus, Flame, ArrowUp, Eye, Wine } from "lucide-react";
+import { Swords, Hammer, ShieldPlus, Flame, ArrowUp, Eye, Wine, Crown } from "lucide-react";
 import { useState } from "react";
 import { useGameStore } from "@/engine/store";
 import { getFamilyDef } from "@/data/families";
 import { FAMILY_HEX, RACKET_LABELS } from "@/types/game";
-import { racketIncome, racketPayment, isLegitBusiness, isRacketFrozen, launderCap, launderSiteStatus, fundingLabel, racketFunding, hijackRisk } from "@/engine/economy";
+import { racketIncome, racketCrewBonusPct, racketPayment, isLegitBusiness, isRacketFrozen, launderCap, launderSiteStatus, fundingLabel, racketFunding, hijackRisk } from "@/engine/economy";
 import { isProducerType, isStorageType, planFeedSpeakeasy, stockCap, warehouseManagerEffectText } from "@/engine/liquor";
 import { isUnguarded, maxRacketsFor, lotTier, lotTierHint, lotTierLabel, allowedRacketTypes } from "@/engine/territoryValue";
 import { RACKET_VISUALS } from "@/data/racketVisuals";
 import { emptyIntel, hiddenCountIn, hasFreshCasing, visibleCrewIn } from "@/engine/intel";
+import { LOCATION_REASON_LABEL, familyHq, isBossUnderground, resolveCrewLocation, resolveCrewTerritoryId } from "@/engine/crewLocation";
+import {
+  BOSS_PRESENCE,
+  bossPresenceDistrict,
+  bossPresentIn,
+  bossStayTurns,
+  hqIsSoft,
+  presenceBuildCost,
+  presenceLoyaltyGain,
+} from "@/engine/bossPresence";
+import { currentRumors } from "@/engine/rumors";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import PortraitAvatar from "@/ui/PortraitAvatar";
@@ -22,19 +34,22 @@ function upgradeTip(
   frozen: boolean,
   money: number,
   dirtyMoney: number,
+  bossHere = false,
 ): string {
   if (r.level >= 5) return "Already max level.";
   if (frozen) return "Frozen by Treasury audit — cannot upgrade.";
-  const pay = racketPayment(r.type, r.upgradeCost, money, dirtyMoney);
+  const cost = presenceBuildCost(r.upgradeCost, bossHere);
+  const pay = racketPayment(r.type, cost, money, dirtyMoney);
   if (!pay) {
     const fund = fundingLabel(racketFunding(r.type));
-    return `Need ${formatMoney(r.upgradeCost)} (${fund}).`;
+    return `Need ${formatMoney(cost)} (${fund}).`;
   }
-  const nextIncome = racketIncome({ ...r, level: r.level + 1 }, 0, manager);
+  const nextIncome = racketIncome({ ...r, level: r.level + 1 }, 0, manager, undefined, bossHere);
   const liquorNote = isStorageType(r.type)
     ? " Raises liquor capacity too."
     : "";
-  return `Upgrade to Lv ${r.level + 1} — about $${nextIncome}/turn after.${liquorNote} Cost ${formatMoney(r.upgradeCost)}.`;
+  const discount = bossHere ? ` (boss's discount, was ${formatMoney(r.upgradeCost)})` : "";
+  return `Upgrade to Lv ${r.level + 1} — about $${nextIncome}/turn after.${liquorNote} Cost ${formatMoney(cost)}${discount}.`;
 }
 
 function managerTip(r: Racket, manager: CrewMember | null | undefined): string {
@@ -61,16 +76,23 @@ export default function DistrictPanel() {
   const turn = useGameStore((s) => s.turn);
   const setPanel = useGameStore((s) => s.setPanel);
   const selectCrew = useGameStore((s) => s.selectCrew);
+  const assignMember = useGameStore((s) => s.assignMember);
   const upgradeRacketAt = useGameStore((s) => s.upgradeRacketAt);
   const assignManager = useGameStore((s) => s.assignManager);
   const setupLaunderSite = useGameStore((s) => s.setupLaunderSite);
   const stopLaunderSite = useGameStore((s) => s.stopLaunderSite);
   const launderPlan = useGameStore((s) => s.launderPlan ?? {});
   const caseDistrict = useGameStore((s) => s.caseDistrict);
+  const supplyRoutes = useGameStore((s) => s.supplyRoutes ?? []);
+  const rumors = useGameStore((s) => s.rumors ?? []);
+  const bossStay = useGameStore((s) => s.bossStay);
   const [caseLookoutId, setCaseLookoutId] = useState("");
 
   const territory = territories.find((t) => t.id === selectedTerritoryId);
   if (!territory || !playerFamily) return null;
+  const fedByRoute = supplyRoutes.some(
+    (r) => r.destTerritoryId === territory.id && r.status === "active",
+  );
 
   const locState = {
     crew,
@@ -80,6 +102,7 @@ export default function DistrictPanel() {
     playerFamily,
     intel: intel ?? emptyIntel(),
     turn,
+    bossStay,
   };
 
   const owner = territory.owner ? getFamilyDef(territory.owner) : null;
@@ -107,6 +130,99 @@ export default function DistrictPanel() {
       c.assignment.type !== "surveillance" &&
       c.assignment.type !== "delivery",
   );
+  // Men who could drive over and garrison this block.
+  const sendable = crew.filter(
+    (c) =>
+      c.family === playerFamily &&
+      c.status === "active" &&
+      c.role !== "boss" &&
+      !(c.awayAt && c.awayAt.untilTurn > turn) &&
+      c.assignment.type !== "operation" &&
+      c.assignment.type !== "surveillance" &&
+      c.assignment.type !== "delivery" &&
+      resolveCrewTerritoryId(locState, c.id) !== territory.id,
+  );
+  const sendHere = (crewId: string) => {
+    const man = crew.find((c) => c.id === crewId);
+    if (!man) return;
+    assignMember(man.id, { type: "garrison", territoryId: territory.id });
+    toast.success(`${man.name} drives to ${territory.name}`, {
+      description: man.role === "associate" ? "He takes the streetcar." : "His car will be on the kerb.",
+    });
+  };
+  const boss = crew.find(
+    (c) => c.family === playerFamily && c.role === "boss" && c.status !== "dead",
+  );
+  const bossLoc = boss ? resolveCrewLocation(locState, boss.id) : null;
+  const bossHere = !!bossLoc && bossLoc.territoryId === territory.id;
+  const bossHereName = bossLoc?.territoryId
+    ? territories.find((t) => t.id === bossLoc.territoryId)?.name ?? null
+    : null;
+  const bossBusy =
+    !!boss &&
+    (boss.status !== "active" ||
+      (!!boss.awayAt && boss.awayAt.untilTurn > turn) ||
+      boss.assignment.type === "operation" ||
+      boss.assignment.type === "surveillance" ||
+      boss.assignment.type === "delivery");
+  const bossBusyReason = !boss
+    ? null
+    : boss.status !== "active"
+      ? `${boss.name} is ${boss.status}.`
+      : boss.awayAt && boss.awayAt.untilTurn > turn
+        ? boss.awayAt.reason === "sitdown"
+          ? "He's committed to a sit-down this week."
+          : "He's already on the road this week."
+        : bossLoc
+          ? `${LOCATION_REASON_LABEL[bossLoc.reason]} — clear that first.`
+          : null;
+  const bossUnderground = !!boss && isBossUnderground(locState, boss);
+  // Where his desk is this week (a sit-down trip doesn't move it). This is
+  // the block that gets the presence bonuses.
+  const bossBlockId = bossPresenceDistrict(locState, playerFamily);
+  const bossBoost = bossPresentIn(locState, playerFamily, territory.id);
+  const bossBlockName = bossBlockId
+    ? territories.find((t) => t.id === bossBlockId)?.name ?? null
+    : null;
+  const stayTurns = bossStayTurns(locState, playerFamily);
+  const rallyGain = presenceLoyaltyGain(stayTurns);
+  const playerHqId = familyHq(locState, playerFamily);
+  const hqSoftHere =
+    !!boss && playerHqId === territory.id && hqIsSoft(locState, playerFamily);
+  const familyHereCount = crew.filter(
+    (c) =>
+      c.family === playerFamily &&
+      c.status === "active" &&
+      c.role !== "boss" &&
+      resolveCrewTerritoryId(locState, c.id) === territory.id,
+  ).length;
+  const rivalNeighbours = territory.adjacentTerritories
+    .map((id) => territories.find((t) => t.id === id))
+    .filter((t) => !!t && !!t.owner && t.owner !== playerFamily).length;
+  const producers = territory.rackets.filter((r) => isProducerType(r.type)).length;
+  const bars = territory.rackets.filter((r) => r.type === "speakeasy").length;
+  const warehouses = territory.rackets.filter((r) => r.type === "warehouse").length;
+  const pct = (m: number) => `+${Math.round((m - 1) * 100)}%`;
+  // Street talk about a hit on the boss: this week's pending-hit rumors that
+  // name him, or name the district he's sitting in.
+  const bossRumors = currentRumors({ rumors, turn }).filter(
+    (r) =>
+      r.kind === "pending_hit" &&
+      !!boss &&
+      (r.targetCrewId === boss.id || (!r.targetCrewId && r.territoryId === bossLoc?.territoryId)),
+  );
+  const bossRumorHere = bossHere && bossRumors.length > 0;
+  const bossRumorMentionsBomb = bossRumors.some((r) => r.approach === "car_bomb");
+  const moveBossHere = () => {
+    if (!boss || bossBusy || bossHere) return;
+    assignMember(boss.id, { type: "garrison", territoryId: territory.id });
+    toast.success(`${boss.name} moves to ${territory.name}`, {
+      description:
+        bossRumors.length > 0
+          ? "Any crew sent to his old address finds an empty chair."
+          : "He'll hold court here until you send him elsewhere.",
+    });
+  };
   const racketSlots = maxRacketsFor(territory);
   const slotsFull = territory.rackets.length >= racketSlots;
   const tier = lotTier(territory);
@@ -202,6 +318,153 @@ export default function DistrictPanel() {
               </button>
             ))}
           </div>
+          {isOwned && sendable.length > 0 && (
+            <Tip content="Post a man here as garrison. He drives over now and counts toward the block's defence from this turn.">
+              <select
+                value=""
+                onChange={(e) => {
+                  if (e.target.value) sendHere(e.target.value);
+                }}
+                className="mt-1.5 h-7 w-full rounded border border-panel-border bg-panel/60 px-1 text-[11px]"
+              >
+                <option value="">Send a man here…</option>
+                {sendable.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name} · {c.role}
+                  </option>
+                ))}
+              </select>
+            </Tip>
+          )}
+          {isOwned && boss && (
+            <div
+              className={`mt-2 space-y-1.5 rounded border px-2 py-1.5 ${
+                bossRumorHere
+                  ? "border-heat/40 bg-heat/10"
+                  : "border-amber-500/30 bg-amber-950/20"
+              }`}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex min-w-0 items-center gap-1.5 text-[11px]">
+                  <Crown className="h-3.5 w-3.5 shrink-0 text-amber-300" />
+                  <span className="truncate text-muted-foreground">
+                    {bossHere
+                      ? `${boss.name} holds court here.`
+                      : bossHereName
+                        ? `Boss is in ${bossHereName}.`
+                        : "Boss location unknown."}
+                  </span>
+                  {bossHere && bossUnderground && (
+                    <Tip content="Away from the HQ everyone knows. A rival planning a hit has to find him first — most weeks they go to the old address.">
+                      <Badge variant="outline" className="text-[9px] text-amber-200">
+                        Underground
+                      </Badge>
+                    </Tip>
+                  )}
+                </div>
+                {!bossHere && (
+                  <Tip
+                    content={
+                      bossBusy && bossBusyReason
+                        ? bossBusyReason
+                        : bossRumors.length > 0
+                          ? bossRumorMentionsBomb
+                            ? "The street says a car bomb. Moving him means using the car — if the package is already wired, it goes off on the way."
+                            : "The street says a hit is coming. Move him and the crew sent to his old address finds nobody."
+                          : `Move his desk here. Rackets on this block earn ${pct(BOSS_PRESENCE.incomeMult)} and run at full take unmanaged, fronts wash ${pct(BOSS_PRESENCE.launderCapMult)} more, stills and bars turn out +${BOSS_PRESENCE.productionPerLevel} crate per level, building is ${Math.round(BOSS_PRESENCE.buildDiscount * 100)}% off, his men here learn twice as fast and gain loyalty each week, and the neighbours get read.${
+                              territory.id !== playerHqId ? " His HQ goes soft while he's away." : ""
+                            }`
+                    }
+                  >
+                    <span>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 text-[11px]"
+                        disabled={bossBusy}
+                        onClick={moveBossHere}
+                      >
+                        Move the boss here
+                      </Button>
+                    </span>
+                  </Tip>
+                )}
+              </div>
+              {bossRumorHere && (
+                <p className="text-[10px] text-heat">
+                  {bossRumorMentionsBomb
+                    ? "Street says a car bomb is coming for him. His car is the target — sit tight and let the garrison find it, or gamble on the drive."
+                    : "Street says a hit is coming for him here. Move him to another district before you end the turn."}
+                </p>
+              )}
+              {bossBoost && (
+                <div className="space-y-0.5 text-[10px] text-muted-foreground">
+                  <div className="flex items-center gap-1 text-amber-200">
+                    While he's here
+                    {stayTurns > 0 && (
+                      <Tip content={`He's held this block ${stayTurns} week${stayTurns === 1 ? "" : "s"}. After ${BOSS_PRESENCE.loyaltySettledTurns} the loyalty rally doubles.`}>
+                        <span className="text-muted-foreground">
+                          · week {stayTurns + 1}{stayTurns >= BOSS_PRESENCE.loyaltySettledTurns ? ", settled in" : ""}
+                        </span>
+                      </Tip>
+                    )}
+                  </div>
+                  <ul className="list-disc space-y-0.5 pl-3.5">
+                    <Tip content="Every racket on this block pays more, and one without a manager runs at full take instead of 70%. Legit fronts can wash more each week.">
+                      <li>
+                        Rackets {pct(BOSS_PRESENCE.incomeMult)} · unmanaged at full · fronts wash {pct(BOSS_PRESENCE.launderCapMult)}
+                      </li>
+                    </Tip>
+                    {(producers > 0 || bars > 0 || warehouses > 0) && (
+                      <Tip content="Stills and breweries turn out an extra crate per level. Bars pour an extra crate per level and pull like they have a local warehouse. Warehouses lose nothing to pilferage.">
+                        <li>
+                          {[
+                            producers > 0 ? `stills +${BOSS_PRESENCE.productionPerLevel} crate/level` : null,
+                            bars > 0 ? `bars +${BOSS_PRESENCE.speakeasyPullPerLevel} crate/level` : null,
+                            warehouses > 0 ? "no pilferage" : null,
+                          ]
+                            .filter(Boolean)
+                            .join(" · ")}
+                        </li>
+                      </Tip>
+                    )}
+                    <Tip content="New rackets and upgrades on this block cost less while he's watching the work.">
+                      <li>Build and upgrade {Math.round(BOSS_PRESENCE.buildDiscount * 100)}% off</li>
+                    </Tip>
+                    <Tip
+                      content={
+                        familyHereCount > 0
+                          ? `${familyHereCount} of the family ${familyHereCount === 1 ? "is" : "are"} here with him: +${rallyGain} loyalty each per week (${BOSS_PRESENCE.loyaltySettledPerTurn} once he's settled ${BOSS_PRESENCE.loyaltySettledTurns} weeks), and his capo teaches them at double speed.`
+                          : "Garrison family men here and they gain loyalty each week and learn from his capo at double speed."
+                      }
+                    >
+                      <li>
+                        Men here: +{rallyGain} loyalty/week · school ×{BOSS_PRESENCE.mentorMult}
+                        {familyHereCount > 0 ? ` (${familyHereCount} here)` : " (none here)"}
+                      </li>
+                    </Tip>
+                    <Tip content="Captures launched against districts bordering this block hit harder. Rival blocks next door are read every week and some of the faces there get named. Passage terms come down at any table next to his.">
+                      <li>
+                        Next door: captures {pct(BOSS_PRESENCE.captureAtkMult)} · eyes on {rivalNeighbours} rival block{rivalNeighbours === 1 ? "" : "s"} · passage asks −{Math.round((1 - BOSS_PRESENCE.askMult) * 100)}%
+                      </li>
+                    </Tip>
+                    {territory.id !== playerHqId && (
+                      <Tip content="With his desk elsewhere, the HQ defends at 80% and rival crews find it an easier mark.">
+                        <li className="text-heat">HQ is soft while he's away</li>
+                      </Tip>
+                    )}
+                  </ul>
+                </div>
+              )}
+              {hqSoftHere && (
+                <Tip content={`His desk is in ${bossBlockName ?? "another district"}. Without him the HQ defends at ${Math.round(BOSS_PRESENCE.hqSoftDefMult * 100)}% and rival crews read it as an easy mark. Its rackets run without his bonus.`}>
+                  <p className="text-[10px] text-heat">
+                    HQ is soft — the boss holds court in {bossBlockName ?? "another district"}.
+                  </p>
+                </Tip>
+              )}
+            </div>
+          )}
           {isRival && unknown > 0 && (
             <div className="mt-2 rounded border border-dashed border-panel-border bg-panel/40 px-2 py-1.5 text-[11px] text-muted-foreground">
               Unknown presence: {unknown} figure{unknown === 1 ? "" : "s"}
@@ -328,14 +591,16 @@ export default function DistrictPanel() {
               const Icon = visual.Icon;
               const manager = r.managerId ? crew.find((c) => c.id === r.managerId) : null;
               const frozen = isRacketFrozen(r, turn);
-              const income = frozen ? 0 : racketIncome(r, 0, manager);
+              const income = frozen ? 0 : racketIncome(r, 0, manager, crew, bossBoost);
+              const crewPct = frozen ? 0 : racketCrewBonusPct(manager, crew);
+              const upgradeCost = presenceBuildCost(r.upgradeCost, bossBoost);
               const canUpgrade =
                 isOwned &&
                 !frozen &&
                 r.level < 5 &&
-                !!racketPayment(r.type, r.upgradeCost, money, dirtyMoney);
+                !!racketPayment(r.type, upgradeCost, money, dirtyMoney);
               const washCap = isLegitBusiness(r.type)
-                ? launderCap(r, manager, turn)
+                ? launderCap(r, manager, turn, bossBoost)
                 : 0;
               const plan = launderPlan[r.id] ?? 0;
               return (
@@ -361,15 +626,49 @@ export default function DistrictPanel() {
                         {isOwned &&
                           r.type === "speakeasy" &&
                           r.stock === 0 &&
-                          !frozen && (
-                            <Badge className="bg-heat/20 text-[9px] text-heat">Dry</Badge>
+                          !frozen &&
+                          fedByRoute && (
+                            <Badge
+                              className="bg-emerald-500/20 text-[9px] text-emerald-300"
+                              title="A supply route lands crates here every week; the bar sells what arrives."
+                            >
+                              Fed weekly
+                            </Badge>
+                          )}
+                        {isOwned &&
+                          r.type === "speakeasy" &&
+                          r.stock === 0 &&
+                          !frozen &&
+                          !fedByRoute && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setPanel("warehouse");
+                              }}
+                              title="Bars only pour what's in their own district. Open a supply route in Liquor to feed this one."
+                            >
+                              <Badge className="bg-heat/20 text-[9px] text-heat hover:bg-heat/30">
+                                Dry · needs a supply route
+                              </Badge>
+                            </button>
                           )}
                       </div>
                       <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
                         {r.type === "safehouse" ? (
                           <span>Hideout · −{r.level} wanted/turn for garrisoned crew</span>
                         ) : (
-                          <span className="text-money">${income}/turn</span>
+                          <span className="text-money">
+                            ${income}/turn
+                            {crewPct > 0 && (
+                              <span className="text-muted-foreground"> · +{crewPct}% crew</span>
+                            )}
+                            {bossBoost && !frozen && (
+                              <Tip content="The boss is on this block: rackets earn +25%, run at full take without a manager, and legit fronts wash +25% more.">
+                                <span className="text-amber-300"> · boss</span>
+                              </Tip>
+                            )}
+                          </span>
                         )}
                         {isOwned && isStorageType(r.type) && (
                           <span>
@@ -504,7 +803,7 @@ export default function DistrictPanel() {
                     {isOwned && r.level < 5 && (
                       <Tip
                         wrapDisabled
-                        content={upgradeTip(r, manager, frozen, money, dirtyMoney)}
+                        content={upgradeTip(r, manager, frozen, money, dirtyMoney, bossBoost)}
                       >
                         <Button
                           size="sm"
@@ -514,7 +813,7 @@ export default function DistrictPanel() {
                           onClick={() => upgradeRacketAt(territory.id, r.id)}
                         >
                           <ArrowUp className="h-3 w-3" />
-                          {formatMoney(r.upgradeCost)}
+                          {formatMoney(upgradeCost)}
                         </Button>
                       </Tip>
                     )}

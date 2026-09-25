@@ -138,3 +138,104 @@ All colors MUST be HSL.
     scrollbar-color: hsl(var(--panel-border)) transparent;
   }
 }
+
+/* Toasts (sonner) — action feedback that reads at a glance.
+   Each type carries an accent colour: a thick left bar, a tint bleeding in
+   from that edge, a coloured title and icon, a soft glow, and a one-shot
+   flash on entry so the eye is pulled to it even mid-turn. */
+@layer components {
+  /* `.toaster.group` outranks sonner's own `[data-sonner-toast][data-styled]` rule. */
+  .toaster.group [data-sonner-toast] {
+    --toast-accent: hsl(var(--steel-light));
+    --toast-accent-soft: hsl(var(--steel-light) / 0.22);
+    /* sonner positions each toast absolutely inside the toaster; don't override it */
+    overflow: hidden;
+    min-width: 340px;
+    padding: 14px 16px 14px 18px;
+    border: 1px solid hsl(var(--panel-border));
+    border-left: 5px solid var(--toast-accent);
+    border-radius: 0.45rem;
+    color: hsl(var(--foreground));
+    background:
+      linear-gradient(90deg, var(--toast-accent-soft) 0%, transparent 55%),
+      hsl(var(--panel-elevated) / 0.97);
+    backdrop-filter: blur(8px);
+    box-shadow:
+      0 14px 34px -10px hsl(0 0% 0% / 0.75),
+      0 0 0 1px hsl(0 0% 0% / 0.35),
+      0 0 22px -6px var(--toast-accent);
+  }
+
+  /* entry flash: a wash of the accent that fades out */
+  .toaster [data-sonner-toast]::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: var(--toast-accent);
+    opacity: 0;
+    animation: toast-flash 1.2s ease-out 1;
+  }
+
+  .toaster [data-sonner-toast][data-type="success"] {
+    --toast-accent: hsl(var(--money-gold));
+    --toast-accent-soft: hsl(var(--money-gold) / 0.24);
+  }
+  .toaster [data-sonner-toast][data-type="error"] {
+    --toast-accent: hsl(var(--heat-red));
+    --toast-accent-soft: hsl(var(--heat-red) / 0.26);
+  }
+  .toaster [data-sonner-toast][data-type="warning"] {
+    --toast-accent: hsl(32 92% 58%);
+    --toast-accent-soft: hsl(32 92% 58% / 0.24);
+  }
+  .toaster [data-sonner-toast][data-type="info"],
+  .toaster [data-sonner-toast][data-type="default"] {
+    --toast-accent: hsl(var(--steel-light));
+    --toast-accent-soft: hsl(var(--steel-light) / 0.22);
+  }
+
+  .toaster [data-sonner-toast] [data-icon] {
+    color: var(--toast-accent);
+    filter: drop-shadow(0 0 6px var(--toast-accent));
+  }
+  .toaster [data-sonner-toast] [data-icon] svg {
+    width: 20px;
+    height: 20px;
+  }
+
+  .toaster [data-sonner-toast] [data-title] {
+    color: var(--toast-accent);
+    font-weight: 700;
+    font-size: 0.92rem;
+    line-height: 1.25;
+    letter-spacing: 0.01em;
+    text-shadow: 0 0 10px var(--toast-accent-soft);
+  }
+
+  .toaster [data-sonner-toast] [data-description] {
+    color: hsl(var(--foreground) / 0.85);
+    font-size: 0.82rem;
+    line-height: 1.35;
+    margin-top: 2px;
+  }
+
+  .toaster [data-sonner-toast] [data-close-button] {
+    color: hsl(var(--foreground) / 0.7);
+    background: hsl(var(--panel));
+    border-color: hsl(var(--panel-border));
+  }
+  .toaster [data-sonner-toast] [data-close-button]:hover {
+    color: hsl(var(--foreground));
+    background: hsl(var(--panel-elevated));
+  }
+}
+
+@keyframes toast-flash {
+  0% {
+    opacity: 0.55;
+  }
+  100% {
+    opacity: 0;
+  }
+}

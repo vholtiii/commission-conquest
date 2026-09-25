@@ -11,6 +11,7 @@ import type {
 } from "@/types/game";
 import type { Rng } from "./rng";
 import { generateName } from "./names";
+import { orphanCrews } from "./crews";
 
 const ROLE_ORDER: CrewRole[] = [
   "associate",
@@ -298,7 +299,7 @@ export function promoteCrew(
   toRole: CrewRole,
   turn: number,
 ): CrewMember[] {
-  return crew.map((m) => {
+  const next = crew.map((m) => {
     if (m.id !== memberId || m.status !== "active") return m;
     const path = PROMOTION_PATHS.find((p) => p.from === m.role && p.to === toRole);
     if (!path) return m;
@@ -308,8 +309,13 @@ export function promoteCrew(
       level: m.level + 1,
       loyalty: Math.min(100, m.loyalty + 5),
       roleSinceTurn: turn,
+      // Moving up means leaving the crew he ran with.
+      capoId: toRole === "soldier" ? m.capoId : undefined,
+      crewSinceTurn: toRole === "soldier" ? m.crewSinceTurn : undefined,
     };
   });
+  // A capo who moves up to the brass leaves his men loose.
+  return orphanCrews(next);
 }
 
 /** XP needed to reach a given level (level 1 = 0). */
@@ -411,6 +417,8 @@ export function funeralLoyaltyHit(
   return crew.map((m) => {
     if (m.id === deadMemberId || m.status === "dead") return m;
     if (m.family !== dead.family) return m;
+    // The heir keeps his nerve at the boss's funeral; the chair is his to take.
+    if (dead.role === "boss" && m.role === "underboss") return m;
     const sameCrew = m.assignment.territoryId === dead.assignment.territoryId;
     const extra = sameCrew ? 3 : 0;
     return {

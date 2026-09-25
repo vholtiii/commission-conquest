@@ -109,6 +109,9 @@ export function buildCityLayout(territories: Territory[], seed = 42): CityLayout
       }
 
       const t = territoryId ? byId.get(territoryId) : undefined;
+      // A district flagged as an empty lot is vacant ground: nothing gets built
+      // on its blocks by the city, so it stays a lot for hideouts only.
+      if (kind === "building" && t?.emptyLot) kind = "park";
       const bias = t ? boroughHeightBias(t.borough) : 1;
       const jitter = 0.7 + ((hashString(`${gx},${gz},${seed}`) % 1000) / 1000) * 0.8;
 
@@ -160,14 +163,32 @@ export function getDistrictLotBlocks(layout: CityLayout, territoryId: string): C
   });
 }
 
-function centerFallbackBlock(layout: CityLayout, territoryId: string): CityBlock | null {
+/**
+ * Spots on an empty lot with no park cells: the centre, then one pitch west
+ * and one pitch east, so each hideout gets its own patch of ground.
+ */
+const LOT_FALLBACK_OFFSETS: Array<[number, number]> = [
+  [0, 0],
+  [-(BLOCK_SIZE + ROAD_GAP), 0],
+  [BLOCK_SIZE + ROAD_GAP, 0],
+  [0, BLOCK_SIZE + ROAD_GAP],
+  [0, -(BLOCK_SIZE + ROAD_GAP)],
+  [-(BLOCK_SIZE + ROAD_GAP), BLOCK_SIZE + ROAD_GAP],
+];
+
+function centerFallbackBlock(
+  layout: CityLayout,
+  territoryId: string,
+  slot = 0,
+): CityBlock | null {
   const center = layout.centers.find((c) => c.territoryId === territoryId);
   if (!center) return null;
+  const [dx, dz] = LOT_FALLBACK_OFFSETS[slot % LOT_FALLBACK_OFFSETS.length]!;
   return {
-    gx: -1,
+    gx: -1 - slot,
     gz: -1,
-    worldX: center.worldX,
-    worldZ: center.worldZ,
+    worldX: center.worldX + dx,
+    worldZ: center.worldZ + dz,
     territoryId,
     kind: "park",
     heightBias: 1,
@@ -182,9 +203,11 @@ export function racketBlockFor(
 ): CityBlock | null {
   const buildings = getDistrictBlocksNearestFirst(layout, territoryId);
   if (buildings.length > 0) return buildings[index % buildings.length] ?? null;
+  // Empty lot: use the district's open ground first, then spread the rest
+  // around the centre so three hideouts never stack on one spot.
   const lots = getDistrictLotBlocks(layout, territoryId);
-  if (lots.length > 0) return lots[index % lots.length] ?? null;
-  return centerFallbackBlock(layout, territoryId);
+  if (index < lots.length) return lots[index] ?? null;
+  return centerFallbackBlock(layout, territoryId, index - lots.length);
 }
 
 /** Nearest road cell to a world position (for cinematic car pathing). */

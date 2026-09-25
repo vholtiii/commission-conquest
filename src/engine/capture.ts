@@ -3,6 +3,8 @@ import { CAPTURE_LIMIT_BASE, CAPTURE_LIMIT_MAX } from "@/types/game";
 import { getFamilyDef } from "@/data/families";
 import { assignCrew } from "./crew";
 import type { Rng } from "./rng";
+import { BOSS_PRESENCE, bossAdjacentTo, bossPresentIn, hqIsSoft } from "./bossPresence";
+import { familyHq, type LocationState } from "./crewLocation";
 
 /* ------------------------------------------------------------------ */
 /* Per-turn capture limit                                              */
@@ -102,13 +104,45 @@ export function eligibleCaptureCrew(
   );
 }
 
+/**
+ * How the boss's block bears on a fight over `territoryId`, for whichever
+ * family is attacking: his weight next door helps the attack, a block he
+ * stands on holds, and an HQ he left is soft.
+ */
+export function presenceCaptureMods(
+  state: LocationState,
+  attacker: FamilyName,
+  territoryId: string,
+): { atkMult: number; defMult: number; notes: string[] } {
+  const t = state.territories.find((x) => x.id === territoryId);
+  let atkMult = 1;
+  let defMult = 1;
+  const notes: string[] = [];
+  if (!t) return { atkMult, defMult, notes };
+
+  if (bossAdjacentTo(state, attacker, territoryId)) {
+    atkMult *= BOSS_PRESENCE.captureAtkMult;
+    notes.push("Your boss is next door");
+  }
+  if (t.owner && t.owner !== attacker) {
+    if (bossPresentIn(state, t.owner, territoryId)) {
+      defMult /= BOSS_PRESENCE.hqSoftDefMult;
+      notes.push(`${t.owner}'s boss holds this block`);
+    } else if (hqIsSoft(state, t.owner) && familyHq(state, t.owner) === territoryId) {
+      defMult *= BOSS_PRESENCE.hqSoftDefMult;
+      notes.push(`${t.owner}'s boss is away from his HQ`);
+    }
+  }
+  return { atkMult, defMult, notes };
+}
+
 export function captureStrength(
-  state: Pick<GameState, "crew" | "territories" | "playerFamily">,
+  state: Pick<GameState, "crew" | "territories" | "playerFamily"> & Partial<LocationState>,
   territoryId: string,
   attackerIds: string[],
-): { atk: number; def: number; defenders: CrewMember[] } {
+): { atk: number; def: number; defenders: CrewMember[]; notes: string[] } {
   const t = state.territories.find((x) => x.id === territoryId);
-  if (!t || !state.playerFamily) return { atk: 0, def: 40, defenders: [] };
+  if (!t || !state.playerFamily) return { atk: 0, def: 40, defenders: [], notes: [] };
 
   const idSet = new Set(attackerIds);
   const attackers = state.crew.filter((c) => idSet.has(c.id) && c.status === "active");
@@ -120,15 +154,23 @@ export function captureStrength(
       t.garrisonIds.includes(c.id),
   );
 
+  const mods = presenceCaptureMods(
+    { ...state, routes: state.routes ?? [], operations: state.operations ?? [] },
+    state.playerFamily,
+    territoryId,
+  );
+
   const atk =
     attackers.reduce((n, c) => n + c.skills.muscle, 0) *
-    (1 + (getFamilyDef(state.playerFamily).bonuses.combatBonus || 0));
+    (1 + (getFamilyDef(state.playerFamily).bonuses.combatBonus || 0)) *
+    mods.atkMult;
   const def =
     (defenders.reduce((n, c) => n + c.skills.muscle, 0) + 40) *
     (1 + t.defenseBonus) *
-    (t.leadershipVacuum > 0 ? 0.7 : 1);
+    (t.leadershipVacuum > 0 ? 0.7 : 1) *
+    mods.defMult;
 
-  return { atk, def, defenders };
+  return { atk, def, defenders, notes: mods.notes };
 }
 
 /**

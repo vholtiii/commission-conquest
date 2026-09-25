@@ -19,7 +19,12 @@ export default function MapLegend() {
       </button>
       {open && (
         <div className="space-y-2 border-t border-panel-border px-3 py-2">
-          <div className="space-y-1.5">
+          <div className="space-y-1 text-muted-foreground">
+            <div className="text-[10px] uppercase tracking-wide">Camera</div>
+            <div>Left-drag: pan · Wheel: zoom</div>
+            <div>Right-drag or Shift+drag: rotate</div>
+          </div>
+          <div className="space-y-1.5 border-t border-panel-border/60 pt-2">
             <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Markers</div>
             <div className="flex items-center gap-2">
               <span className="flex h-4 w-4 items-center justify-center rounded-[2px] border border-white/40 bg-[#3a3d44]">
@@ -39,7 +44,10 @@ export default function MapLegend() {
               Rival (only if known / HQ)
             </div>
             <div className="flex items-center gap-2">
-              <Crown className="h-3.5 w-3.5 text-amber-300" /> Rival HQ (boss always visible)
+              <Crown className="h-3.5 w-3.5 text-amber-300" /> Rival HQ
+            </div>
+            <div className="flex items-center gap-2">
+              <Car className="h-3.5 w-3.5 text-white/80" /> Boss's car — where he is; his face needs intel
             </div>
             <div className="flex items-center gap-2">
               <Eye className="h-3.5 w-3.5 text-sky-300" /> Active intel on district
@@ -170,6 +178,20 @@ export default function MapLegend() {
                 style={{ borderColor: MAP_STATUS.hitPending }}
               />{" "}
               Pending hit route
+            </div>
+            <div className="flex items-center gap-2">
+              <span
+                className="inline-block h-0.5 w-3.5 border-t-2 border-dotted"
+                style={{ borderColor: MAP_STATUS.supplyRoute }}
+              />{" "}
+              Supply route (clicked / chosen)
+            </div>
+            <div className="flex items-center gap-2">
+              <span
+                className="inline-block h-0.5 w-3.5 border-t-2 border-dotted"
+                style={{ borderColor: MAP_STATUS.supplyOption }}
+              />{" "}
+              Other roads on offer
             </div>
           </div>
         </div>

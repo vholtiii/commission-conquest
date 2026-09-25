@@ -15,6 +15,8 @@ import {
   type LaunderSitePlan,
 } from "@/engine/economy";
 import { RACKET_VISUALS } from "@/data/racketVisuals";
+import { bossPresentIn } from "@/engine/bossPresence";
+import { emptyIntel } from "@/engine/intel";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import PanelShell from "./PanelShell";
@@ -44,6 +46,10 @@ export default function LaunderingPanel() {
   const stopLaunderSite = useGameStore((s) => s.stopLaunderSite);
   const selectTerritory = useGameStore((s) => s.selectTerritory);
   const setPanel = useGameStore((s) => s.setPanel);
+  const routes = useGameStore((s) => s.routes);
+  const operations = useGameStore((s) => s.operations);
+  const intel = useGameStore((s) => s.intel);
+  const locState = { crew, territories, routes, operations, playerFamily, intel: intel ?? emptyIntel(), turn };
 
   const ctx = {
     heatLevel: heat.level,
@@ -60,12 +66,13 @@ export default function LaunderingPanel() {
 
   for (const t of territories) {
     if (t.owner !== playerFamily) continue;
+    const bossHere = !!playerFamily && bossPresentIn(locState, playerFamily, t.id);
     for (const r of t.rackets) {
       if (!isLegitBusiness(r.type)) continue;
       const manager = r.managerId
         ? crew.find((c) => c.id === r.managerId && c.status === "active") ?? null
         : null;
-      const cap = launderCap(r, manager, turn);
+      const cap = launderCap(r, manager, turn, bossHere);
       const plan = Math.max(0, launderPlan[r.id] ?? 0);
       const row: SiteRow = {
         racket: r,
@@ -75,6 +82,7 @@ export default function LaunderingPanel() {
         plan,
         cap: Math.max(1, cap),
         ratio: plan / Math.max(1, cap),
+        bossHere,
       };
       if (isLaunderSiteSetUp(r)) {
         if (!isRacketFrozen(r, turn) && launderSiteStatus(r, turn) === "ready") {
@@ -170,7 +178,7 @@ export default function LaunderingPanel() {
                     : auditChance(
                         r,
                         site.plan,
-                        { ...ctx, manager: site.manager, scrutinyPrev: r.scrutiny },
+                        { ...ctx, manager: site.manager, scrutinyPrev: r.scrutiny, bossHere: site.bossHere },
                         turn,
                       );
                   const risk = riskLabel(p);

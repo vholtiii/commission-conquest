@@ -37,6 +37,7 @@ import { stockCap } from "./liquor";
 import { getRelation } from "./relations";
 import { getFamilyDef } from "@/data/families";
 import { crewPresentIn } from "./crewLocation";
+import { casingSkills } from "./crews";
 
 /* ------------------------------------------------------------------ */
 /* Tuning                                                              */
@@ -122,7 +123,9 @@ const RAT_LOYALTY = 35;
 /* ------------------------------------------------------------------ */
 
 export function casingScore(lookout: CrewMember): number {
-  let score = 0.6 * lookout.skills.smarts + 0.4 * lookout.skills.stealth;
+  // Loose soldiers read sharper on the street than their sheet says.
+  const sk = casingSkills(lookout);
+  let score = 0.6 * sk.smarts + 0.4 * sk.stealth;
   score += Math.max(0, lookout.level - 1) * 1.5;
   if (lookout.traits.includes("ghost")) score += 8;
   if (lookout.traits.includes("smooth_talker")) score += 3;
@@ -188,7 +191,7 @@ export function detectionChance(
     state.heat.level / 400 +
     defenders * 0.03 +
     (top?.skills.smarts ?? 30) / 500 -
-    lookout.skills.stealth / 600;
+    casingSkills(lookout).stealth / 600;
 
   if (isDistrictAlerted(state, territoryId)) chance += 0.1;
   if (bossHome) chance += 0.05;
@@ -410,6 +413,10 @@ function favoredApproach(mark: CrewMember, territory: Territory, rng: Rng): HitA
     weights.car_bomb += 2; // convoys and routines
     weights.sitdown_betrayal += 1;
   }
+  // A boss who has been on the road is a car-bomb mark.
+  if (mark.role === "boss" && (mark.awayAt || (mark.lastSiteId && mark.lastSiteId !== territory.id))) {
+    weights.car_bomb += 3;
+  }
   if (mark.traits.includes("wheelman")) {
     weights.drive_by -= 0.8; // he outdrives you
     weights.ambush += 1.5; // catch him at the garage
@@ -463,6 +470,9 @@ function routineText(mark: CrewMember, approach: HitApproach, territory: Territo
       `${name} drives the same ${rng.pick(["Packard", "Cadillac", "Buick", "Lincoln"])} every morning, parks it on the street.`,
       `${name} leaves the car with a kid who'd sell his mother for a sawbuck.`,
       `${name} runs a two-car routine but the second car is always late.`,
+      ...(mark.role === "boss" && (mark.awayAt || mark.lastSiteId)
+        ? [`${name}'s been on the road a lot lately. The car goes where he goes.`]
+        : []),
     ],
     sitdown_betrayal: [
       `${name} takes any meeting that comes with a good bottle.`,
@@ -720,7 +730,7 @@ export function generateBusinessIntel(
     if (tier >= 3) {
       intel.stock = r.stock;
       intel.heatGen = r.heatGen;
-      intel.incomePerTurn = isRacketFrozen(r, turn) ? 0 : racketIncome(r, incomeBonus, manager);
+      intel.incomePerTurn = isRacketFrozen(r, turn) ? 0 : racketIncome(r, incomeBonus, manager, state.crew);
       if (r.frozenUntil && r.frozenUntil > turn) intel.frozenUntil = r.frozenUntil;
     }
     if (tier >= 4) {

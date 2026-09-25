@@ -1,6 +1,9 @@
 import { Users, ShieldAlert, Landmark, TrendingUp, TrendingDown, Wine } from "lucide-react";
 import { useGameStore } from "@/engine/store";
 import { getFamilyDef } from "@/data/families";
+import { getBoss } from "@/engine/crew";
+import { successionReadinessReasons } from "@/engine/succession";
+import { influenceTick } from "@/engine/victory";
 import { totalCapacity, totalCrates } from "@/engine/liquor";
 import { Button } from "@/components/ui/button";
 import { formatDate, formatDelta, formatMoney } from "./formatters";
@@ -23,10 +26,18 @@ export default function TopBar() {
 
   if (!playerFamily) return null;
   const def = getFamilyDef(playerFamily);
+  const boss = getBoss(crew, playerFamily);
+  const underboss = crew.find(
+    (c) => c.family === playerFamily && c.role === "underboss" && c.status !== "dead",
+  );
+  const heir = !underboss
+    ? "None"
+    : successionReadinessReasons(underboss, turn).every((r) => r.met)
+      ? "Secure"
+      : "At risk";
   const crewCount = crew.filter((c) => c.family === playerFamily && c.status !== "dead").length;
   const netPositive = lastNetIncome >= 0;
-  const infDelta =
-    reputation.respect * 0.04 + reputation.fear * 0.03 + reputation.streetInfluence * 0.02 - 2;
+  const infDelta = influenceTick(reputation);
   const infHint = `${infDelta >= 0 ? "+" : ""}${infDelta.toFixed(1)}/t`;
   const liquorState = {
     territories,
@@ -48,7 +59,7 @@ export default function TopBar() {
         <div className="flex flex-col leading-none">
           <span className="font-display text-sm text-foreground">{def.name} Family</span>
           <span className="text-[11px] text-muted-foreground">
-            Turn {turn} &middot; {formatDate(date)}
+            Turn {turn} &middot; {formatDate(date)} · Wanted {boss?.wanted ?? 0} · Heir {heir}
           </span>
         </div>
       </div>

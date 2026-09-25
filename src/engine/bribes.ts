@@ -1,5 +1,6 @@
 import type { BribeStatus, FamilyName, GameState } from "@/types/game";
 import { emptyIntel } from "./intel";
+import { livingBoss, releaseBoss } from "./jail";
 
 const BRIBE_COSTS = {
   cops: 500,
@@ -22,12 +23,102 @@ const BRIBE_BASE_RATE = {
   mayor: 0.25,
 } as const;
 
+function judgeCost(wanted: number): number {
+  return 6000 + 2000 * Math.max(0, wanted);
+}
+
+function attemptJudgeBribe(state: GameState): GameState {
+  const family = state.playerFamily;
+  const boss = family ? livingBoss(state, family) : undefined;
+  if (!family || !boss || boss.status !== "jailed") {
+    return {
+      ...state,
+      turnLog: [
+        ...state.turnLog,
+        {
+          id: `log_judge_nobody_${state.turn}`,
+          turn: state.turn,
+          category: "system",
+          text: "The judge has nobody of yours to let out.",
+        },
+      ],
+    };
+  }
+  const cost = judgeCost(boss.wanted);
+  if (state.money < cost) {
+    return {
+      ...state,
+      turnLog: [
+        ...state.turnLog,
+        {
+          id: `log_judge_cash_${state.turn}`,
+          turn: state.turn,
+          category: "system",
+          text: `Buying the judge takes $${cost} in clean cash.`,
+        },
+      ],
+    };
+  }
+  const mayorBonus = state.bribes.mayor?.isActive ? 0.35 : 0;
+  const rate = Math.max(
+    0.05,
+    Math.min(
+      0.95,
+      0.5 +
+        state.reputation.respect / 400 +
+        state.reputation.fear / 400 -
+        state.heat.level / 250 +
+        mayorBonus,
+    ),
+  );
+  if (Math.random() >= rate) {
+    return {
+      ...state,
+      money: state.money - cost,
+      heat: {
+        ...state.heat,
+        level: Math.min(100, state.heat.level + 5),
+        sources: [...state.heat.sources, "Failed judge bribe"].slice(-25),
+      },
+      turnLog: [
+        ...state.turnLog,
+        {
+          id: `log_judge_fail_${state.turn}`,
+          turn: state.turn,
+          category: "heat",
+          text: `The judge kept the $${cost} and left ${boss.name} where he sits.`,
+        },
+      ],
+    };
+  }
+  const freed = releaseBoss(state, family);
+  return {
+    ...freed,
+    money: freed.money - cost,
+    heat: {
+      ...freed.heat,
+      level: Math.min(100, freed.heat.level + 8),
+      sources: [...freed.heat.sources, "Judge bought"].slice(-25),
+    },
+    turnLog: [
+      ...freed.turnLog,
+      {
+        id: `log_judge_ok_${state.turn}`,
+        turn: state.turn,
+        category: "system",
+        text: `${boss.name} walks out of the Tombs. The street already knows who paid.`,
+      },
+    ],
+  };
+}
+
 export function attemptBribe(
   state: GameState,
   type: keyof GameState["bribes"],
   targetFamily?: FamilyName,
   targetTerritory?: string,
 ): GameState {
+  if (type === "judge") return attemptJudgeBribe(state);
   const cost = BRIBE_COSTS[type];
   if (state.money < cost) {
     return {

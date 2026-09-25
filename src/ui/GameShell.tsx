@@ -19,13 +19,47 @@ import CommissionPanel from "./panels/CommissionPanel";
 import TurnLogDrawer from "./panels/TurnLogDrawer";
 import MenuPanel from "./panels/MenuPanel";
 import EventModal from "./panels/EventModal";
+import CrewRequestModal from "./panels/CrewRequestModal";
+import SitdownRequestModal from "./panels/SitdownRequestModal";
+import SitdownResultModal from "./panels/SitdownResultModal";
+import DealSettlementModal from "./panels/DealSettlementModal";
 import PanelShell from "./panels/PanelShell";
 import HitCaptions from "./HitCaptions";
+import SitdownTable from "./SitdownTable";
 import MapLegend from "./MapLegend";
 import TurnDigest from "./TurnDigest";
 import { useMapView } from "@/engine/mapView";
 import { RACKET_LABELS } from "@/types/game";
 import { isLegitBusiness, launderSiteStatus } from "@/engine/economy";
+import { livingBoss } from "@/engine/jail";
+import { Button } from "@/components/ui/button";
+import { formatMoney } from "./formatters";
+
+function TombsBanner() {
+  const playerFamily = useGameStore((s) => s.playerFamily);
+  const crew = useGameStore((s) => s.crew);
+  const turn = useGameStore((s) => s.turn);
+  const tryBribe = useGameStore((s) => s.tryBribe);
+  if (!playerFamily) return null;
+  const boss = livingBoss({ crew }, playerFamily);
+  if (!boss || boss.status !== "jailed") return null;
+  const left = Math.max(0, (boss.jailedUntilTurn ?? turn) - turn);
+  const cost = 6000 + 2000 * Math.max(0, boss.wanted);
+  return (
+    <div className="flex items-center justify-between gap-3 border-b border-heat/50 bg-heat/15 px-4 py-2 text-xs">
+      <span>
+        Boss in the Tombs — {left} turn{left === 1 ? "" : "s"} until the family passes.
+      </span>
+      <Button
+        size="sm"
+        className="h-7 shrink-0 bg-heat text-[11px] hover:bg-heat/80"
+        onClick={() => tryBribe("judge")}
+      >
+        Buy the judge · {formatMoney(cost)}
+      </Button>
+    </div>
+  );
+}
 
 function RacketsOverviewPanel() {
   const playerFamily = useGameStore((s) => s.playerFamily);
@@ -225,7 +259,8 @@ function ActivePanel() {
 export default function GameShell() {
   const playerFamily = useGameStore((s) => s.playerFamily);
   const cinematicPlaying = useGameStore(
-    (s) => s.cinematicQueue.length > 0 && !s.pendingHitResult,
+    (s) =>
+      (s.cinematicQueue.length > 0 && !s.pendingHitResult) || s.sitdownPhase != null,
   );
   const overview = useMapView((s) => s.overview);
 
@@ -236,6 +271,7 @@ export default function GameShell() {
   return (
     <div className="flex h-screen w-screen flex-col overflow-hidden bg-background font-ui">
       <TopBar />
+      <TombsBanner />
       <div className="relative flex flex-1 overflow-hidden">
         <div className={cinematicPlaying ? "pointer-events-none" : undefined}>
           <LeftToolbar />
@@ -270,8 +306,13 @@ export default function GameShell() {
             <MapLegend />
           </div>
           <HitCaptions />
+          <SitdownTable />
           <EventModal />
+          <CrewRequestModal />
+          <SitdownRequestModal />
           <HitResultModal />
+          <SitdownResultModal />
+          <DealSettlementModal />
           <LookoutReportModal />
           <VictoryOverlay />
         </div>

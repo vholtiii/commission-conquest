@@ -9,6 +9,7 @@ import {
   mergeLedger,
   totalCrates,
 } from "./liquor";
+import { jailInCrew } from "./jail";
 
 export interface EventTemplate {
   id: string;
@@ -547,11 +548,14 @@ export function applyEventChoice(
   }
 
   if (fx.crewStatus) {
-    crew = crew.map((c) =>
-      c.id === fx.crewStatus!.crewId
-        ? { ...c, status: fx.crewStatus!.status }
-        : c,
-    );
+    crew =
+      fx.crewStatus.status === "jailed"
+        ? jailInCrew(crew, fx.crewStatus.crewId, state.turn)
+        : crew.map((c) =>
+            c.id === fx.crewStatus!.crewId
+              ? { ...c, status: fx.crewStatus!.status }
+              : c,
+          );
   }
 
   let territories = state.territories;

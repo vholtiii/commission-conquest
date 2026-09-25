@@ -11,6 +11,7 @@ import {
   racketPayment,
 } from "@/engine/economy";
 import { maxRacketsFor, allowedRacketTypes, lotTier, lotTierLabel, lotTierHint } from "@/engine/territoryValue";
+import { BOSS_PRESENCE, bossPresentIn, presenceBuildCost } from "@/engine/bossPresence";
 import { Badge } from "@/components/ui/badge";
 import Tip from "@/ui/Tip";
 import PanelShell from "./PanelShell";
@@ -63,17 +64,21 @@ function buildTip(
   full: boolean,
   money: number,
   dirtyMoney: number,
+  bossHere: boolean,
   denied?: string,
 ): string {
   if (denied) return denied;
-  const cost = RACKET_BUILD_COST[type];
+  const cost = presenceBuildCost(RACKET_BUILD_COST[type], bossHere);
   const funding = fundingLabel(racketFunding(type));
   if (full) return "District slots full — upgrade buildings or clear a racket elsewhere.";
   const short = paymentShortfall(type, cost, money, dirtyMoney);
   if (short) {
     return `Cannot afford ${formatMoney(cost)} (${funding}). Need ${formatMoney(short.amount)} more.`;
   }
-  return `${RACKET_BLURB[type]} Costs ${formatMoney(cost)} (${funding}).`;
+  const discount = bossHere
+    ? ` The boss is on this block — ${Math.round(BOSS_PRESENCE.buildDiscount * 100)}% off, was ${formatMoney(RACKET_BUILD_COST[type])}.`
+    : "";
+  return `${RACKET_BLURB[type]} Costs ${formatMoney(cost)} (${funding}).${discount}`;
 }
 
 function TypeButton({
@@ -81,6 +86,7 @@ function TypeButton({
   full,
   money,
   dirtyMoney,
+  bossHere,
   denied,
   onBuild,
 }: {
@@ -88,17 +94,18 @@ function TypeButton({
   full: boolean;
   money: number;
   dirtyMoney: number;
+  bossHere: boolean;
   denied?: string;
   onBuild: () => void;
 }) {
-  const cost = RACKET_BUILD_COST[type];
+  const cost = presenceBuildCost(RACKET_BUILD_COST[type], bossHere);
   const funding = racketFunding(type);
   const pay = racketPayment(type, cost, money, dirtyMoney);
   const short = paymentShortfall(type, cost, money, dirtyMoney);
   const canAfford = !!pay && !full && !denied;
 
   return (
-    <Tip wrapDisabled content={buildTip(type, full, money, dirtyMoney, denied)}>
+    <Tip wrapDisabled content={buildTip(type, full, money, dirtyMoney, bossHere, denied)}>
       <button
         type="button"
         disabled={!canAfford}
@@ -107,7 +114,9 @@ function TypeButton({
       >
         <div className="flex items-center justify-between gap-2">
           <span className="text-xs font-semibold">{RACKET_LABELS[type]}</span>
-          <span className="text-[11px] text-muted-foreground">{formatMoney(cost)}</span>
+          <span className={`text-[11px] ${bossHere ? "text-amber-300" : "text-muted-foreground"}`}>
+            {formatMoney(cost)}
+          </span>
         </div>
         <p className="text-[10px] text-muted-foreground">{RACKET_BLURB[type]}</p>
         <div className="flex flex-wrap gap-1">
@@ -139,9 +148,17 @@ export default function RacketBuildPanel() {
   const money = useGameStore((s) => s.money);
   const dirtyMoney = useGameStore((s) => s.dirtyMoney);
   const buildRacket = useGameStore((s) => s.buildRacket);
+  const crew = useGameStore((s) => s.crew);
+  const playerFamily = useGameStore((s) => s.playerFamily);
+  const routes = useGameStore((s) => s.routes);
+  const operations = useGameStore((s) => s.operations);
+  const turn = useGameStore((s) => s.turn);
 
   const territory = territories.find((t) => t.id === selectedTerritoryId);
   if (!territory) return null;
+  const bossHere =
+    !!playerFamily &&
+    bossPresentIn({ crew, territories, routes, operations, playerFamily, turn }, playerFamily, territory.id);
 
   const slots = maxRacketsFor(territory);
   const full = territory.rackets.length >= slots;
@@ -153,7 +170,7 @@ export default function RacketBuildPanel() {
   return (
     <PanelShell
       title="Build Racket"
-      subtitle={`${territory.name} — ${territory.rackets.length}/${slots} slots (${territory.buildingBlocks ?? 0} buildings${tierLabel ? ` · ${tierLabel}` : ""})`}
+      subtitle={`${territory.name} — ${territory.rackets.length}/${slots} slots (${territory.buildingBlocks ?? 0} buildings${tierLabel ? ` · ${tierLabel}` : ""})${bossHere ? ` · boss here, ${Math.round(BOSS_PRESENCE.buildDiscount * 100)}% off` : ""}`}
     >
       <div className="mb-3 flex gap-2 text-[11px]">
         <span className="text-money">Clean {formatMoney(money)}</span>
@@ -172,6 +189,7 @@ export default function RacketBuildPanel() {
             denied={allowed.has(type) ? undefined : denied}
             money={money}
             dirtyMoney={dirtyMoney}
+            bossHere={bossHere}
             onBuild={() => buildRacket(territory.id, type)}
           />
         ))}
@@ -189,6 +207,7 @@ export default function RacketBuildPanel() {
             denied={allowed.has(type) ? undefined : denied}
             money={money}
             dirtyMoney={dirtyMoney}
+            bossHere={bossHere}
             onBuild={() => buildRacket(territory.id, type)}
           />
         ))}
@@ -206,6 +225,7 @@ export default function RacketBuildPanel() {
             denied={allowed.has(type) ? undefined : denied}
             money={money}
             dirtyMoney={dirtyMoney}
+            bossHere={bossHere}
             onBuild={() => buildRacket(territory.id, type)}
           />
         ))}

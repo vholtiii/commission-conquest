@@ -15,6 +15,7 @@ import {
   setRelationDelta,
   statusFromScore,
 } from "./relations";
+import { bossIsJailed } from "./jail";
 
 /** Tunable costs. Influence income is only a few points per turn. */
 export const SITDOWN_INFLUENCE = 15;
@@ -125,7 +126,7 @@ function clampOdds(n: number, lo = 0.1, hi = 0.9): number {
   return Math.max(lo, Math.min(hi, n));
 }
 
-function hasConsigliere(state: GameState): boolean {
+export function hasConsigliere(state: GameState): boolean {
   return state.crew.some(
     (c) =>
       c.family === state.playerFamily &&
@@ -134,7 +135,7 @@ function hasConsigliere(state: GameState): boolean {
   );
 }
 
-export function sitdownOdds(state: GameState, target: FamilyName): number {
+export function sitdownOdds(state: GameState, target: FamilyName, entourage = 0): number {
   if (!state.playerFamily) return 0.5;
   const score = getRelation(state.relations, state.playerFamily, target);
   const odds =
@@ -142,7 +143,8 @@ export function sitdownOdds(state: GameState, target: FamilyName): number {
     (state.reputation.respect - 50) / 200 +
     PERSONALITY_MOD[getFamilyDef(target).personality] -
     STATUS_PENALTY[statusFromScore(score)] +
-    (hasConsigliere(state) ? 0.1 : 0);
+    (hasConsigliere(state) ? 0.1 : 0) -
+    Math.max(0, entourage - 1) * 0.04;
   return clampOdds(odds);
 }
 
@@ -173,6 +175,14 @@ export function canDiplomacy(
     return { ok: false, reason: "No family to deal with" };
   }
   const score = getRelation(state.relations, state.playerFamily, target);
+
+  if (
+    (action === "sitdown" || action === "pact") &&
+    state.playerFamily &&
+    bossIsJailed(state, state.playerFamily)
+  ) {
+    return { ok: false, reason: "The boss is in the Tombs" };
+  }
 
   if (action === "war") {
     if (score <= -60 && !hasPact(state, state.playerFamily, target)) {
@@ -238,19 +248,19 @@ export function diplomacyHint(
   if (!check.ok) return check.reason ?? "Unavailable";
   const cost =
     action === "sitdown"
-      ? `${SITDOWN_INFLUENCE} influence · $${SITDOWN_MONEY}`
+      ? `−${SITDOWN_INFLUENCE} standing · $${SITDOWN_MONEY}`
       : action === "tribute"
         ? `$${TRIBUTE_MONEY} for standing`
         : action === "demand"
-          ? `${DEMAND_INFLUENCE} influence`
+          ? `−${DEMAND_INFLUENCE} standing`
           : action === "pact"
-            ? `${PACT_INFLUENCE} influence · $${PACT_MONEY}`
+            ? `−${PACT_INFLUENCE} standing · $${PACT_MONEY}`
             : "Free — drops standing to war";
   if (check.odds == null) return cost;
   return `${cost} · ${Math.round(check.odds * 100)}% chance`;
 }
 
-function withCooldown(state: GameState, target: FamilyName, turns: number): GameState {
+export function withCooldown(state: GameState, target: FamilyName, turns: number): GameState {
   const diplo = diplomacyOf(state);
   return {
     ...state,

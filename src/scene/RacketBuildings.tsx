@@ -32,7 +32,7 @@ function HideoutFront({
   width: number;
   height: number;
   depth: number;
-  kind: "still" | "warehouse" | "safehouse";
+  kind: "still" | "warehouse";
 }) {
   const z = depth / 2 + 0.045;
   const winY = height * 0.62;
@@ -111,17 +111,218 @@ function HideoutFront({
           <meshStandardMaterial color="#4a3824" roughness={0.92} />
         </mesh>
       )}
-      {kind === "safehouse" && (
-        <mesh position={[0, height + 0.04, 0]}>
-          <boxGeometry args={[width + 0.15, 0.08, depth + 0.15]} />
-          <meshStandardMaterial color="#1a1c18" roughness={1} />
-        </mesh>
-      )}
-
       <mesh position={[0, height + 0.02, 0]}>
         <boxGeometry args={[width + 0.08, 0.06, depth + 0.08]} />
         <meshStandardMaterial color="#16181a" roughness={0.95} />
       </mesh>
+    </group>
+  );
+}
+
+const BRICK_TRIM = "#c9bfae";
+const IRON = "#1c1c1e";
+const WINDOW_DARK = "#14161a";
+const CURTAIN = "#8a8378";
+const LAMP = "#e0b070";
+
+/**
+ * The safehouse: a tenement row house nobody looks at twice. A stoop with
+ * railings, a green door, curtained windows with one lamp on upstairs, a
+ * flower box, a fire escape down the side, and washing strung across the roof.
+ */
+function SafehouseFront({
+  width,
+  height,
+  depth,
+}: {
+  width: number;
+  height: number;
+  depth: number;
+}) {
+  const z = depth / 2 + 0.045;
+  const span = width * 0.26;
+  const winW = Math.min(width * 0.17, 0.34);
+  const winH = Math.min(height * 0.2, 0.4);
+  const doorH = Math.min(height * 0.36, 0.62);
+  const stoopTop = 0.24;
+
+  // Floors of windows, the first above the door line.
+  const floorGap = 0.9;
+  const firstFloorY = Math.max(stoopTop + doorH + 0.25, 0.95);
+  const floors: number[] = [];
+  for (let y = firstFloorY; y < height - 0.25; y += floorGap) floors.push(y);
+  if (floors.length === 0) floors.push(Math.min(height * 0.62, height - 0.25));
+  const litFloor = floors.length - 1;
+
+  const steps = [
+    { h: 0.24, dz: 0.1 },
+    { h: 0.16, dz: 0.3 },
+    { h: 0.08, dz: 0.5 },
+  ];
+  const escapeX = width / 2 + 0.09;
+
+  return (
+    <group>
+      {/* Stoop and railings */}
+      {steps.map((s, i) => (
+        <mesh key={`step-${i}`} position={[0, s.h / 2, z + s.dz]} castShadow>
+          <boxGeometry args={[0.72, s.h, 0.2]} />
+          <meshStandardMaterial color="#5b5148" roughness={0.95} />
+        </mesh>
+      ))}
+      {[-0.38, 0.38].map((x) => (
+        <group key={`rail-${x}`}>
+          <mesh position={[x, 0.36, z + 0.3]}>
+            <boxGeometry args={[0.03, 0.03, 0.62]} />
+            <meshStandardMaterial color={IRON} roughness={0.6} metalness={0.5} />
+          </mesh>
+          {[0.05, 0.3, 0.55].map((dz) => (
+            <mesh key={dz} position={[x, 0.2, z + dz]}>
+              <boxGeometry args={[0.025, 0.34, 0.025]} />
+              <meshStandardMaterial color={IRON} roughness={0.6} metalness={0.5} />
+            </mesh>
+          ))}
+        </group>
+      ))}
+
+      {/* Door: green, with a brass knob and a transom */}
+      <mesh position={[0, stoopTop + doorH / 2, z]}>
+        <boxGeometry args={[0.36, doorH, 0.04]} />
+        <meshStandardMaterial color="#1f3a2a" roughness={0.7} />
+      </mesh>
+      <mesh position={[0.1, stoopTop + doorH * 0.5, z + 0.03]}>
+        <boxGeometry args={[0.035, 0.035, 0.02]} />
+        <meshStandardMaterial color="#c9a45a" metalness={0.8} roughness={0.3} />
+      </mesh>
+      <mesh position={[0, stoopTop + doorH + 0.06, z]}>
+        <boxGeometry args={[0.36, 0.08, 0.03]} />
+        <meshStandardMaterial color={LAMP} emissive={LAMP} emissiveIntensity={0.25} roughness={0.5} />
+      </mesh>
+      <mesh position={[0, stoopTop + doorH + 0.13, z + 0.01]}>
+        <boxGeometry args={[0.5, 0.05, 0.05]} />
+        <meshStandardMaterial color={BRICK_TRIM} roughness={0.8} />
+      </mesh>
+
+      {/* Windows: sills, drawn curtains, one lamp on upstairs */}
+      {floors.map((y, f) =>
+        [-span, span].map((x) => {
+          const lit = f === litFloor && x > 0;
+          return (
+            <group key={`win-${f}-${x}`} position={[x, y, z]}>
+              <mesh position={[0, 0, -0.01]}>
+                <boxGeometry args={[winW + 0.08, winH + 0.08, 0.03]} />
+                <meshStandardMaterial color={BRICK_TRIM} roughness={0.85} />
+              </mesh>
+              <mesh>
+                <boxGeometry args={[winW, winH, 0.04]} />
+                {lit ? (
+                  <meshStandardMaterial color="#6a4a28" emissive={LAMP} emissiveIntensity={0.7} roughness={0.5} />
+                ) : (
+                  <meshStandardMaterial color={WINDOW_DARK} roughness={0.9} />
+                )}
+              </mesh>
+              {/* curtains drawn across the top half; the lit one has them parted */}
+              {lit ? (
+                [-1, 1].map((side) => (
+                  <mesh key={side} position={[side * winW * 0.34, 0, 0.025]}>
+                    <boxGeometry args={[winW * 0.3, winH * 0.92, 0.015]} />
+                    <meshStandardMaterial color={CURTAIN} roughness={1} />
+                  </mesh>
+                ))
+              ) : (
+                <mesh position={[0, winH * 0.22, 0.025]}>
+                  <boxGeometry args={[winW * 0.96, winH * 0.5, 0.015]} />
+                  <meshStandardMaterial color={CURTAIN} roughness={1} />
+                </mesh>
+              )}
+              <mesh position={[0, -winH / 2 - 0.04, 0.03]}>
+                <boxGeometry args={[winW + 0.12, 0.04, 0.08]} />
+                <meshStandardMaterial color={BRICK_TRIM} roughness={0.85} />
+              </mesh>
+              {f === 0 && x < 0 && (
+                <group position={[0, -winH / 2 - 0.1, 0.08]}>
+                  <mesh>
+                    <boxGeometry args={[winW + 0.04, 0.09, 0.1]} />
+                    <meshStandardMaterial color="#4a3524" roughness={0.95} />
+                  </mesh>
+                  <mesh position={[0, 0.07, 0]}>
+                    <boxGeometry args={[winW - 0.02, 0.06, 0.08]} />
+                    <meshStandardMaterial color="#4f7a3a" roughness={0.9} />
+                  </mesh>
+                  {[-0.08, 0.02, 0.1].map((dx, i) => (
+                    <mesh key={i} position={[dx, 0.11, 0.01]}>
+                      <boxGeometry args={[0.035, 0.035, 0.035]} />
+                      <meshStandardMaterial color={i === 1 ? "#e6c85a" : "#c23b3b"} roughness={0.8} />
+                    </mesh>
+                  ))}
+                </group>
+              )}
+            </group>
+          );
+        }),
+      )}
+
+      {/* Fire escape down the right side */}
+      {floors.map((y, f) => (
+        <group key={`fe-${f}`} position={[escapeX, y - winH / 2 - 0.02, 0]}>
+          <mesh>
+            <boxGeometry args={[0.18, 0.025, 0.7]} />
+            <meshStandardMaterial color={IRON} roughness={0.6} metalness={0.5} />
+          </mesh>
+          <mesh position={[0.085, 0.12, 0]}>
+            <boxGeometry args={[0.02, 0.24, 0.7]} />
+            <meshStandardMaterial color={IRON} roughness={0.6} metalness={0.5} transparent opacity={0.7} />
+          </mesh>
+          {f > 0 && (
+            <mesh position={[0, -floorGap * 0.45, 0.1]} rotation={[0.62, 0, 0]}>
+              <boxGeometry args={[0.14, 0.9, 0.03]} />
+              <meshStandardMaterial color={IRON} roughness={0.6} metalness={0.5} />
+            </mesh>
+          )}
+        </group>
+      ))}
+
+      {/* Roof: parapet, chimney, washing on the line */}
+      <mesh position={[0, height + 0.03, 0]}>
+        <boxGeometry args={[width + 0.1, 0.07, depth + 0.1]} />
+        <meshStandardMaterial color="#3a2a24" roughness={0.95} />
+      </mesh>
+      <mesh position={[-width * 0.3, height + 0.24, -depth * 0.25]} castShadow>
+        <boxGeometry args={[0.22, 0.42, 0.22]} />
+        <meshStandardMaterial color="#4a3028" roughness={0.95} />
+      </mesh>
+      <mesh position={[-width * 0.3, height + 0.47, -depth * 0.25]}>
+        <boxGeometry args={[0.26, 0.05, 0.26]} />
+        <meshStandardMaterial color="#2a2220" roughness={0.95} />
+      </mesh>
+      {[-width * 0.32, width * 0.32].map((x) => (
+        <mesh key={`post-${x}`} position={[x, height + 0.22, depth * 0.2]}>
+          <boxGeometry args={[0.03, 0.36, 0.03]} />
+          <meshStandardMaterial color={IRON} roughness={0.7} />
+        </mesh>
+      ))}
+      <mesh position={[0, height + 0.39, depth * 0.2]}>
+        <boxGeometry args={[width * 0.64, 0.012, 0.012]} />
+        <meshStandardMaterial color="#9a938a" roughness={1} />
+      </mesh>
+      {["#c8c2b4", "#7a8fa6", "#b56b5b", "#e8e2d6"].map((c, i) => (
+        <mesh
+          key={c}
+          position={[-width * 0.24 + i * width * 0.16, height + 0.32, depth * 0.2]}
+          rotation={[0, 0, (i % 2 === 0 ? 1 : -1) * 0.05]}
+        >
+          <boxGeometry args={[0.13, 0.13, 0.012]} />
+          <meshStandardMaterial color={c} roughness={1} />
+        </mesh>
+      ))}
+
+      {/* The lamp in the upstairs window */}
+      <pointLight
+        position={[span, floors[litFloor]!, z + 0.35]}
+        color={LAMP}
+        intensity={0.35}
+        distance={3.2}
+      />
     </group>
   );
 }
@@ -348,11 +549,14 @@ function RacketBuilding({
   const height = lowProfile ? 1.3 + racket.level * 0.3 : 2.6 + racket.level * 0.9;
   const footprint: [number, number] = lowProfile ? [2.4, 1.6] : [2.0, 2.0];
   const glow = 0.35 + racket.level * 0.15;
-  const hideout =
-    racket.type === "still" || racket.type === "warehouse" || racket.type === "safehouse";
-  const bodyColor = hideout
-    ? tintToward("#12110e", visual.color, 0.18)
-    : tintToward("#3a3c40", visual.color, 0.62);
+  const isSafehouse = racket.type === "safehouse";
+  // Quiet fronts: no neon, no bands, no roof beacon.
+  const hideout = racket.type === "still" || racket.type === "warehouse" || isSafehouse;
+  const bodyColor = isSafehouse
+    ? tintToward("#2c2019", visual.color, 0.45)
+    : hideout
+      ? tintToward("#12110e", visual.color, 0.18)
+      : tintToward("#3a3c40", visual.color, 0.62);
   const Icon = visual.Icon;
   const haloGeo = useMemo(() => makeSquareRingGeometry(2.8, 2.15), []);
 
@@ -451,12 +655,14 @@ function RacketBuilding({
         <meshStandardMaterial color={bodyColor} roughness={0.7} metalness={0.15} />
       </mesh>
 
-      {hideout ? (
+      {isSafehouse ? (
+        <SafehouseFront width={footprint[0]} height={height} depth={footprint[1]} />
+      ) : hideout ? (
         <HideoutFront
           width={footprint[0]}
           height={height}
           depth={footprint[1]}
-          kind={racket.type === "warehouse" || racket.type === "safehouse" ? racket.type : "still"}
+          kind={racket.type === "warehouse" ? "warehouse" : "still"}
         />
       ) : (
         <Storefront
@@ -507,12 +713,14 @@ function RacketBuilding({
           />
         </mesh>
       )}
-      <pointLight
-        position={hideout ? [0, height * 0.35, footprint[1] / 2 + 0.2] : [0, height + 0.55, 0]}
-        color={hideout ? "#c4783a" : visual.emissive}
-        intensity={hideout ? 0.22 : (0.7 + racket.level * 0.3) * (lowProfile ? 0.5 : 1)}
-        distance={hideout ? 3.5 : 7}
-      />
+      {!isSafehouse && (
+        <pointLight
+          position={hideout ? [0, height * 0.35, footprint[1] / 2 + 0.2] : [0, height + 0.55, 0]}
+          color={hideout ? "#c4783a" : visual.emissive}
+          intensity={hideout ? 0.22 : (0.7 + racket.level * 0.3) * (lowProfile ? 0.5 : 1)}
+          distance={hideout ? 3.5 : 7}
+        />
+      )}
 
       {freshness && (
         <mesh

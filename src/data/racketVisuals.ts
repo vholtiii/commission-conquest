@@ -98,9 +98,9 @@ export const RACKET_VISUALS: Record<RacketType, RacketVisual> = {
     Icon: Truck,
   },
   safehouse: {
-    color: "#5E6770",
-    emissive: "#9aa3ab",
-    sign: "HIDEOUT",
+    color: "#7a5548",
+    emissive: "#e0b070",
+    sign: "ROOMS",
     Icon: Shield,
   },
 };

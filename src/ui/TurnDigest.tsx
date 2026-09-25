@@ -11,14 +11,18 @@ export default function TurnDigest() {
   const activeEvent = useGameStore((s) => s.activeEvent);
   const pendingHitResult = useGameStore((s) => s.pendingHitResult);
   const pendingReports = useGameStore((s) => s.pendingReports);
-  const cinematic = useGameStore((s) => s.cinematicQueue.length > 0);
+  const cinematic = useGameStore(
+    (s) => s.cinematicQueue.length > 0 || s.sitdownPhase != null || (s.sitdownCinematicQueue?.length ?? 0) > 0,
+  );
+  const sitdownCard = useGameStore((s) => (s.pendingSitdownResults?.length ?? 0) > 0);
+  const dealCard = useGameStore((s) => (s.pendingDealSettlements?.length ?? 0) > 0);
   const setPanel = useGameStore((s) => s.setPanel);
   const [dismissedTurn, setDismissedTurn] = useState<number | null>(null);
 
   const closed = turnLog.some((l) => l.id.startsWith("log_turn_"));
   if (!closed || !playerFamily) return null;
   if (dismissedTurn === turn) return null;
-  if (activeEvent || pendingHitResult || (pendingReports?.length ?? 0) > 0 || cinematic) {
+  if (activeEvent || pendingHitResult || sitdownCard || dealCard || (pendingReports?.length ?? 0) > 0 || cinematic) {
     return null;
   }
 

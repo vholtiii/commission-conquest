@@ -1,10 +1,10 @@
 import type { CrewMember, FamilyName, GameState } from "@/types/game";
 import { getFamilyDef } from "@/data/families";
 
-type LocationState = Pick<
+export type LocationState = Pick<
   GameState,
   "crew" | "territories" | "routes" | "operations" | "playerFamily"
->;
+> & { turn?: number };
 
 type HqState = Pick<GameState, "territories">;
 
@@ -30,6 +30,8 @@ export type CrewLocationReason =
   | "on_delivery"
   | "casing_target"
   | "on_hit"
+  | "at_sitdown"
+  | "visiting"
   | "at_home"
   | "unknown";
 
@@ -44,6 +46,8 @@ export const LOCATION_REASON_LABEL: Record<CrewLocationReason, string> = {
   on_delivery: "Out on a delivery",
   casing_target: "Casing the mark",
   on_hit: "Staged for a hit",
+  at_sitdown: "At a sit-down",
+  visiting: "Visiting a district",
   at_home: "At home base",
   unknown: "Location unknown",
 };
@@ -52,6 +56,14 @@ export const LOCATION_REASON_LABEL: Record<CrewLocationReason, string> = {
 export function resolveCrewLocation(state: LocationState, crewId: string): CrewLocation {
   const member = state.crew.find((c) => c.id === crewId);
   if (!member) return { territoryId: null, reason: "unknown" };
+
+  // A scheduled trip overrides everything else for its duration.
+  if (member.awayAt && member.awayAt.untilTurn > (state.turn ?? 0)) {
+    return {
+      territoryId: member.awayAt.territoryId,
+      reason: member.awayAt.reason === "sitdown" ? "at_sitdown" : "visiting",
+    };
+  }
 
   const a = member.assignment;
 
@@ -104,6 +116,20 @@ export function resolveCrewLocation(state: LocationState, crewId: string): CrewL
 /** Find where a crew member currently is on the map. */
 export function resolveCrewTerritoryId(state: LocationState, crewId: string): string | null {
   return resolveCrewLocation(state, crewId).territoryId;
+}
+
+/**
+ * A boss is "underground" when he is holding court somewhere other than the
+ * family HQ and not on a public trip (sit-down, weekly visit). Everyone knows
+ * the HQ address; a rival planning a hit has to find him anywhere else.
+ */
+export function isBossUnderground(state: LocationState, boss: CrewMember): boolean {
+  if (boss.role !== "boss" || boss.status !== "active") return false;
+  if (boss.awayAt && boss.awayAt.untilTurn > (state.turn ?? 0)) return false;
+  const here = resolveCrewTerritoryId(state, boss.id);
+  if (!here) return false;
+  const hq = familyHq(state, boss.family);
+  return !!hq && here !== hq;
 }
 
 /**

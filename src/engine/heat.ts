@@ -1,5 +1,6 @@
 import type { BribeStatus, GameState, HeatState, TurnLogEntry } from "@/types/game";
 import { getFamilyDef } from "@/data/families";
+import { jailInCrew } from "./jail";
 
 export interface HeatThreshold {
   level: number;
@@ -204,14 +205,14 @@ export function processHeatTurn(state: GameState): HeatTurnResult {
 export function applyWarrantConsequences(state: GameState): GameState {
   if (state.heat.level < 60 || !state.playerFamily) return state;
 
-  const crew = state.crew.map((c) => {
-    if (c.family !== state.playerFamily) return c;
-    if (c.status !== "active") return c;
+  let crew = state.crew;
+  for (const c of state.crew) {
+    if (c.family !== state.playerFamily) continue;
+    if (c.status !== "active") continue;
     if (c.wanted > 5 && Math.random() < 0.08) {
-      return { ...c, status: "jailed" as const };
+      crew = jailInCrew(crew, c.id, state.turn);
     }
-    return c;
-  });
+  }
 
   return { ...state, crew };
 }

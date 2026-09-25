@@ -3,13 +3,52 @@ import { useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
 import type { Mesh } from "three";
 import type { CityLayout } from "@/engine/cityLayout";
+import { racketBlockFor } from "@/engine/cityLayout";
 import type { Territory } from "@/types/game";
 import { FAMILY_HEX, MAP_STATUS } from "@/types/game";
 import { useGameStore } from "@/engine/store";
+import { useMapView } from "@/engine/mapView";
+import { lotTier } from "@/engine/territoryValue";
 
 interface Props {
   layout: CityLayout;
   territories: Territory[];
+}
+
+let hatchTexture: THREE.Texture | null = null;
+
+/**
+ * Thin diagonal lines on a transparent ground — the survey-map mark for an
+ * unclaimed empty lot, so it reads as "open ground, nobody's" rather than a
+ * district that simply hasn't been built up yet.
+ */
+function getHatchTexture(): THREE.Texture {
+  if (hatchTexture) return hatchTexture;
+  const size = 128;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d")!;
+  ctx.clearRect(0, 0, size, size);
+  ctx.strokeStyle = "rgba(226, 230, 236, 0.9)";
+  ctx.lineWidth = 3;
+  ctx.lineCap = "butt";
+  const step = 16;
+  // Lines running bottom-left → top-right, wrapped so the tile repeats seamlessly.
+  for (let d = -size; d < size * 2; d += step) {
+    ctx.beginPath();
+    ctx.moveTo(d, size);
+    ctx.lineTo(d + size, 0);
+    ctx.stroke();
+  }
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(3, 3);
+  tex.anisotropy = 4;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  hatchTexture = tex;
+  return tex;
 }
 
 /** Flat square ring (outer square with square hole) for area outlines / pulses. */
@@ -76,8 +115,10 @@ function DistrictSquare({ territory, cx, cz }: { territory: Territory; cx: numbe
   const isSelected = selectedId === territory.id && !selectedCrewId;
   const isVendetta = !!territory.owner && vendettas.includes(territory.owner);
   const unclaimed = !territory.owner;
+  const openLot = unclaimed && lotTier(territory) === "empty";
   const baseColor = territory.owner ? FAMILY_HEX[territory.owner] : MAP_STATUS.neutral;
   const size = 7.2;
+  const hatch = useMemo(() => (openLot ? getHatchTexture() : null), [openLot]);
 
   const outlineGeo = useMemo(() => makeSquareRingGeometry(size, size - 0.4), [size]);
   const pulseGeo = useMemo(() => makeSquareRingGeometry(size + 1.1, size + 0.25), [size]);
@@ -127,6 +168,20 @@ function DistrictSquare({ territory, cx, cz }: { territory: Territory; cx: numbe
           side={THREE.DoubleSide}
         />
       </mesh>
+
+      {/* Unclaimed empty lot: faint diagonal hatching over the open ground */}
+      {hatch && (
+        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.034, 0]}>
+          <planeGeometry args={[size - 0.5, size - 0.5]} />
+          <meshBasicMaterial
+            map={hatch}
+            color="#dfe4ea"
+            transparent
+            opacity={0.22}
+            depthWrite={false}
+          />
+        </mesh>
+      )}
 
       {unclaimed &&
         [
@@ -195,8 +250,71 @@ function DistrictSquare({ territory, cx, cz }: { territory: Territory; cx: numbe
   );
 }
 
+const PAD_SIZE = 1.9;
+
+/**
+ * The open build spots on an empty lot: one staked-out pad per free hideout
+ * slot, at the exact spot the racket will stand once built. Neutral while the
+ * lot is nobody's, family-coloured once it's claimed, gone once it's built on.
+ */
+function LotPads({ layout, territory }: { layout: CityLayout; territory: Territory }) {
+  const hatch = getHatchTexture();
+  const ringGeo = useMemo(() => makeSquareRingGeometry(PAD_SIZE, PAD_SIZE - 0.16), []);
+  const color = territory.owner ? FAMILY_HEX[territory.owner] : "#dfe4ea";
+  const spots = useMemo(() => {
+    const out: { x: number; z: number }[] = [];
+    const slots = territory.racketSlots ?? 0;
+    for (let i = territory.rackets.length; i < slots; i++) {
+      const b = racketBlockFor(layout, territory.id, i);
+      if (b) out.push({ x: b.worldX, z: b.worldZ });
+    }
+    return out;
+  }, [layout, territory.id, territory.rackets.length, territory.racketSlots]);
+
+  return (
+    <group>
+      {spots.map((s, i) => (
+        <group key={i} position={[s.x, 0, s.z]}>
+          <mesh geometry={ringGeo} rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.045, 0]}>
+            <meshBasicMaterial
+              color={color}
+              transparent
+              opacity={territory.owner ? 0.7 : 0.5}
+              depthWrite={false}
+              side={THREE.DoubleSide}
+            />
+          </mesh>
+          <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.042, 0]}>
+            <planeGeometry args={[PAD_SIZE - 0.2, PAD_SIZE - 0.2]} />
+            <meshBasicMaterial
+              map={hatch}
+              color={color}
+              transparent
+              opacity={territory.owner ? 0.35 : 0.3}
+              depthWrite={false}
+            />
+          </mesh>
+          {/* survey stakes at the corners */}
+          {[
+            [-1, -1],
+            [1, -1],
+            [-1, 1],
+            [1, 1],
+          ].map(([sx, sz], k) => (
+            <mesh key={k} position={[(sx * PAD_SIZE) / 2, 0.22, (sz * PAD_SIZE) / 2]}>
+              <boxGeometry args={[0.07, 0.44, 0.07]} />
+              <meshStandardMaterial color="#b8a888" roughness={0.9} />
+            </mesh>
+          ))}
+        </group>
+      ))}
+    </group>
+  );
+}
+
 export default function DistrictOverlay({ layout, territories }: Props) {
   const byId = useMemo(() => new Map(territories.map((t) => [t.id, t])), [territories]);
+  const overview = useMapView((s) => s.overview);
 
   return (
     <group>
@@ -205,6 +323,12 @@ export default function DistrictOverlay({ layout, territories }: Props) {
         if (!t) return null;
         return <DistrictSquare key={c.territoryId} territory={t} cx={c.worldX} cz={c.worldZ} />;
       })}
+      {!overview &&
+        territories.map((t) =>
+          t.discovered && lotTier(t) === "empty" ? (
+            <LotPads key={`pads-${t.id}`} layout={layout} territory={t} />
+          ) : null,
+        )}
     </group>
   );
 }

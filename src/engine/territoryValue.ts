@@ -36,13 +36,15 @@ export const SLOT_BLOCK_DIVISOR = 3;
 
 export const MIN_RACKET_SLOTS = 2;
 export const MAX_RACKET_SLOTS = 6;
+/** An empty lot has no frontage but plenty of ground: three hideout spots. */
+export const EMPTY_LOT_SLOTS = 3;
 
 export function buildingBlocksFor(layout: CityLayout, territoryId: string): number {
   return getDistrictBlocks(layout, territoryId).length;
 }
 
 export function slotsFromBlocks(count: number): number {
-  if (count <= 0) return 1;
+  if (count <= 0) return EMPTY_LOT_SLOTS;
   if (count <= 2) return 2;
   const raw = Math.round(count / SLOT_BLOCK_DIVISOR);
   return Math.max(MIN_RACKET_SLOTS, Math.min(MAX_RACKET_SLOTS, raw));
@@ -117,7 +119,7 @@ export function computeTerritorySlots(
   });
 }
 
-/** Backfill slots on older saves that lack the fields. */
+/** Backfill slots on older saves that lack the fields (or still have 1-slot empty lots). */
 export function ensureTerritorySlots(
   territories: Territory[],
   seed: number,
@@ -128,7 +130,8 @@ export function ensureTerritorySlots(
       (t) =>
         typeof t.buildingBlocks === "number" &&
         typeof t.racketSlots === "number" &&
-        t.racketSlots >= 1,
+        t.racketSlots >= 1 &&
+        (t.buildingBlocks > 0 || t.racketSlots >= EMPTY_LOT_SLOTS),
     )
   ) {
     return territories;

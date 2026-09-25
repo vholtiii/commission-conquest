@@ -4,7 +4,10 @@
   GameState,
   HitApproach,
   HitBeat,
+  HitComplication,
   HitCasualtyDetail,
+  HitCinematic,
+  HitPerspective,
   HitOutcome,
   HitResult,
   LookoutOutcome,
@@ -12,13 +15,15 @@
   Operation,
   TurnLogEntry,
 } from "@/types/game";
+import { CAR_BOMB_ARMED_MAX_TURNS } from "@/types/game";
 import { getFamilyDef } from "@/data/families";
 import { approachSpec, exposedCrewIds, hitCrewIds } from "@/data/hitApproaches";
 import type { Rng } from "./rng";
 import { aggregateTraitEffects, crewCombatScore, funeralLoyaltyHit, grantXpToCrew } from "./crew";
+import { jailInCrew } from "./jail";
 import { setRelationDelta } from "./relations";
 import { crewPresentIn, resolveCrewTerritoryId } from "./crewLocation";
-import { emptyIntel, recordIntel } from "./intel";
+import { emptyIntel, hasFreshCasing, recordIntel } from "./intel";
 import { buildLookoutReport, runCasing, rungToOutcome, type CasingResult } from "./lookout";
 import { applySuccession } from "./succession";
 import {
@@ -34,8 +39,33 @@ import {
   lastName,
   clueHolds,
 } from "./casing";
-import { applyRetaliationJudgment, openIncidentFromHit } from "./incidents";
+import { addEvidence, applyRetaliationJudgment, makeEvidence, openIncidentFromHit } from "./incidents";
+import { learnFromCleanCasing } from "./crews";
 import { hasPact, breakPact } from "./diplomacy";
+import { LEVERAGE_TURNS, clearPassageGrudges } from "./passage";
+import { aiDemandPassageSitdown } from "./sitdowns";
+
+/**
+ * A rival's message has been sent (landed or not): the grudges behind it are
+ * spent, the family goes on cooldown, and — if both bosses still stand — they
+ * ask the player to their table to settle the trucks on their terms.
+ */
+function afterAiMessageHit(
+  state: GameState,
+  op: Operation,
+  landed: boolean,
+  rng: Rng,
+): GameState {
+  let next = clearPassageGrudges(state, op.family);
+  next = {
+    ...next,
+    messageHitTurns: { ...next.messageHitTurns, [op.family]: state.turn },
+  };
+  const invite = aiDemandPassageSitdown(next, op.family, rng, landed);
+  next = invite.state;
+  if (invite.log) next = { ...next, turnLog: [...next.turnLog, invite.log].slice(-200) };
+  return next;
+}
 
 /** Odds options: `truth` ignores poisoned clues (used when a hit actually resolves). */
 export interface OddsOptions {
@@ -351,6 +381,18 @@ export function estimateFirefightRisk(state: GameState, op: Operation): number {
   return Math.min(0.4, raw * mult);
 }
 
+/** Player casing is intel; a rival's is a surveillance job on that block. */
+function venueCasedBy(state: GameState, family: FamilyName, territoryId: string): boolean {
+  if (family === state.playerFamily) return hasFreshCasing(state, territoryId);
+  return state.operations.some(
+    (o) =>
+      o.family === family &&
+      o.kind === "surveillance" &&
+      o.targetTerritoryId === territoryId &&
+      (o.resolved || o.pendingTurns <= 1),
+  );
+}
+
 export function tipOffChance(state: GameState, op: Operation): number {
   const approach = op.approach ?? "ambush";
   const defenders = defendersFor(state, op);
@@ -369,6 +411,25 @@ export function tipOffChance(state: GameState, op: Operation): number {
 
   if (approach === "car_bomb" || approach === "sitdown_betrayal") chance *= 0.7;
   if (op.blind) chance *= 0.6;
+  // A meeting this turn: extra eyes (entourage) and a cased venue both smell a setup.
+  if (approach === "sitdown_betrayal" || approach === "car_bomb") {
+    const meeting = (state.sitdowns ?? []).find(
+      (sd) =>
+        sd.heldTurn === state.turn &&
+        (sd.status === "scheduled" || sd.status === "at_table") &&
+        (sd.venueTerritoryId === op.targetTerritoryId ||
+          sd.proposer === op.targetFamily ||
+          sd.other === op.targetFamily),
+    );
+    if (meeting) {
+      const eyes =
+        op.family === meeting.proposer
+          ? (meeting.rivalEntourageIds?.length ?? 0)
+          : (meeting.playerEntourageIds?.length ?? 0);
+      chance += eyes * 0.05;
+      if (venueCasedBy(state, op.targetFamily, meeting.venueTerritoryId)) chance += 0.2;
+    }
+  }
   // The block is watching for you after a spotted lookout.
   if (isDistrictAlerted(state, op.targetTerritoryId)) chance += 0.05;
   if (usesClues(state, op)) {
@@ -436,11 +497,15 @@ export function planHit(
     pendingTurns?: number;
     originTerritoryId?: string;
     blind?: boolean;
+    intent?: Operation["intent"];
+    motive?: Operation["motive"];
   },
   rng: Rng,
 ): Operation {
   return {
     id: `op_hit_${rng.int(10000, 99999)}`,
+    intent: params.intent,
+    motive: params.motive,
     family: params.family,
     kind: "hit",
     targetCrewId: params.blind ? undefined : params.targetCrewId,
@@ -492,6 +557,42 @@ function pickBlindTarget(
 export interface ResolveHitResult {
   state: GameState;
   result: HitResult;
+  /**
+   * Car bomb on a boss who never left his site: the package stays armed and
+   * the op is not resolved. `discovered` ends it early (found, or fuse stale).
+   */
+  waiting?: { discovered: boolean; reason: "found" | "stale" };
+}
+
+/** Placeholder result for an op that did not actually resolve this turn. */
+function emptyResult(op: Operation): HitResult {
+  return {
+    operationId: op.id,
+    outcome: "target_escaped",
+    beats: [],
+    heatGain: 0,
+    fearGain: 0,
+    casualties: [],
+    casualtyDetail: [],
+    defenders: 0,
+    tippedOff: false,
+    targetDead: false,
+    headline: "",
+    successChance: 0,
+    revealedIds: [],
+    blind: !!op.blind,
+    respectDelta: 0,
+    influenceDelta: 0,
+  };
+}
+
+/** Chance per waiting turn that a planted car bomb is found before it goes off. */
+function bombDiscoveryChance(state: GameState, op: Operation): number {
+  const maker = op.bombMakerId ? state.crew.find((c) => c.id === op.bombMakerId) : undefined;
+  let chance = 0.15 + 0.1 * (op.armedTurns ?? 0);
+  if (isDistrictAlerted(state, op.targetTerritoryId)) chance += 0.15;
+  if (maker) chance -= maker.skills.smarts / 500;
+  return Math.max(0.05, Math.min(0.75, chance));
 }
 
 export function resolveHit(
@@ -517,15 +618,43 @@ export function resolveHit(
     else workingOp = { ...op, targetCrewId: picked.id };
   }
 
-  const defenders = defendersFor(state, workingOp, TRUTH);
-
   // The mark isn't where you planned for him (moved, jailed, dead, or held): no body tonight.
   const plannedTarget = workingOp.targetCrewId
     ? state.crew.find((c) => c.id === workingOp.targetCrewId)
     : undefined;
+
+  // A car bomb on a boss rides on his car. It only goes off when he travels,
+  // and it goes off wherever he travels to.
+  const bossBomb = approach === "car_bomb" && plannedTarget?.role === "boss" && !blind;
+  if (bossBomb && plannedTarget && plannedTarget.status === "active") {
+    const now = resolveCrewTerritoryId(state, plannedTarget.id);
+    const travelled = plannedTarget.lastSiteId !== undefined && now !== plannedTarget.lastSiteId;
+    if (!travelled) {
+      const armed = op.armedTurns ?? 0;
+      const stale = armed >= CAR_BOMB_ARMED_MAX_TURNS;
+      const found = !stale && rng.chance(bombDiscoveryChance(state, op));
+      if (!stale && !found) {
+        return {
+          state,
+          result: emptyResult(op),
+          waiting: { discovered: false, reason: "found" },
+        };
+      }
+      return {
+        state,
+        result: emptyResult(op),
+        waiting: { discovered: true, reason: stale ? "stale" : "found" },
+      };
+    }
+    if (now) workingOp = { ...workingOp, targetTerritoryId: now };
+  }
+
+  const defenders = defendersFor(state, workingOp, TRUTH);
+
   const markMoved =
     !!plannedTarget &&
     !blind &&
+    !bossBomb &&
     (plannedTarget.status === "dead" ||
       plannedTarget.status === "jailed" ||
       plannedTarget.status === "held" ||
@@ -592,9 +721,7 @@ export function resolveHit(
         const arrested = rng.pick(exposed);
         casualties.push(arrested);
         casualtyDetail.push({ crewId: arrested, fate: "jailed", cause: "botch" });
-        crew = crew.map((c) =>
-          c.id === arrested ? { ...c, status: "jailed" as const } : c,
-        );
+        crew = jailInCrew(crew, arrested, state.turn);
       }
       break;
     case "botched_killed":
@@ -686,6 +813,9 @@ export function resolveHit(
     if (!casualties.includes(target.id)) casualties.push(target.id);
   }
 
+  // The dead don't keep their travel plans.
+  crew = crew.map((c) => (c.status === "dead" && c.awayAt ? { ...c, awayAt: undefined } : c));
+
   const xpPer = targetDead ? 15 : 10;
   for (const sid of hitCrewIds(op)) {
     const granted = grantXpToCrew(crew, sid, xpPer);
@@ -694,30 +824,57 @@ export function resolveHit(
     );
   }
 
-  let relations = setRelationDelta(state.relations, op.family, op.targetFamily, -25);
+  // A message hit is a point made, not a war declared: half the standing lost.
+  const isMessage = op.intent === "message";
+  let relations = setRelationDelta(
+    state.relations,
+    op.family,
+    op.targetFamily,
+    isMessage ? -12 : -25,
+  );
   if (outcome === "clean_kill" || outcome === "messy_kill") {
-    relations = setRelationDelta(relations, op.family, op.targetFamily, -15);
+    relations = setRelationDelta(relations, op.family, op.targetFamily, isMessage ? -8 : -15);
   }
 
   const operations = state.operations.map((o) =>
-    o.id === op.id ? { ...o, resolved: true, pendingTurns: 0 } : o,
+    o.id === op.id ? { ...o, resolved: true, pendingTurns: 0, resolvedTurn: state.turn } : o,
   );
 
-  const beats = buildBeats(rng, approach, outcome, targetName, {
+  // The job is done: everyone staged for it goes home. (Casualties keep their
+  // new status; only the stale operation assignment is cleared.)
+  const staged = new Set(hitCrewIds(op));
+  crew = crew.map((c) =>
+    staged.has(c.id) &&
+    (c.assignment.type === "operation" || c.assignment.type === "surveillance") &&
+    (c.assignment.operationId === op.id || !c.assignment.operationId)
+      ? { ...c, assignment: { type: "idle" as const } }
+      : c,
+  );
+
+  const built = buildBeats(rng, approach, outcome, targetName, {
     tippedOff,
     markAbsent: markAbsent || emptyBlock,
     firefightNames,
     trap,
   });
+  let beats = built.beats;
+  let complication = built.complication;
   if (emptyBlock) {
+    beats = [...beats];
     beats[1] = { phase: "complication", text: "Empty block — nobody home." };
     beats[2] = { phase: "execution", text: "The crew packs up with nothing to show." };
+    complication = "mark_absent";
   }
 
   // Blind reputation deltas
   let respectDelta = targetDead ? 8 : -3;
   let influenceDelta = 0;
   let streetDelta = 0;
+  if (isMessage) {
+    // Nobody admires a message; the street just learns you'll send one.
+    respectDelta = targetDead ? 3 : -2;
+    streetDelta = targetDead ? 4 : 0;
+  }
   if (blind) {
     respectDelta -= 6;
     influenceDelta -= 5;
@@ -748,31 +905,48 @@ export function resolveHit(
     blind,
     respectDelta,
     influenceDelta,
+    complication,
+    markAbsent: markAbsent || emptyBlock,
+    trap,
+    strikeTerritoryId: workingOp.targetTerritoryId,
   };
+
+  // Heat, fear, respect and influence belong to the player. A rival's hit only
+  // touches them when the player pulled the trigger (full) or was the mark
+  // (cops swarm your block: a third of the heat, no reputation swing). A
+  // rival-on-rival hit across town is somebody else's problem.
+  const playerShot = op.family === state.playerFamily;
+  const playerMarked = op.targetFamily === state.playerFamily;
+  const ownHeat = playerShot ? heatGain : playerMarked ? Math.round(heatGain / 3) : 0;
+  const ownFear = playerShot ? fearGain : 0;
+  const ownRespect = playerShot ? respectDelta : 0;
+  const ownStreet = playerShot ? streetDelta : 0;
+  const ownInfluence = playerShot ? influenceDelta : 0;
 
   let newState: GameState = {
     ...state,
     crew,
     relations,
     operations,
-    influence: Math.max(0, Math.min(300, state.influence + influenceDelta)),
+    influence: Math.max(0, Math.min(300, state.influence + ownInfluence)),
     reputation: {
       ...state.reputation,
-      fear: Math.min(100, state.reputation.fear + fearGain),
-      respect: Math.max(0, Math.min(100, state.reputation.respect + respectDelta)),
+      fear: Math.min(100, state.reputation.fear + ownFear),
+      respect: Math.max(0, Math.min(100, state.reputation.respect + ownRespect)),
       streetInfluence: Math.max(
         0,
-        Math.min(100, state.reputation.streetInfluence + streetDelta),
+        Math.min(100, state.reputation.streetInfluence + ownStreet),
       ),
     },
     heat: {
       ...state.heat,
-      level: Math.min(100, state.heat.level + heatGain),
-      sources: [...state.heat.sources, `hit:${op.id}`].slice(-20),
+      level: Math.min(100, state.heat.level + ownHeat),
+      sources: ownHeat > 0 ? [...state.heat.sources, `hit:${op.id}`].slice(-20) : state.heat.sources,
     },
-    vendettas: state.vendettas.includes(op.targetFamily)
-      ? state.vendettas
-      : [...state.vendettas, op.targetFamily],
+    vendettas:
+      isMessage || state.vendettas.includes(op.targetFamily)
+        ? state.vendettas
+        : [...state.vendettas, op.targetFamily],
     pendingHitResult: op.family === state.playerFamily ? result : state.pendingHitResult,
     hitFxTerritoryId: op.targetTerritoryId,
   };
@@ -787,7 +961,42 @@ export function resolveHit(
     op.targetFamily === state.playerFamily &&
     op.family !== state.playerFamily
   ) {
-    newState = openIncidentFromHit(newState, op, result, rng).state;
+    const opened = openIncidentFromHit(newState, op, result, rng);
+    newState = opened.state;
+    if (isMessage) {
+      // Left where he'd be found: it was meant to be read. Everyone you've
+      // run hot past comes under the light.
+      const shifts: Partial<Record<FamilyName, number>> = {};
+      for (const g of newState.grudges ?? []) {
+        if (g.reason === "passage" && g.against === state.playerFamily && g.expiresTurn > state.turn) {
+          shifts[g.family] = 0.12;
+        }
+      }
+      newState = addEvidence(
+        newState,
+        opened.incident.id,
+        makeEvidence(
+          "scene",
+          state.turn,
+          "He was left where he'd be found. This was a message about the trucks, not a war.",
+          shifts,
+          undefined,
+          rng,
+        ),
+      );
+      newState = afterAiMessageHit(newState, op, targetDead, rng);
+    }
+  }
+
+  // The player's own message lands: the family knows the trucks are not to be touched.
+  if (isMessage && state.playerFamily && op.family === state.playerFamily && targetDead) {
+    newState = {
+      ...newState,
+      passageLeverage: {
+        ...newState.passageLeverage,
+        [op.targetFamily]: state.turn + LEVERAGE_TURNS,
+      },
+    };
   }
 
   // A player hit declared as the answer to an open case gets judged.
@@ -850,7 +1059,7 @@ function buildBeats(
     firefightNames: string[];
     trap: boolean;
   },
-): HitBeat[] {
+): { beats: HitBeat[]; complication: HitComplication } {
   const approachText: Record<HitApproach, string> = {
     ambush: "The crew takes position in a blind alley, waiting for the mark.",
     drive_by: "A black sedan rolls slow past the target's hangout.",
@@ -858,30 +1067,30 @@ function buildBeats(
     sitdown_betrayal: "A friendly sit-down is arranged over coffee and lies.",
   };
 
-  const complicationByApproach: Record<HitApproach, string[]> = {
+  const complicationByApproach: Record<HitApproach, { key: HitComplication; text: string }[]> = {
     ambush: [
-      "A patrol wagon turns the corner — everyone freezes.",
-      "Rival muscle appears across the street.",
-      "Rain slicks the pavement, ruining footing.",
-      "The target arrives with unexpected backup.",
+      { key: "patrol", text: "A patrol wagon turns the corner — everyone freezes." },
+      { key: "rival_muscle", text: "Rival muscle appears across the street." },
+      { key: "rain", text: "Rain slicks the pavement, ruining footing." },
+      { key: "backup", text: "The target arrives with unexpected backup." },
     ],
     drive_by: [
-      "The wheelman stalls at a red light with cops behind.",
-      "A civilian wagon blocks the escape lane.",
-      "The mark ducks behind a fruit cart.",
-      "A motorcycle escort flanks the target.",
+      { key: "stall", text: "The wheelman stalls at a red light with cops behind." },
+      { key: "blocked_lane", text: "A civilian wagon blocks the escape lane." },
+      { key: "fruit_cart", text: "The mark ducks behind a fruit cart." },
+      { key: "escort", text: "A motorcycle escort flanks the target." },
     ],
     car_bomb: [
-      "The fuse sputters — a dud for a heartbeat.",
-      "Wrong Packard: another car sits in the spot.",
-      "A beat cop leans on the fender to light a smoke.",
-      "Rain soaks the detonator wiring.",
+      { key: "dud", text: "The fuse sputters — a dud for a heartbeat." },
+      { key: "wrong_car", text: "Wrong Packard: another car sits in the spot." },
+      { key: "cop_on_fender", text: "A beat cop leans on the fender to light a smoke." },
+      { key: "rain", text: "Rain soaks the detonator wiring." },
     ],
     sitdown_betrayal: [
-      "The negotiator is patted down at the door.",
-      "The mark brings a silent witness to the booth.",
-      "Hidden backup is spotted in the kitchen.",
-      "The sit-down starts with an unexpected toast — delay.",
+      { key: "pat_down", text: "The negotiator is patted down at the door." },
+      { key: "witness", text: "The mark brings a silent witness to the booth." },
+      { key: "kitchen_backup", text: "Hidden backup is spotted in the kitchen." },
+      { key: "toast", text: "The sit-down starts with an unexpected toast — delay." },
     ],
   };
 
@@ -905,12 +1114,19 @@ function buildBeats(
   };
   const executionEscape = `${targetName} slips away in the confusion.`;
 
-  let complicationText = rng.pick(complicationByApproach[approach]);
+  const picked = rng.pick(complicationByApproach[approach]);
+  let complication: HitComplication = picked.key;
+  let complicationText = picked.text;
   if (opts.tippedOff && opts.markAbsent) {
+    complication = "mark_absent";
     complicationText = "The mark never showed. Someone talked.";
+  } else if (opts.markAbsent) {
+    complication = "mark_absent";
   } else if (opts.trap) {
+    complication = "trap";
     complicationText = "It was a trap. They were waiting.";
   } else if (opts.tippedOff) {
+    complication = "tipped";
     complicationText = "Word leaked — the street feels wrong before the first shot.";
   }
 
@@ -932,12 +1148,43 @@ function buildBeats(
     getawayText = `The garrison returns fire from the stoops — ${who} takes a slug on the way out.`;
   }
 
-  return [
-    { phase: "approach", text: approachText[approach] },
-    { phase: "complication", text: complicationText },
-    { phase: "execution", text: executionText },
-    { phase: "getaway", text: getawayText },
-  ];
+  return {
+    beats: [
+      { phase: "approach", text: approachText[approach] },
+      { phase: "complication", text: complicationText },
+      { phase: "execution", text: executionText },
+      { phase: "getaway", text: getawayText },
+    ],
+    complication,
+  };
+}
+
+/** Map payload the cinematic director plays. Strike site follows a travelling boss bomb. */
+export function buildHitCinematic(
+  state: GameState,
+  op: Operation,
+  result: HitResult,
+  perspective: HitPerspective,
+  path: string[],
+): HitCinematic {
+  const target = op.targetCrewId
+    ? state.crew.find((c) => c.id === op.targetCrewId)
+    : undefined;
+  const strike = result.strikeTerritoryId ?? op.targetTerritoryId;
+  const origin = path[0] ?? op.originTerritoryId ?? strike;
+  return {
+    operationId: op.id,
+    originTerritoryId: origin,
+    targetTerritoryId: strike,
+    path: path[path.length - 1] === strike ? path : [...path.slice(0, -1), strike],
+    approach: op.approach ?? "ambush",
+    result,
+    perspective,
+    attackerFamily: op.family,
+    targetFamily: op.targetFamily,
+    targetCrewId: op.targetCrewId,
+    targetName: target?.name ?? "the mark",
+  };
 }
 
 function rollOutcome(
@@ -959,9 +1206,120 @@ function rollOutcome(
   return "clean_kill";
 }
 
+/**
+ * A car bomb that never got its trip: found by the mark's people, or the fuse
+ * went stale. The crew comes home; the block is on alert; the planter may not.
+ */
+function fizzleCarBomb(
+  state: GameState,
+  op: Operation,
+  reason: "found" | "stale",
+  rng: Rng,
+): GameState {
+  const turn = state.turn;
+  let crew = state.crew.map((c) =>
+    hitCrewIds(op).includes(c.id) &&
+    (c.assignment.type === "operation" || c.assignment.type === "surveillance") &&
+    c.assignment.operationId === op.id
+      ? { ...c, assignment: { type: "idle" as const } }
+      : c,
+  );
+
+  const planter = op.planterId ? crew.find((c) => c.id === op.planterId) : undefined;
+  if (planter && planter.status === "active" && reason === "found") {
+    const caught = rng.chance(0.3);
+    if (caught) {
+      crew = jailInCrew(crew, planter.id, turn).map((c) =>
+        c.id === planter.id ? { ...c, wanted: c.wanted + 1 } : c,
+      );
+    } else {
+      crew = crew.map((c) =>
+        c.id === planter.id ? { ...c, wanted: c.wanted + 1 } : c,
+      );
+    }
+  }
+
+  const intel = {
+    ...(state.intel ?? emptyIntel()),
+    alerted: {
+      ...(state.intel?.alerted ?? {}),
+      [op.targetTerritoryId]: turn + ALERT_TURNS,
+    },
+  };
+
+  const playerInvolved =
+    op.family === state.playerFamily || op.targetFamily === state.playerFamily;
+
+  return {
+    ...state,
+    crew,
+    intel,
+    relations: setRelationDelta(state.relations, op.family, op.targetFamily, -10),
+    heat: playerInvolved
+      ? {
+          ...state.heat,
+          level: Math.min(100, state.heat.level + 10),
+          sources: [...state.heat.sources, `bomb_found:${op.id}`].slice(-20),
+        }
+      : state.heat,
+    operations: state.operations.map((o) =>
+      o.id === op.id ? { ...o, resolved: true, pendingTurns: 0, resolvedTurn: state.turn } : o,
+    ),
+  };
+}
+
+/** Resolved ops stay on the books this long so deals, agendas and reels can read them. */
+export const RESOLVED_OP_MEMORY_TURNS = 8;
+
+/**
+ * One ready hit. Usually it resolves; a car bomb riding on a boss who never
+ * left the house stays armed (`result` undefined), or is found and fizzles.
+ */
+export function settleReadyHit(
+  current: GameState,
+  op: Operation,
+  rng: Rng,
+): { state: GameState; result?: HitResult; log?: TurnLogEntry } {
+  const { state: next, result, waiting } = resolveHit(current, op, rng);
+  if (waiting && !waiting.discovered) {
+    // The boss never left the house. The package stays armed another week.
+    return {
+      state: {
+        ...next,
+        operations: next.operations.map((o) =>
+          o.id === op.id ? { ...o, pendingTurns: 0, armedTurns: (o.armedTurns ?? 0) + 1 } : o,
+        ),
+      },
+    };
+  }
+  if (waiting && waiting.discovered) {
+    const fizzled = fizzleCarBomb(next, op, waiting.reason, rng);
+    const district =
+      fizzled.territories.find((t) => t.id === op.targetTerritoryId)?.name ?? "the block";
+    return {
+      state: fizzled,
+      log: {
+        id: `log_bomb_fizzle_${op.id}_${fizzled.turn}`,
+        turn: fizzled.turn,
+        category: "hit",
+        text:
+          waiting.reason === "stale"
+            ? `The fuse on the car in ${district} went stale. The crew pulled the package.`
+            : `The package under the car in ${district} was found before it could be used.`,
+        family: op.family,
+      },
+    };
+  }
+  return { state: next, result };
+}
+
 export function resolvePendingOperations(
   state: GameState,
   rng: Rng,
+  opts: {
+    /** Hits by this family are left alone (the player's resolve on his own Next Turn, with a reel). */
+    skipFamily?: FamilyName | null;
+  } = {},
 ): { state: GameState; results: HitResult[]; tipLogs: TurnLogEntry[]; reports: LookoutReport[] } {
   const results: HitResult[] = [];
   const tipLogs: TurnLogEntry[] = [];
@@ -997,12 +1355,17 @@ export function resolvePendingOperations(
 
   // Resolve ready hits
   const pendingHits = current.operations.filter(
-    (o) => !o.resolved && o.pendingTurns <= 0 && o.kind === "hit",
+    (o) =>
+      !o.resolved &&
+      o.pendingTurns <= 0 &&
+      o.kind === "hit" &&
+      (!opts.skipFamily || o.family !== opts.skipFamily),
   );
   for (const op of pendingHits) {
-    const { state: next, result } = resolveHit(current, op, rng);
-    current = next;
-    results.push(result);
+    const settled = settleReadyHit(current, op, rng);
+    current = settled.state;
+    if (settled.log) tipLogs.push(settled.log);
+    if (settled.result) results.push(settled.result);
   }
 
   // Resolve ready surveillance ops (pendingTurns <= 1 → report next turn)
@@ -1046,7 +1409,7 @@ export function resolvePendingOperations(
     current = {
       ...current,
       operations: current.operations.map((o) =>
-        o.id === op.id ? { ...o, resolved: true, pendingTurns: 0 } : o,
+        o.id === op.id ? { ...o, resolved: true, pendingTurns: 0, resolvedTurn: state.turn } : o,
       ),
     };
 
@@ -1075,7 +1438,11 @@ export function resolvePendingOperations(
         surveilled: o.surveilled || becameReady || finishedCasing,
       };
     })
-    .filter((o) => !o.resolved);
+    // Resolved ops linger a few weeks: the reel, deal settlement, sit-down
+    // classification and "bleeding" all look them up by id after the fact.
+    .filter(
+      (o) => !o.resolved || (o.resolvedTurn ?? -99) > current.turn - RESOLVED_OP_MEMORY_TURNS,
+    );
 
   // Ops list must be swapped in before casing fallout touches crew/intel.
   current = { ...current, operations: nextOps };
@@ -1165,7 +1532,11 @@ function applyCasingFallout(
     setCrew(lookout.id, { wanted: lookout.wanted + 1 });
     consequences.push(`${lookoutName} got his name taken by a beat cop.`);
   } else if (lookout && casing.roll.copTrouble === "arrested") {
-    setCrew(lookout.id, { status: "jailed", wanted: lookout.wanted + 1, assignment: { type: "idle" } });
+    crew = jailInCrew(crew, lookout.id, turn).map((c) =>
+      c.id === lookout.id
+        ? { ...c, wanted: lookout.wanted + 1, assignment: { type: "idle" as const } }
+        : c,
+    );
     consequences.push(`${lookoutName} was picked up loitering. He saw nothing.`);
     return {
       state: { ...next, crew },
@@ -1189,7 +1560,12 @@ function applyCasingFallout(
   }
 
   if (rung === "clean") {
-    return { state: next, outcome: "clean", relationDelta, consequences };
+    // A clean job on the street teaches a loose soldier something.
+    const learned = learnFromCleanCasing(crew, lookout?.id);
+    if (learned !== crew && lookout && op.family === state.playerFamily) {
+      consequences.push(`${lookoutName} is getting quieter on his feet. Stealth +1.`);
+    }
+    return { state: { ...next, crew: learned }, outcome: "clean", relationDelta, consequences };
   }
 
   // noticed / made / grabbed all put the block on alert.

@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { toast } from "sonner";
+import { stopAll } from "@/audio/sfx";
 import type {
   FamilyName,
   GameSettings,
@@ -12,9 +13,11 @@ import type {
 } from "@/types/game";
 import { RACKET_LABELS } from "@/types/game";
 import { buildInitialState, startGame } from "./initialState";
-import { endTurn } from "./turnPipeline";
+import { endTurn, resolvePlayerHits } from "./turnPipeline";
+import { familyHeadless } from "./jail";
+import { emptyVictory, finalTurnFor, seedRivalInfluence } from "./victory";
 import { buildCityLayout, racketBlockFor } from "./cityLayout";
-import { planHit, resolveHit } from "./hitOps";
+import { buildHitCinematic, planHit } from "./hitOps";
 import { createRng, hashString } from "./rng";
 import {
   assignCrew,
@@ -61,6 +64,44 @@ import {
   type DiplomacyAction,
 } from "./diplomacy";
 import { captureAllowance, resolveCapture } from "./capture";
+import {
+  answerCrewRequest,
+  canJoinCrew,
+  joinCrew,
+  leaveCrew,
+  type CrewRequestAnswer,
+} from "./crews";
+import {
+  answerCounter,
+  answerInvite,
+  answerPassage,
+  answerTable,
+  applyHostFallout,
+  classifyMeeting,
+  proposeSitdown,
+  resultForMeeting,
+  type AgendaPick,
+  type InviteAnswer,
+  type PassageAnswer,
+  type SitdownParty,
+  type TableAnswer,
+} from "./sitdowns";
+import { breakDeal, fulfilLiquorDeal, inTruce } from "./deals";
+import {
+  cancelSupplyRoute,
+  establishSupplyRoute,
+  reopenPassageTalks,
+  setRouteRunHot,
+  toggleSupplyRoute,
+} from "./supplyRoutes";
+import { isMessageTargetRole, routeDisputeWith } from "./passage";
+import type {
+  AgendaTerms,
+  PassageTerms,
+  SitdownCinematic,
+  SitdownVenue,
+  SupplyRoutePreview,
+} from "@/types/game";
 import { normalizeIntel } from "./intel";
 import { getFamilyDef } from "@/data/families";
 import { hitCrewIds } from "@/data/hitApproaches";
@@ -70,8 +111,45 @@ import {
   resolveCrewLocation,
   resolveCrewTerritoryId,
 } from "./crewLocation";
+import { bossPresentIn, presenceBuildCost } from "./bossPresence";
 
 export { resolveCrewTerritoryId } from "./crewLocation";
+
+function pathToVenue(
+  state: GameState,
+  family: FamilyName,
+  venueId: string,
+  origin: string | undefined,
+): string[] | null {
+  if (!origin || origin === venueId) return null;
+  return findDeliveryPath(state.territories, origin, venueId, family, true) ?? [origin, venueId];
+}
+
+/** Drives for sit-downs that were held (or aborted) this turn. */
+function buildSitdownCinematics(state: GameState): SitdownCinematic[] {
+  const player = state.playerFamily;
+  if (!player) return [];
+  const out: SitdownCinematic[] = [];
+  for (const s of state.sitdowns ?? []) {
+    if (s.heldTurn !== state.turn) continue;
+    if (s.proposer !== player && s.other !== player) continue;
+    if (s.status !== "held" && s.status !== "at_table" && s.status !== "aborted") continue;
+    const family = s.proposer === player ? s.other : s.proposer;
+    // An open table (passage or agenda) fills its result when terms settle.
+    const passageOpen = s.status === "at_table";
+    out.push({
+      sitdownId: s.id,
+      family,
+      venueTerritoryId: s.venueTerritoryId,
+      playerPath: pathToVenue(state, player, s.venueTerritoryId, s.travelFrom?.[player]),
+      rivalPath: pathToVenue(state, family, s.venueTerritoryId, s.travelFrom?.[family]),
+      purpose: s.purpose,
+      outcome: classifyMeeting(state, s),
+      result: passageOpen ? undefined : resultForMeeting(state, s),
+    });
+  }
+  return out;
+}
 
 function turfLabel(state: GameState, territoryId: string): string {
   const t = state.territories.find((x) => x.id === territoryId);
@@ -172,17 +250,59 @@ interface GameStore extends GameState {
     negotiatorId?: string;
     surveilFirst?: boolean;
     blind?: boolean;
+    /** "message": a point made over the trucks, aimed at a skilled non-boss. */
+    intent?: "message";
   }) => void;
+  establishSupplyRoute: (args: {
+    sourceTerritoryId: string;
+    destTerritoryId: string;
+    path: string[];
+    cratesPerTurn: number;
+    driverId: string;
+    escortId?: string;
+    runHot: boolean;
+  }) => void;
+  cancelSupplyRoute: (id: string) => void;
+  toggleSupplyRoute: (id: string) => void;
+  setRouteRunHot: (id: string, runHot: boolean) => void;
+  reopenPassageTalks: (routeId: string) => void;
+  /** Draw one standing route on the map (null clears). */
+  setSupplyRouteFocus: (id: string | null) => void;
+  /** Draw the candidate roads for a route being planned (null clears). */
+  setSupplyRoutePreview: (preview: SupplyRoutePreview | null) => void;
+  answerPassage: (id: string, answer: PassageAnswer, offer?: PassageTerms) => void;
   caseDistrict: (territoryId: string, crewId: string) => void;
   dismissHitResult: () => void;
   dismissLookoutReport: () => void;
   tryBribe: (
-    type: "cops" | "captains" | "chiefs" | "mayor",
+    type: "cops" | "captains" | "chiefs" | "mayor" | "judge",
     targetFamily?: FamilyName,
     targetTerritory?: string
   ) => void;
   chooseEvent: (choiceId: string) => void;
+  answerCrewRequest: (requestId: string, answer: CrewRequestAnswer) => void;
+  joinCrew: (memberId: string, capoId: string) => void;
+  leaveCrew: (memberId: string) => void;
   takeDiplomacy: (action: DiplomacyAction, target: FamilyName) => void;
+  proposeSitdown: (target: FamilyName, venue: SitdownVenue, party?: SitdownParty, pick?: AgendaPick) => void;
+  /** The player's move at an open agenda table (truce, district, release…). */
+  answerTable: (id: string, answer: TableAnswer, offer?: AgendaTerms) => void;
+  /** Tear up a deal on purpose. Everyone hears. */
+  breakDeal: (dealId: string) => void;
+  /** Send the crates a liquor order calls for. */
+  fulfilLiquorDeal: (dealId: string) => void;
+  dismissDealSettlement: () => void;
+  answerSitdownCounter: (id: string, accept: boolean) => void;
+  answerSitdownInvite: (
+    id: string,
+    answer: InviteAnswer,
+    venue?: SitdownVenue,
+    party?: SitdownParty,
+  ) => void;
+  dismissSitdownResult: () => void;
+  openSitdownTable: () => void;
+  beginSitdownExit: () => void;
+  completeSitdownCinematic: () => void;
   nextTurn: () => void;
   payFuneral: (deadCrewId: string) => void;
   captureTerritory: (territoryId: string, attackerIds: string[]) => void;
@@ -192,9 +312,12 @@ interface GameStore extends GameState {
 
 const defaultSettings: GameSettings = {
   difficulty: "normal",
+  gameLength: "medium",
   aiAggression: 0.55,
   seed: Date.now() % 1_000_000,
   skipCinematics: false,
+  rivalCinematics: "brief",
+  sfxVolume: 0.7,
 };
 
 function cloneState(s: GameState): GameState {
@@ -223,6 +346,8 @@ export const useGameStore = create<GameStore>()(
         set((s) => ({
           activePanel: panel,
           hitTargetPreviewId: panel === "hit_planner" ? s.hitTargetPreviewId : null,
+          supplyRouteFocusId: panel === "warehouse" ? s.supplyRouteFocusId : null,
+          supplyRoutePreview: panel === "warehouse" ? s.supplyRoutePreview : null,
         })),
 
       selectTerritory: (id, opts) => {
@@ -234,6 +359,8 @@ export const useGameStore = create<GameStore>()(
           selectedTerritoryId: id,
           selectedCrewId: null,
           hitTargetPreviewId: null,
+          supplyRouteFocusId: null,
+          supplyRoutePreview: null,
           focusReason: null,
           activePanel: id
             ? "district"
@@ -256,9 +383,24 @@ export const useGameStore = create<GameStore>()(
         const s = get();
         const [current, ...rest] = s.cinematicQueue;
         if (!current) return;
+        stopAll();
+        if (current.perspective === "witnessed") {
+          // Somebody else's business: no result card. If that was the last
+          // reel and meetings are waiting, the sit-down starts now.
+          const start = rest.length === 0 && (s.sitdownCinematicQueue?.length ?? 0) > 0;
+          set({
+            cinematicQueue: rest,
+            pendingHitResult: null,
+            pendingHitCinematic: null,
+            hitFxTerritoryId: null,
+            sitdownPhase: start ? (s.settings.skipCinematics ? "table" : "drive") : s.sitdownPhase,
+          });
+          return;
+        }
         set({
           cinematicQueue: rest,
           pendingHitResult: current.result,
+          pendingHitCinematic: current,
           hitFxTerritoryId: null,
         });
       },
@@ -428,16 +570,17 @@ export const useGameStore = create<GameStore>()(
           toast.error(lotTierHint(lotTier(t)) || "This lot cannot hold that racket");
           return;
         }
-        const cost = RACKET_BUILD_COST[type] ?? 2000;
+        const bossHere = bossPresentIn(s, s.playerFamily, territoryId);
+        const cost = presenceBuildCost(RACKET_BUILD_COST[type] ?? 2000, bossHere);
         const pay = racketPayment(type, cost, s.money, s.dirtyMoney);
         if (!pay) {
           toast.error("Not enough cash for this racket");
           return;
         }
         const racket = createRacket(`rkt_${Date.now()}`, territoryId, type, 1, s.turn);
-        const income = racketIncome(racket);
+        const income = racketIncome(racket, 0, null, undefined, bossHere);
         const flavor = incomeFlavor(type);
-        const paid = formatPaymentParts(pay);
+        const paid = formatPaymentParts(pay) + (bossHere ? " · boss's discount" : "");
         set({
           money: s.money - pay.clean,
           dirtyMoney: s.dirtyMoney - pay.dirty,
@@ -458,7 +601,7 @@ export const useGameStore = create<GameStore>()(
           ? " · Set it up as a laundering site from the district panel"
           : "";
         toast.success(`${RACKET_LABELS[type]} opened in ${t.name}`, {
-          description: `+$${income}/turn ${flavor} income (unmanaged)${paid ? ` · ${paid}` : ""}${legitHint}`,
+          description: `+$${income}/turn ${flavor} income (${bossHere ? "boss on the block" : "unmanaged"})${paid ? ` · ${paid}` : ""}${legitHint}`,
         });
       },
 
@@ -472,13 +615,14 @@ export const useGameStore = create<GameStore>()(
           toast.error("Business is frozen by Treasury audit");
           return;
         }
-        const pay = racketPayment(r.type, r.upgradeCost, s.money, s.dirtyMoney);
+        const bossHere = !!s.playerFamily && bossPresentIn(s, s.playerFamily, territoryId);
+        const pay = racketPayment(r.type, presenceBuildCost(r.upgradeCost, bossHere), s.money, s.dirtyMoney);
         if (!pay) {
           toast.error("Not enough cash to upgrade");
           return;
         }
         const upgraded = upgradeRacket(r, s.turn);
-        const paid = formatPaymentParts(pay);
+        const paid = formatPaymentParts(pay) + (bossHere ? " · boss's discount" : "");
         set({
           money: s.money - pay.clean,
           dirtyMoney: s.dirtyMoney - pay.dirty,
@@ -532,8 +676,11 @@ export const useGameStore = create<GameStore>()(
           toast.error("Source needs a managed warehouse");
           return;
         }
-        if (!hasManagedWarehouse(dest, lookup, s.turn)) {
-          toast.error("Destination needs a managed warehouse");
+        if (
+          !hasManagedWarehouse(dest, lookup, s.turn) &&
+          !dest.rackets.some((r) => r.type === "speakeasy")
+        ) {
+          toast.error("Destination needs a managed warehouse or a speakeasy");
           return;
         }
         const wd = withdrawCrates(src, cargo, s.turn);
@@ -634,13 +781,14 @@ export const useGameStore = create<GameStore>()(
         const sites: { id: string; cap: number }[] = [];
         for (const t of s.territories) {
           if (t.owner !== s.playerFamily) continue;
+          const bossHere = bossPresentIn(s, s.playerFamily, t.id);
           for (const r of t.rackets) {
             if (!isLegitBusiness(r.type) || isRacketFrozen(r, s.turn)) continue;
             if (!isLaunderSiteSetUp(r)) continue;
             const manager = r.managerId
               ? s.crew.find((c) => c.id === r.managerId && c.status === "active")
               : null;
-            sites.push({ id: r.id, cap: launderCap(r, manager, s.turn) });
+            sites.push({ id: r.id, cap: launderCap(r, manager, s.turn, bossHere) });
           }
         }
         if (sites.length === 0) {
@@ -690,7 +838,7 @@ export const useGameStore = create<GameStore>()(
           ? s.crew.find((c) => c.id === r.managerId && c.status === "active")
           : null;
         const readyTurn = s.turn + 1;
-        const cap = launderCap(r, manager, s.turn);
+        const cap = launderCap(r, manager, s.turn, bossPresentIn(s, s.playerFamily, territoryId));
         set({
           territories: s.territories.map((x) =>
             x.id === territoryId
@@ -754,10 +902,27 @@ export const useGameStore = create<GameStore>()(
           (territory?.owner && territory.owner !== s.playerFamily ? territory.owner : null);
         if (!rivalFamily) return;
         if (!args.blind && !args.targetCrewId) return;
+        if (inTruce(s, s.playerFamily, rivalFamily)) {
+          toast.error("You gave your word", {
+            description: `A truce holds with ${rivalFamily}. Break it from the Commission panel first.`,
+          });
+          return;
+        }
 
         const target = args.targetCrewId
           ? s.crew.find((c) => c.id === args.targetCrewId)
           : undefined;
+
+        if (args.intent === "message") {
+          if (!target || !isMessageTargetRole(target)) {
+            toast.error("A message goes to a hitman, consigliere, underboss or senior capo — not the boss, not a soldier.");
+            return;
+          }
+          if (!routeDisputeWith(s, rivalFamily)) {
+            toast.error(`No route beef with ${rivalFamily} to make a point about.`);
+            return;
+          }
+        }
 
         const assignedIds = hitCrewIds({
           id: "draft",
@@ -807,6 +972,8 @@ export const useGameStore = create<GameStore>()(
             surveilled: false,
             pendingTurns: args.surveilFirst ? 2 : 1,
             blind: !!args.blind,
+            intent: args.intent,
+            motive: args.intent === "message" ? "route_dispute" : undefined,
           },
           rng,
         );
@@ -845,12 +1012,111 @@ export const useGameStore = create<GameStore>()(
           ],
         });
         toast.message(
-          args.surveilFirst ? "Surveillance ordered" : args.blind ? "Blind hit planned" : "Hit planned",
+          args.intent === "message"
+            ? "Message ordered"
+            : args.surveilFirst
+              ? "Surveillance ordered"
+              : args.blind
+                ? "Blind hit planned"
+                : "Hit planned",
           { description: `${label} — route marked on the map` },
         );
         if (brokePact) {
           toast.warning(`You broke your word with ${rivalFamily}.`);
         }
+      },
+
+      establishSupplyRoute: (args) => {
+        const s = get();
+        if (!s.playerFamily) return;
+        const rng = createRng(hashString(`${s.seed}:supply:${s.turn}:${args.path.join(">")}`));
+        const result = establishSupplyRoute(s, args, rng);
+        if (result.error || !result.route) {
+          toast.error(result.error ?? "Couldn't open that route");
+          return;
+        }
+        set({
+          ...result.state,
+          turnLog: [...result.state.turnLog, ...result.logs].slice(-200),
+          // Keep the new road on the map once the picker closes.
+          supplyRouteFocusId: result.route.id,
+          supplyRoutePreview: null,
+        });
+        const src = s.territories.find((t) => t.id === args.sourceTerritoryId)?.name;
+        const dest = s.territories.find((t) => t.id === args.destTerritoryId)?.name;
+        if (result.route.status === "negotiating") {
+          toast.warning("Route waits on passage", {
+            description: `${result.route.awaitingFamilies.join(", ")} asked to the table in two weeks. Your boss travels.`,
+          });
+        } else {
+          toast.success("Supply route open", {
+            description: `${args.cratesPerTurn} crates a week: ${src} → ${dest}${
+              result.route.awaitingFamilies.length ? " — running hot" : ""
+            }`,
+          });
+        }
+      },
+
+      cancelSupplyRoute: (id) => {
+        const s = get();
+        set({
+          ...cancelSupplyRoute(s, id),
+          supplyRouteFocusId: s.supplyRouteFocusId === id ? null : s.supplyRouteFocusId,
+        });
+        toast.message("Supply route closed");
+      },
+
+      setSupplyRouteFocus: (id) => set({ supplyRouteFocusId: id }),
+      setSupplyRoutePreview: (preview) => set({ supplyRoutePreview: preview }),
+
+      toggleSupplyRoute: (id) => {
+        const s = get();
+        const next = toggleSupplyRoute(s, id);
+        set(next);
+        const r = next.supplyRoutes.find((x) => x.id === id);
+        toast.message(r?.status === "suspended" ? "Route held" : "Route rolling again");
+      },
+
+      setRouteRunHot: (id, runHot) => {
+        const s = get();
+        set(setRouteRunHot(s, id, runHot));
+        if (runHot) toast.warning("Running hot", { description: "Their men will tax the truck and remember it." });
+      },
+
+      reopenPassageTalks: (routeId) => {
+        const s = get();
+        const rng = createRng(hashString(`${s.seed}:reopen:${routeId}:${s.turn}`));
+        const result = reopenPassageTalks(s, routeId, rng);
+        set({
+          ...result.state,
+          turnLog: [...result.state.turnLog, ...result.logs].slice(-200),
+        });
+        if (result.logs.length) toast.message(result.logs[result.logs.length - 1]!.text);
+        else toast.message("Nobody to talk to on that road.");
+      },
+
+      answerPassage: (id, answer, offer) => {
+        const s = get();
+        const rng = createRng(hashString(`${s.seed}:passage:${id}:${answer}:${s.turn}:${JSON.stringify(offer ?? {})}`));
+        const result = answerPassage(s, id, answer, offer, rng);
+        const queue = (result.state.sitdownCinematicQueue ?? s.sitdownCinematicQueue ?? []).map((c) =>
+          c.sitdownId === id && result.result
+            ? { ...c, result: result.result, outcome: result.result.success ? ("handshake" as const) : ("walk" as const) }
+            : c,
+        );
+        const onTable = queue.some((c) => c.sitdownId === id);
+        set({
+          ...result.state,
+          sitdownCinematicQueue: queue,
+          pendingSitdownResults:
+            result.result && !onTable
+              ? [...(result.state.pendingSitdownResults ?? []), result.result]
+              : result.state.pendingSitdownResults ?? [],
+          turnLog: [...result.state.turnLog, result.log].slice(-200),
+        });
+        if (result.struck) toast.success("Passage deal struck", { description: result.log.text });
+        else if (answer === "walk") toast.warning(result.log.text);
+        else toast.message(result.log.text);
       },
 
       caseDistrict: (territoryId, crewId) => {
@@ -904,7 +1170,15 @@ export const useGameStore = create<GameStore>()(
         });
       },
 
-      dismissHitResult: () => set({ pendingHitResult: null }),
+      dismissHitResult: () => {
+        const s = get();
+        const start = (s.sitdownCinematicQueue?.length ?? 0) > 0 && s.cinematicQueue.length === 0;
+        set({
+          pendingHitResult: null,
+          pendingHitCinematic: null,
+          sitdownPhase: start ? (s.settings.skipCinematics ? "table" : "drive") : s.sitdownPhase,
+        });
+      },
 
       dismissLookoutReport: () =>
         set((s) => ({
@@ -935,6 +1209,53 @@ export const useGameStore = create<GameStore>()(
         }
       },
 
+      answerCrewRequest: (requestId, answer) => {
+        const s = get();
+        const { state: next, message } = answerCrewRequest(s, requestId, answer);
+        if (next === s) return;
+        set(next);
+        if (message) {
+          if (answer === "approve") toast.success("Done", { description: message });
+          else toast.message(answer === "reject" ? "Turned down" : "Later", { description: message });
+        }
+      },
+
+      joinCrew: (memberId, capoId) => {
+        const s = get();
+        const check = canJoinCrew(s.crew, memberId, capoId);
+        if (!check.ok) {
+          toast.error(check.reason ?? "Can't do that");
+          return;
+        }
+        const member = s.crew.find((c) => c.id === memberId);
+        const capo = s.crew.find((c) => c.id === capoId);
+        const wasAssociate = member?.role === "associate";
+        set({
+          crew: joinCrew(s.crew, memberId, capoId, s.turn),
+          turnLog: [
+            ...s.turnLog,
+            {
+              id: `log_crewjoin_${memberId}_${s.turn}`,
+              turn: s.turn,
+              category: "system",
+              text: wasAssociate
+                ? `${member?.name} was made a soldier and put in ${capo?.name}'s crew.`
+                : `${member?.name} joined ${capo?.name}'s crew.`,
+              family: s.playerFamily ?? undefined,
+            },
+          ],
+        });
+        toast.success(`${member?.name} runs with ${capo?.name} now`);
+      },
+
+      leaveCrew: (memberId) => {
+        const s = get();
+        const member = s.crew.find((c) => c.id === memberId);
+        if (!member?.capoId) return;
+        set({ crew: leaveCrew(s.crew, memberId) });
+        toast.message(`${member.name} is on his own again`);
+      },
+
       takeDiplomacy: (action, target) => {
         const s = get();
         const check = canDiplomacy(s, action, target);
@@ -951,50 +1272,154 @@ export const useGameStore = create<GameStore>()(
         else toast.warning(result.log.text);
       },
 
+      proposeSitdown: (target, venue, party, pick) => {
+        const s = get();
+        const rng = createRng(hashString(`${s.seed}:sitdown:${target}:${venue}:${s.turn}`));
+        const result = proposeSitdown(s, target, venue, rng, party, pick);
+        set({
+          ...result.state,
+          turnLog: [...result.state.turnLog, result.log].slice(-200),
+        });
+        if (result.sitdown) toast.message(result.log.text);
+        else toast.error(result.log.text);
+      },
+
+      answerTable: (id, answer, offer) => {
+        const s = get();
+        const rng = createRng(
+          hashString(`${s.seed}:table:${id}:${answer}:${s.turn}:${JSON.stringify(offer ?? {})}`),
+        );
+        const result = answerTable(s, id, answer, offer, rng);
+        const queue = (result.state.sitdownCinematicQueue ?? s.sitdownCinematicQueue ?? []).map((c) =>
+          c.sitdownId === id && result.result
+            ? { ...c, result: result.result, outcome: result.result.success ? ("handshake" as const) : ("walk" as const) }
+            : c,
+        );
+        const onTable = queue.some((c) => c.sitdownId === id);
+        set({
+          ...result.state,
+          sitdownCinematicQueue: queue,
+          pendingSitdownResults:
+            result.result && !onTable
+              ? [...(result.state.pendingSitdownResults ?? []), result.result]
+              : result.state.pendingSitdownResults ?? [],
+          turnLog: [...result.state.turnLog, result.log].slice(-200),
+        });
+        if (result.struck) toast.success("Terms struck", { description: result.log.text });
+        else if (answer === "walk" || result.walkedOut) toast.warning(result.log.text);
+        else toast.message(result.log.text);
+      },
+
+      breakDeal: (dealId) => {
+        const s = get();
+        if (!s.playerFamily) return;
+        const result = breakDeal(s, dealId, s.playerFamily);
+        if (!result.log) return;
+        // The card says the rest.
+        set({
+          ...result.state,
+          turnLog: [...result.state.turnLog, result.log].slice(-200),
+        });
+      },
+
+      fulfilLiquorDeal: (dealId) => {
+        const s = get();
+        const result = fulfilLiquorDeal(s, dealId);
+        if (result.error) {
+          toast.error(result.error);
+          return;
+        }
+        set({
+          ...result.state,
+          turnLog: result.log ? [...result.state.turnLog, result.log].slice(-200) : result.state.turnLog,
+        });
+      },
+
+      dismissDealSettlement: () =>
+        set((s) => ({
+          pendingDealSettlements: (s.pendingDealSettlements ?? []).slice(1),
+        })),
+
+      answerSitdownCounter: (id, accept) => {
+        const s = get();
+        const result = answerCounter(s, id, accept);
+        set({
+          ...result.state,
+          turnLog: [...result.state.turnLog, result.log].slice(-200),
+        });
+        toast.message(result.log.text);
+      },
+
+      answerSitdownInvite: (id, answer, venue, party) => {
+        const s = get();
+        const rng = createRng(hashString(`${s.seed}:invite:${id}:${answer}:${s.turn}`));
+        const result = answerInvite(s, id, answer, venue, rng, party);
+        set({
+          ...result.state,
+          turnLog: [...result.state.turnLog, result.log].slice(-200),
+        });
+        toast.message(result.log.text);
+      },
+
+      dismissSitdownResult: () => {
+        const s = get();
+        const pending = (s.pendingSitdownResults ?? []).slice(1);
+        const more = pending.length === 0 && (s.sitdownCinematicQueue?.length ?? 0) > 0;
+        set({
+          pendingSitdownResults: pending,
+          sitdownPhase: more ? (s.settings.skipCinematics ? "table" : "drive") : null,
+        });
+      },
+
+      openSitdownTable: () => set({ sitdownPhase: "table" }),
+
+      beginSitdownExit: () => set({ sitdownPhase: "exit" }),
+
+      completeSitdownCinematic: () => {
+        const s = get();
+        const [current, ...rest] = s.sitdownCinematicQueue ?? [];
+        if (!current) {
+          set({ sitdownPhase: null });
+          return;
+        }
+        set({
+          sitdownCinematicQueue: rest,
+          sitdownPhase: null,
+          pendingSitdownResults: current.result
+            ? [...(s.pendingSitdownResults ?? []), current.result]
+            : s.pendingSitdownResults ?? [],
+        });
+      },
+
       nextTurn: () => {
         const s = get();
         if (!s.playerFamily || s.activeEvent) return;
         if (s.cinematicQueue.length > 0 || s.pendingHitResult) return;
+        if ((s.sitdownCinematicQueue?.length ?? 0) > 0 || s.sitdownPhase) return;
+        if ((s.pendingSitdownResults?.length ?? 0) > 0) return;
         if ((s.pendingReports?.length ?? 0) > 0) return;
         let cur: GameState = cloneState(s);
-        const ready = cur.operations.filter(
-          (o) =>
-            !o.resolved &&
-            o.pendingTurns <= 0 &&
-            o.family === cur.playerFamily &&
-            o.kind === "hit"
-        );
         const queued: HitCinematic[] = [];
         const skip = !!cur.settings.skipCinematics;
 
-        for (const op of ready) {
-          const rng = createRng(cur.seed + cur.turn * 131 + op.id.length * 17);
-          const { state: next, result } = resolveHit(cur, op, rng);
-          cur = next;
-          const origin =
-            op.originTerritoryId ||
-            cur.territories.find((t) => t.owner === cur.playerFamily)?.id ||
-            op.targetTerritoryId;
-          const path =
-            findDeliveryPath(cur.territories, origin, op.targetTerritoryId, cur.playerFamily!, true) ||
-            [origin, op.targetTerritoryId];
+        // Our jobs go first, before the week turns, so the reel plays on the
+        // city as it stands and the result card follows it.
+        const ours = resolvePlayerHits(cur, createRng(cur.seed + cur.turn * 131));
+        cur = ours.state;
+        for (const { op, result, path } of ours.hits) {
+          const strike = result.strikeTerritoryId ?? op.targetTerritoryId;
+          const cinematic = buildHitCinematic(cur, op, result, "ours", path);
 
           if (skip) {
             cur = {
               ...cur,
               pendingHitResult: result,
-              hitFxTerritoryId: op.targetTerritoryId,
-              flyToTerritoryId: op.targetTerritoryId,
+              pendingHitCinematic: cinematic,
+              hitFxTerritoryId: strike,
+              flyToTerritoryId: strike,
             };
           } else {
-            queued.push({
-              operationId: op.id,
-              originTerritoryId: origin,
-              targetTerritoryId: op.targetTerritoryId,
-              path,
-              approach: op.approach ?? "ambush",
-              result,
-            });
+            queued.push(cinematic);
           }
         }
 
@@ -1011,14 +1436,49 @@ export const useGameStore = create<GameStore>()(
         const tipOffLogs = newLogs.filter((l) => l.id.startsWith("tip_"));
         const newReports = (cur.pendingReports ?? []).slice(reportsBefore);
 
-        if (queued.length > 0) {
-          const first = queued[0]!;
+        // Rival-on-rival reels are optional and never survive a full skip.
+        const showWitnessed = !skip && (cur.settings.rivalCinematics ?? "brief") !== "off";
+        const incoming = (cur.incomingHitReel ?? []).filter(
+          (c) => c.perspective !== "witnessed" || showWitnessed,
+        );
+        const playedIds = new Set<string>([
+          ...queued.map((c) => c.operationId),
+          ...incoming.map((c) => c.operationId),
+        ]);
+        if (skip && !cur.pendingHitResult && incoming[0]) {
+          const firstIn = incoming[0];
           cur = {
             ...cur,
-            cinematicQueue: queued,
-            flyToTerritoryId: first.originTerritoryId,
+            pendingHitResult: firstIn.result,
+            pendingHitCinematic: firstIn,
+            hitFxTerritoryId: firstIn.targetTerritoryId,
+            flyToTerritoryId: firstIn.targetTerritoryId,
+          };
+        }
+        const reel = skip ? [] : [...queued, ...incoming];
+        if (reel.length > 0) {
+          const first = reel[0]!;
+          cur = {
+            ...cur,
+            cinematicQueue: reel,
+            // A witnessed reel skips the approach, so open on the block itself.
+            flyToTerritoryId:
+              first.perspective === "witnessed" ? first.targetTerritoryId : first.originTerritoryId,
             flyToNonce: (cur.flyToNonce ?? 0) + 1,
             pendingHitResult: null,
+            pendingHitCinematic: null,
+          };
+        }
+        cur = { ...cur, incomingHitReel: [] };
+
+        cur = applyHostFallout(cur);
+        const meetings = buildSitdownCinematics(cur);
+        if (meetings.length > 0) {
+          const blocked = reel.length > 0 || !!cur.pendingHitResult;
+          cur = {
+            ...cur,
+            sitdownCinematicQueue: meetings,
+            sitdownPhase: blocked ? null : skip ? "table" : "drive",
           };
         }
 
@@ -1028,6 +1488,8 @@ export const useGameStore = create<GameStore>()(
           toast.warning("Lookouts report movement", { description: log.text });
         }
         for (const log of rivalHitLogs) {
+          const played = [...playedIds].some((id) => log.id.endsWith(id));
+          if (played) continue;
           toast.warning(`${log.family} struck`, { description: log.text });
         }
         for (const report of newReports) {
@@ -1116,11 +1578,23 @@ export const useGameStore = create<GameStore>()(
       captureTerritory: (territoryId, attackerIds) => {
         const s = get();
         if (!s.playerFamily || attackerIds.length < 1) return;
+        if (familyHeadless(s, s.playerFamily)) {
+          toast.error("Nobody to order the move", {
+            description: "The boss is in the Tombs and no underboss is standing in.",
+          });
+          return;
+        }
         const t = s.territories.find((x) => x.id === territoryId);
         if (!t || t.owner === s.playerFamily) return;
         const allowance = captureAllowance(s, s.playerFamily, t);
         if (!allowance.ok) {
           toast.error("Not this week", { description: allowance.blocked });
+          return;
+        }
+        if (t.owner && inTruce(s, s.playerFamily, t.owner)) {
+          toast.error("You gave your word", {
+            description: `A truce holds with ${t.owner}. Break it from the Commission panel first.`,
+          });
           return;
         }
         const brokePact = !!t.owner && hasPact(s, s.playerFamily, t.owner);
@@ -1181,24 +1655,64 @@ export const useGameStore = create<GameStore>()(
                 ? loaded.buildFx
                 : null,
             cinematicQueue: loaded.cinematicQueue ?? [],
+            incomingHitReel: [],
+            pendingHitCinematic: loaded.pendingHitCinematic ?? null,
             settings: {
               ...defaultSettings,
               ...loaded.settings,
               skipCinematics: loaded.settings?.skipCinematics ?? false,
+              sfxVolume: loaded.settings?.sfxVolume ?? 0.7,
             },
             flyToNonce: loaded.flyToNonce ?? 0,
             flyToFocus: null,
+            supplyRouteFocusId: null,
+            supplyRoutePreview: null,
             focusReason: loaded.focusReason ?? null,
             intel: normalizeIntel(loaded.intel),
             grudges: loaded.grudges ?? [],
             incidents: loaded.incidents ?? [],
             rumors: loaded.rumors ?? [],
             captureTally: loaded.captureTally ?? { turn: loaded.turn, byFamily: {} },
+            crewRequests: loaded.crewRequests ?? [],
+            sitdowns: loaded.sitdowns ?? [],
+            pendingSitdownResults: [],
+            sitdownCinematicQueue: [],
+            sitdownPhase: null,
+            deals: loaded.deals ?? [],
+            pendingDealSettlements: loaded.pendingDealSettlements ?? [],
+            supplyRoutes: loaded.supplyRoutes ?? [],
+            passageDeals: loaded.passageDeals ?? [],
+            passageLeverage: loaded.passageLeverage ?? {},
+            messageHitTurns: loaded.messageHitTurns ?? {},
             pendingReports: loaded.pendingReports ?? [],
             rivalTreasury: loaded.rivalTreasury ?? {},
+            rivalInfluence: seedRivalInfluence(loaded.rivalInfluence, loaded.playerFamily),
+            bribes: {
+              cops: { isActive: false, turnsRemaining: 0, cost: 0, successRate: 0 },
+              captains: { isActive: false, turnsRemaining: 0, cost: 0, successRate: 0 },
+              chiefs: { isActive: false, turnsRemaining: 0, cost: 0, successRate: 0 },
+              mayor: { isActive: false, turnsRemaining: 0, cost: 0, successRate: 0 },
+              ...loaded.bribes,
+              judge: loaded.bribes?.judge ?? {
+                isActive: false,
+                turnsRemaining: 0,
+                cost: 0,
+                successRate: 0,
+              },
+            },
+            victory: {
+              ...emptyVictory(finalTurnFor(loaded.settings?.gameLength)),
+              ...loaded.victory,
+              finalTurn:
+                loaded.victory?.finalTurn || finalTurnFor(loaded.settings?.gameLength),
+              influenceLeadTurns: loaded.victory?.influenceLeadTurns ?? 0,
+              wealthLeadTurns: loaded.victory?.wealthLeadTurns ?? 0,
+              bankruptTurns: loaded.victory?.bankruptTurns ?? 0,
+            },
             diplomacy: {
               pacts: loaded.diplomacy?.pacts ?? {},
               cooldowns: loaded.diplomacy?.cooldowns ?? {},
+              hostBans: loaded.diplomacy?.hostBans ?? {},
             },
           });
           return true;
@@ -1238,11 +1752,22 @@ export const useGameStore = create<GameStore>()(
           "setupLaunderSite",
           "stopLaunderSite",
           "planPlayerHit",
+          "establishSupplyRoute",
+          "cancelSupplyRoute",
+          "toggleSupplyRoute",
+          "setRouteRunHot",
+          "reopenPassageTalks",
+          "setSupplyRouteFocus",
+          "setSupplyRoutePreview",
+          "answerPassage",
           "caseDistrict",
           "dismissHitResult",
           "dismissLookoutReport",
           "tryBribe",
           "chooseEvent",
+          "answerCrewRequest",
+          "joinCrew",
+          "leaveCrew",
           "takeDiplomacy",
           "nextTurn",
           "payFuneral",
@@ -1287,7 +1812,11 @@ export const useGameStore = create<GameStore>()(
               ? p.buildFx
               : null,
           cinematicQueue: p.cinematicQueue ?? [],
+          incomingHitReel: [],
+          pendingHitCinematic: p.pendingHitCinematic ?? null,
           hitTargetPreviewId: p.hitTargetPreviewId ?? null,
+          supplyRouteFocusId: null,
+          supplyRoutePreview: null,
           focusReason: p.focusReason ?? null,
           intel: normalizeIntel(p.intel),
           grudges: p.grudges ?? current.grudges ?? [],
@@ -1295,16 +1824,51 @@ export const useGameStore = create<GameStore>()(
           rumors: p.rumors ?? current.rumors ?? [],
           captureTally:
             p.captureTally ?? current.captureTally ?? { turn: p.turn ?? 0, byFamily: {} },
-          pendingReports: p.pendingReports ?? [],
-          rivalTreasury: p.rivalTreasury ?? {},
+          crewRequests: p.crewRequests ?? current.crewRequests ?? [],
+          sitdowns: p.sitdowns ?? current.sitdowns ?? [],
+          pendingSitdownResults: [],
+          sitdownCinematicQueue: [],
+          sitdownPhase: null,
+          deals: p.deals ?? current.deals ?? [],
+          pendingDealSettlements: p.pendingDealSettlements ?? [],
           diplomacy: {
             pacts: p.diplomacy?.pacts ?? current.diplomacy?.pacts ?? {},
             cooldowns: p.diplomacy?.cooldowns ?? current.diplomacy?.cooldowns ?? {},
+            hostBans: p.diplomacy?.hostBans ?? current.diplomacy?.hostBans ?? {},
+          },
+          supplyRoutes: p.supplyRoutes ?? current.supplyRoutes ?? [],
+          passageDeals: p.passageDeals ?? current.passageDeals ?? [],
+          passageLeverage: p.passageLeverage ?? current.passageLeverage ?? {},
+          messageHitTurns: p.messageHitTurns ?? current.messageHitTurns ?? {},
+          pendingReports: p.pendingReports ?? [],
+          rivalTreasury: p.rivalTreasury ?? {},
+          rivalInfluence: seedRivalInfluence(p.rivalInfluence, p.playerFamily ?? null),
+          bribes: {
+            cops: { isActive: false, turnsRemaining: 0, cost: 0, successRate: 0 },
+            captains: { isActive: false, turnsRemaining: 0, cost: 0, successRate: 0 },
+            chiefs: { isActive: false, turnsRemaining: 0, cost: 0, successRate: 0 },
+            mayor: { isActive: false, turnsRemaining: 0, cost: 0, successRate: 0 },
+            ...p.bribes,
+            judge: p.bribes?.judge ?? {
+              isActive: false,
+              turnsRemaining: 0,
+              cost: 0,
+              successRate: 0,
+            },
+          },
+          victory: {
+            ...emptyVictory(finalTurnFor(p.settings?.gameLength)),
+            ...p.victory,
+            finalTurn: p.victory?.finalTurn || finalTurnFor(p.settings?.gameLength),
+            influenceLeadTurns: p.victory?.influenceLeadTurns ?? 0,
+            wealthLeadTurns: p.victory?.wealthLeadTurns ?? 0,
+            bankruptTurns: p.victory?.bankruptTurns ?? 0,
           },
           settings: {
             ...defaultSettings,
             ...(p.settings ?? {}),
             skipCinematics: p.settings?.skipCinematics ?? false,
+            sfxVolume: p.settings?.sfxVolume ?? 0.7,
           },
           flyToNonce: p.flyToNonce ?? 0,
           flyToFocus: null,

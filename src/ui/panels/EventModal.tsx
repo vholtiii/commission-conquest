@@ -16,8 +16,16 @@ const EFFECT_LABEL: Record<string, string> = {
 export default function EventModal() {
   const activeEvent = useGameStore((s) => s.activeEvent);
   const chooseEvent = useGameStore((s) => s.chooseEvent);
+  // The week's violence plays out first; the paper lands after the reel and its card.
+  const reelRunning = useGameStore(
+    (s) =>
+      s.cinematicQueue.length > 0 ||
+      !!s.pendingHitResult ||
+      s.sitdownPhase != null ||
+      (s.sitdownCinematicQueue?.length ?? 0) > 0,
+  );
 
-  if (!activeEvent) return null;
+  if (!activeEvent || reelRunning) return null;
 
   return (
     <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/75 backdrop-blur-sm">

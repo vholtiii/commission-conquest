@@ -10,15 +10,20 @@ import type {
   TurnLogEntry,
 } from "@/types/game";
 import { RACKET_LABELS } from "@/types/game";
-import { getFamilyDef } from "@/data/families";
+import { ALL_FAMILY_NAMES, getFamilyDef } from "@/data/families";
+import { CRATE_STREET_VALUE } from "./passage";
+import { assessPath } from "./supplyRoutes";
 import type { Rng } from "./rng";
 import { createRng, hashString } from "./rng";
 import { aggregateTraitEffects, roleUpkeep } from "./crew";
+import { crewIncomeMult } from "./crews";
+import { BOSS_PRESENCE, bossPresenceDistrict } from "./bossPresence";
 import {
   applyWarehouseShrinkage,
   depositCrates,
   dumpWarning,
   emptyLiquorLedger,
+  hasManagedWarehouse,
   idleStorageCost,
   makeManagerLookup,
   mergeLedger,
@@ -87,6 +92,14 @@ export const RACKET_BASE_INCOME: Record<RacketType, number> = {
   safehouse: 0,
 };
 
+/**
+ * Per-turn heat from the whole racket book = Σ heatGen × this scale.
+ * Base decay is 2/turn (up to ~8 with every bribe running), so 0.25 lets a
+ * starting book (~22 raw) sit near the Raids line and forces a growing empire
+ * to buy protection. At 1.0 a passive player pegged 100 heat by turn 6.
+ */
+export const RACKET_HEAT_SCALE = 0.25;
+
 export const RACKET_HEAT: Record<RacketType, number> = {
   still: 3,
   brewery: 4,
@@ -153,12 +166,18 @@ export function launderCap(
   racket: Racket,
   manager?: CrewMember | null,
   turn = 0,
+  /** The boss holds court on this block: the books stretch further. */
+  bossHere = false,
 ): number {
   if (!isLegitBusiness(racket.type)) return 0;
   const rules = LAUNDER_RULES[racket.type];
   const { capMult } = launderManagerMods(manager);
   return Math.floor(
-    rules.capPerLevel * racket.level * capMult * earlyGameCapMult(turn),
+    rules.capPerLevel *
+      racket.level *
+      capMult *
+      earlyGameCapMult(turn) *
+      (bossHere ? BOSS_PRESENCE.launderCapMult : 1),
   );
 }
 
@@ -211,6 +230,7 @@ export interface AuditChanceCtx {
   chiefsActive: boolean;
   manager?: CrewMember | null;
   scrutinyPrev?: number;
+  bossHere?: boolean;
 }
 
 export function auditChance(
@@ -219,7 +239,7 @@ export function auditChance(
   ctx: AuditChanceCtx,
   turn = 0,
 ): number {
-  const cap = launderCap(racket, ctx.manager, turn);
+  const cap = launderCap(racket, ctx.manager, turn, ctx.bossHere ?? false);
   if (cap <= 0 || amount <= cap) return 0;
   const over = amount / cap - 1;
   const scrutinyPrev = ctx.scrutinyPrev ?? racket.scrutiny ?? 0;
@@ -293,20 +313,34 @@ export function racketFreshness(
   return null;
 }
 
-/** Unmanaged rackets run at 70%; managers restore full + trait/skill bonus. */
+/**
+ * Unmanaged rackets run at 70%; managers restore full + trait/skill bonus.
+ * A capo managing with his crew behind him earns more per man (pass `crew`).
+ * With the boss on the block nothing runs short-handed and everything runs
+ * harder (`BOSS_PRESENCE.incomeMult`).
+ */
 export function racketIncome(
   racket: Racket,
   incomeBonus = 0,
   manager?: CrewMember | null,
+  crew?: CrewMember[],
+  bossHere = false,
 ): number {
   const base = RACKET_BASE_INCOME[racket.type] * racket.level;
-  let managerMult = 0.7;
+  let managerMult = bossHere ? BOSS_PRESENCE.unmanagedFloor : 0.7;
   if (manager && manager.status === "active") {
     const traits = aggregateTraitEffects(manager.traits);
     managerMult =
-      1 + traits.incomeMod + (manager.skills.smarts + manager.skills.charm) / 1000;
+      (1 + traits.incomeMod + (manager.skills.smarts + manager.skills.charm) / 1000) *
+      crewIncomeMult(manager, crew);
   }
+  if (bossHere) managerMult *= BOSS_PRESENCE.incomeMult;
   return Math.floor(base * (1 + incomeBonus) * managerMult);
+}
+
+/** The crew's share of a managed racket's income, for the breakdown line. */
+export function racketCrewBonusPct(manager: CrewMember | null | undefined, crew: CrewMember[]): number {
+  return Math.round((crewIncomeMult(manager, crew) - 1) * 100);
 }
 
 export function incomeFlavor(type: RacketType): "clean" | "dirty" | "mixed" {
@@ -469,20 +503,9 @@ export function createDeliveryRoute(
   };
 }
 
+/** One-off runs read the road the same way standing routes do. */
 export function hijackRisk(state: GameState, route: DeliveryRoute): number {
-  let risk = 0.08;
-  for (const tid of route.path) {
-    const t = state.territories.find((x) => x.id === tid);
-    if (t && t.owner && t.owner !== route.family) {
-      risk += 0.12 + t.defenseBonus;
-    }
-    risk += (t?.heatLevel ?? 0) * 0.01;
-  }
-  const driver = state.crew.find((c) => c.id === route.driverId);
-  if (driver) {
-    risk -= driver.skills.driving / 500;
-  }
-  return Math.max(0.05, Math.min(0.65, risk));
+  return assessPath(state, route.path, route.family, route.driverId).risk;
 }
 
 export interface DeliveryProcessResult {
@@ -494,6 +517,10 @@ export interface DeliveryProcessResult {
   crewUpdates: { id: string; status: "active" | "wounded" | "dead" }[];
   territories: Territory[];
   ledger: Partial<LiquorLedger>;
+  /** Player trucks taken this turn; the pipeline opens a case for each. */
+  hijacks: { route: DeliveryRoute; hijacker: FamilyName }[];
+  /** Crates fenced by the hijackers, credited to their pools. */
+  rivalTreasury: Partial<Record<FamilyName, number>>;
 }
 
 export function processDeliveries(
@@ -506,6 +533,8 @@ export function processDeliveries(
   let heatDelta = 0;
   const crewUpdates: DeliveryProcessResult["crewUpdates"] = [];
   const routes: DeliveryRoute[] = [];
+  const hijacks: DeliveryProcessResult["hijacks"] = [];
+  const rivalTreasury: DeliveryProcessResult["rivalTreasury"] = { ...(state.rivalTreasury ?? {}) };
   let territories = state.territories;
   const ledger: Partial<LiquorLedger> = {
     delivered: 0,
@@ -532,19 +561,28 @@ export function processDeliveries(
         ledger.stolen = (ledger.stolen ?? 0) + route.cargo;
         ledger.heat = (ledger.heat ?? 0) + 2;
       }
-      const hijacker = state.territories.find(
-        (t) =>
-          route.path.includes(t.id) &&
-          t.owner &&
-          t.owner !== route.family,
-      )?.owner;
+      const onPath = state.territories
+        .filter((t) => route.path.includes(t.id) && t.owner && t.owner !== route.family)
+        .map((t) => t.owner as FamilyName);
+      const hijacker: FamilyName | undefined = onPath.length
+        ? rng.pick(onPath)
+        : isPlayer
+          ? rng.pick(ALL_FAMILY_NAMES.filter((f) => f !== route.family))
+          : undefined;
+      if (hijacker) {
+        rivalTreasury[hijacker] = (rivalTreasury[hijacker] ?? 0) + route.cargo * CRATE_STREET_VALUE;
+      }
+      // The player never gets told who; that's what the case is for.
       logs.push({
         id: `log_del_${route.id}`,
         turn: state.turn,
         category: "delivery",
-        text: `${route.family} shipment hijacked${hijacker ? ` by ${hijacker}` : ""}! Lost ${route.cargo} crates.`,
+        text: isPlayer
+          ? `Your shipment was hijacked on the road. Lost ${route.cargo} crates.`
+          : `${route.family} shipment hijacked${hijacker ? ` by ${hijacker}` : ""}! Lost ${route.cargo} crates.`,
         family: route.family,
       });
+      if (isPlayer && hijacker) hijacks.push({ route, hijacker });
       if (isPlayer && rng.chance(0.25)) {
         crewUpdates.push({ id: route.driverId, status: "wounded" });
       }
@@ -572,7 +610,7 @@ export function processDeliveries(
     if (isPlayer) {
       const dest = territories.find((t) => t.id === route.destTerritoryId);
       if (dest) {
-        const dep = depositCrates(dest, route.cargo, "warehouse", state.turn, lookup);
+        const dep = depositCrates(dest, route.cargo, "any", state.turn, lookup);
         territories = territories.map((t) =>
           t.id === dest.id ? dep.territory : t,
         );
@@ -628,6 +666,8 @@ export function processDeliveries(
     crewUpdates,
     territories,
     ledger,
+    hijacks,
+    rivalTreasury,
   };
 }
 
@@ -672,6 +712,8 @@ export interface LaunderSitePlan {
   territoryId: string;
   districtName: string;
   manager: CrewMember | null;
+  /** The boss holds court on this block. */
+  bossHere?: boolean;
   plan: number;
   cap: number;
   ratio: number;
@@ -695,8 +737,10 @@ export function collectLaunderSites(
   // Economy runs after advanceDate, so readiness is checked for the turn being closed.
   const closedTurn = Math.max(0, state.turn - 1);
   const sites: LaunderSitePlan[] = [];
+  const bossBlock = state.playerFamily ? bossPresenceDistrict(state, state.playerFamily) : null;
   for (const t of territories) {
     if (t.owner !== state.playerFamily) continue;
+    const bossHere = t.id === bossBlock;
     for (const r of t.rackets) {
       if (!isLegitBusiness(r.type)) continue;
       if (isRacketFrozen(r, state.turn)) continue;
@@ -708,12 +752,13 @@ export function collectLaunderSites(
             (c) => c.id === r.managerId && c.status === "active",
           ) ?? null
         : null;
-      const cap = Math.max(1, launderCap(r, manager, state.turn));
+      const cap = Math.max(1, launderCap(r, manager, state.turn, bossHere));
       sites.push({
         racket: r,
         territoryId: t.id,
         districtName: t.name,
         manager,
+        bossHere,
         plan: amount,
         cap,
         ratio: amount / cap,
@@ -773,6 +818,7 @@ export function processLaundering(
         chiefsActive,
         manager: site.manager,
         scrutinyPrev,
+        bossHere: site.bossHere,
       },
       state.turn,
     );
@@ -887,6 +933,7 @@ export function processEconomyTurn(
   let moneyDelta = 0;
   let dirtyDelta = 0;
   let heatDelta = 0;
+  let racketHeat = 0;
   const audits: LaunderAudit[] = [];
   let ledger = emptyLiquorLedger();
   const isPlayer = family === state.playerFamily;
@@ -894,6 +941,8 @@ export function processEconomyTurn(
     state.crew.filter((c) => c.status === "active").map((c) => c.id),
   );
   const lookup = isPlayer ? makeManagerLookup(state.crew, family) : undefined;
+  // The boss's block: rackets there run harder all week.
+  const bossBlock = bossPresenceDistrict(state, family);
 
   // Rival shortcut: pool all crates and auto-feed speakeasies across districts
   let territories = state.territories;
@@ -901,7 +950,7 @@ export function processEconomyTurn(
     let pool = 0;
     territories = territories.map((t) => {
       if (t.owner !== family) return t;
-      const { territory: produced } = produceAndStore(t, state.turn);
+      const { territory: produced } = produceAndStore(t, state.turn, undefined, t.id === bossBlock);
       let sum = 0;
       const cleared = produced.rackets.map((r) => {
         if (!["still", "brewery", "warehouse", "speakeasy"].includes(r.type)) {
@@ -940,9 +989,10 @@ export function processEconomyTurn(
     if (t.owner !== family) return t;
 
     let updated = t;
+    const bossHere = t.id === bossBlock;
 
     if (isPlayer) {
-      const prod = produceAndStore(updated, state.turn, lookup);
+      const prod = produceAndStore(updated, state.turn, lookup, bossHere);
       updated = prod.territory;
       ledger = mergeLedger(ledger, {
         produced: prod.produced,
@@ -962,7 +1012,8 @@ export function processEconomyTurn(
         });
       }
 
-      if (lookup) {
+      // Nothing walks out the back with the boss on the block.
+      if (lookup && !bossHere) {
         const shrink = applyWarehouseShrinkage(updated, lookup, state.turn);
         updated = shrink.territory;
         if (shrink.shrunk > 0) {
@@ -986,11 +1037,11 @@ export function processEconomyTurn(
       ...updated,
       rackets: updated.rackets.map((racket) => {
         if (isRacketFrozen(racket, state.turn)) {
-          heatDelta += Math.floor(racket.heatGen * 0.5);
+          racketHeat += racket.heatGen * 0.5;
           return racket;
         }
         if (racket.type === "speakeasy") {
-          heatDelta += racket.heatGen;
+          racketHeat += racket.heatGen;
           return racket;
         }
         const manager = racket.managerId
@@ -1001,7 +1052,7 @@ export function processEconomyTurn(
                 c.status === "active",
             )
           : null;
-        const inc = racketIncome(racket, incomeBonus, manager);
+        const inc = racketIncome(racket, incomeBonus, manager, state.crew, bossHere);
         if (isLegitBusiness(racket.type)) {
           moneyDelta += inc;
         } else if (["gambling", "brothel", "loan_shark"].includes(racket.type)) {
@@ -1010,12 +1061,19 @@ export function processEconomyTurn(
           dirtyDelta += Math.floor(inc * 0.7);
           moneyDelta += Math.floor(inc * 0.3);
         }
-        heatDelta += racket.heatGen;
+        racketHeat += racket.heatGen;
         return racket;
       }),
     };
 
-    const sell = sellSpeakeasies(updated, family, incomeBonus);
+    const sell = sellSpeakeasies(
+      updated,
+      family,
+      incomeBonus,
+      // The boss's block counts as managed: his people mind the back room.
+      bossHere || (!!lookup && hasManagedWarehouse(updated, lookup, state.turn)),
+      bossHere,
+    );
     updated = sell.territory;
     moneyDelta += sell.revenue;
     dirtyDelta += sell.dirtyRevenue;
@@ -1097,6 +1155,8 @@ export function processEconomyTurn(
     });
   }
 
+  heatDelta += Math.round(racketHeat * RACKET_HEAT_SCALE);
+
   return {
     moneyDelta,
     dirtyDelta,
@@ -1144,7 +1204,9 @@ export function processAllEconomy(
   for (const family of families) {
     const partial = processEconomyTurn({ ...state, territories }, family);
     territories = partial.territories;
-    heatDelta += partial.heatDelta;
+    // Heat is the player's problem: only the player's own rackets, dumps and
+    // washes draw the law. Rival operations don't put cops on your door.
+    if (family === state.playerFamily) heatDelta += partial.heatDelta;
     liquorStock = partial.liquorStock;
     logs.push(...partial.logs);
 

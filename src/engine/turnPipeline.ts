@@ -1,9 +1,22 @@
-import type { GameState, LookoutReport, TurnLogEntry, VictoryState } from "@/types/game";
+import type {
+  GameState,
+  HitCinematic,
+  HitPerspective,
+  HitResult,
+  LookoutReport,
+  Operation,
+  TurnLogEntry,
+} from "@/types/game";
 import { ALL_FAMILY_NAMES } from "@/data/families";
 import { createRng, type Rng } from "./rng";
-import { resolvePendingOperations } from "./hitOps";
+import {
+  buildHitCinematic,
+  resolvePendingOperations,
+  settleReadyHit,
+  tipOffChance,
+} from "./hitOps";
 import { runAllAiTurns } from "./rivalAI";
-import { processDeliveries, processAllEconomy, isLegitBusiness, pruneLaunderPlan, safehouseLevel } from "./economy";
+import { findDeliveryPath, processDeliveries, processAllEconomy, isLegitBusiness, pruneLaunderPlan, safehouseLevel } from "./economy";
 import {
   emptyLiquorLedger,
   liquorLedgerLog,
@@ -22,9 +35,131 @@ import {
 import { drawEvent } from "./events";
 import { decayRelations } from "./relations";
 import { activePactKeys, expirePacts } from "./diplomacy";
-import { getBoss, pruneManagers, tickAssignmentXp, grantXpToCrew } from "./crew";
+import { pruneManagers, tickAssignmentXp, grantXpToCrew } from "./crew";
 import { emptyIntel, pruneIntel } from "./intel";
 import { pruneGrudges, releaseHeldCrew } from "./casing";
+import { generateCrewRequests, tickCrewMentoring } from "./crews";
+import { tickBossPresence } from "./bossPresence";
+import { familyHeadless, tickJails } from "./jail";
+import { checkVictory, influenceTick, rivalStandingDrivers } from "./victory";
+import { generateRumors } from "./rumors";
+import { tickIncidents } from "./incidents";
+import { holdSitdowns, proposePassageSitdown, stageSitdowns } from "./sitdowns";
+import { resolveCrewTerritoryId } from "./crewLocation";
+import { openIncidentFromHijack } from "./incidents";
+import { processSupplyRoutes } from "./supplyRoutes";
+import { tickPassageDeals } from "./passage";
+import { settleDealsAfterHits, tickDeals } from "./deals";
+import { callInFavors } from "./favors";
+
+export interface PlayerHit {
+  op: Operation;
+  result: HitResult;
+  /** Origin → strike block, for the drive-in. */
+  path: string[];
+}
+
+/**
+ * The player's jobs that go this week: anything at one week or less when he
+ * presses Next Turn (a fresh hit is planned at 1; surveil-first reaches 1 once
+ * the casing is done). They resolve here, before the rest of the week, so the
+ * store can play the reel; `endTurn` leaves the player's hits alone.
+ *
+ * Each gets its final tip-off roll first, the same one `endTurn` gives rival
+ * hits. A boss car bomb that hasn't gone off yet stays armed and is retried
+ * next week.
+ */
+export function resolvePlayerHits(
+  state: GameState,
+  rng: Rng,
+): { state: GameState; hits: PlayerHit[]; logs: TurnLogEntry[] } {
+  const player = state.playerFamily;
+  const hits: PlayerHit[] = [];
+  const logs: TurnLogEntry[] = [];
+  if (!player) return { state, hits, logs };
+  let current = state;
+
+  const ready = current.operations.filter(
+    (o) => !o.resolved && o.kind === "hit" && o.family === player && o.pendingTurns <= 1,
+  );
+  for (const planned of ready) {
+    let op = planned;
+    if (op.pendingTurns > 0 && !op.tippedOff && rng.chance(tipOffChance(current, op))) {
+      op = { ...op, tippedOff: true };
+    }
+    op = { ...op, pendingTurns: 0 };
+    current = {
+      ...current,
+      operations: current.operations.map((o) => (o.id === op.id ? op : o)),
+    };
+
+    const settled = settleReadyHit(current, op, rng);
+    current = settled.state;
+    if (settled.log) logs.push(settled.log);
+    if (!settled.result) continue;
+
+    const result = settled.result;
+    logs.push({
+      id: `log_hit_${op.id}`,
+      turn: current.turn,
+      category: "hit",
+      text: result.headline,
+    });
+    const origin =
+      op.originTerritoryId ||
+      current.territories.find((t) => t.owner === player)?.id ||
+      op.targetTerritoryId;
+    const strike = result.strikeTerritoryId ?? op.targetTerritoryId;
+    const path =
+      findDeliveryPath(current.territories, origin, strike, player, true) || [origin, strike];
+    hits.push({ op, result, path });
+  }
+
+  if (hits.length > 0) {
+    const settled = settleDealsAfterHits(
+      current,
+      hits.map((h) => h.result),
+    );
+    current = settled.state;
+    logs.push(...settled.logs);
+  }
+  if (logs.length > 0) current = { ...current, turnLog: [...current.turnLog, ...logs] };
+  return { state: current, hits, logs };
+}
+
+/**
+ * Rival hits worth a reel: ones on our people ("incoming"), and rival-on-rival
+ * jobs in a district we've discovered ("witnessed" — shooters and mark only).
+ * A job with nobody to see (the mark never showed, the plant was called off)
+ * stays a log line.
+ */
+function incomingHits(state: GameState, hits: HitResult[]): HitCinematic[] {
+  const player = state.playerFamily;
+  if (!player) return [];
+  const out: HitCinematic[] = [];
+  for (const hit of hits) {
+    const op = state.operations.find((o) => o.id === hit.operationId);
+    if (!op || op.family === player) continue;
+    const strike = hit.strikeTerritoryId ?? op.targetTerritoryId;
+    let perspective: HitPerspective;
+    if (op.targetFamily === player) {
+      perspective = "incoming";
+    } else {
+      const here = state.territories.find((t) => t.id === strike);
+      if (!here?.discovered) continue;
+      if (hit.markAbsent || hit.complication === "cop_on_fender") continue;
+      perspective = "witnessed";
+    }
+    const origin =
+      op.originTerritoryId ||
+      state.territories.find((t) => t.owner === op.family)?.id ||
+      strike;
+    const path =
+      findDeliveryPath(state.territories, origin, strike, op.family, true) || [origin, strike];
+    out.push(buildHitCinematic(state, op, hit, perspective, path));
+  }
+  return out;
+}
 
 function applyLookoutReports(state: GameState, reports: LookoutReport[]): GameState {
   if (reports.length === 0) return state;
@@ -74,75 +209,6 @@ function applyHeatToState(state: GameState, amount: number, source: string): Gam
   };
 }
 
-export function checkVictory(state: GameState): VictoryState {
-  const victory = { ...state.victory };
-
-  if (victory.won || victory.lost) return victory;
-  if (!state.playerFamily || !state.started) return victory;
-
-  const playerBoss = getBoss(state.crew, state.playerFamily);
-  if (!playerBoss || playerBoss.status === "dead") {
-    return { ...victory, lost: true, reason: "Your boss was eliminated." };
-  }
-  if (playerBoss.status === "jailed") {
-    return { ...victory, lost: true, reason: "Your boss was locked up for good." };
-  }
-
-  if (state.money < 0 && state.dirtyMoney < 0) {
-    return {
-      ...victory,
-      lost: true,
-      reason: "Bankrupt — legitimate and dirty coffers are empty.",
-    };
-  }
-
-  const total = state.territories.length;
-  const owned = state.territories.filter(
-    (t) => t.owner === state.playerFamily,
-  ).length;
-  const controlPct = owned / total;
-
-  if (controlPct >= 0.6) {
-    return {
-      ...victory,
-      won: true,
-      reason: `Territorial dominance — ${Math.floor(controlPct * 100)}% of districts under control.`,
-    };
-  }
-
-  const rivalBossesAlive = ALL_FAMILY_NAMES.filter(
-    (f) => f !== state.playerFamily && getBoss(state.crew, f),
-  ).length;
-
-  if (rivalBossesAlive === 0) {
-    return {
-      ...victory,
-      won: true,
-      reason: "Every rival boss is dead — the city is yours.",
-    };
-  }
-
-  let chairTurns = victory.commissionChairTurns;
-  const respect = state.reputation.respect;
-  const fear = state.reputation.fear;
-  if (respect >= 70 && fear >= 50 && owned >= Math.ceil(total * 0.35)) {
-    chairTurns += 1;
-  } else {
-    chairTurns = Math.max(0, chairTurns - 1);
-  }
-
-  if (chairTurns >= 10) {
-    return {
-      ...victory,
-      won: true,
-      commissionChairTurns: chairTurns,
-      reason: "Commission chair for ten turns — all families bend the knee.",
-    };
-  }
-
-  return { ...victory, commissionChairTurns: chairTurns };
-}
-
 export function endTurn(state: GameState, rng?: Rng): GameState {
   const random = rng ?? createRng(state.seed + state.turn * 7919);
   let current = advanceDate(state);
@@ -160,31 +226,69 @@ export function endTurn(state: GameState, rng?: Rng): GameState {
   current = { ...current, crew: released.crew };
   logs.push(...released.logs);
 
-  const ops = resolvePendingOperations(current, random);
+  // Trips that ended last week are over; this week's sit-downs start now,
+  // before any hit resolves — a boss on the road is a boss a car bomb can reach.
+  current = {
+    ...current,
+    crew: current.crew.map((c) =>
+      c.awayAt && c.awayAt.untilTurn <= current.turn ? { ...c, awayAt: undefined } : c,
+    ),
+  };
+  current = stageSitdowns(current);
+
+  // The player's own hits already went (resolvePlayerHits, with a reel);
+  // only rival jobs resolve in here.
+  const rivalsOnly = { skipFamily: current.playerFamily };
+  const ops = resolvePendingOperations(current, random, rivalsOnly);
   current = applyLookoutReports(ops.state, ops.reports);
+  const reel: HitCinematic[] = [];
   for (const hit of ops.results) {
+    const op = current.operations.find((o) => o.id === hit.operationId);
     logs.push({
       id: `log_hit_${hit.operationId}`,
       turn: current.turn,
       category: "hit",
       text: hit.headline,
+      family: op && op.family !== current.playerFamily ? op.family : undefined,
     });
   }
+  reel.push(...incomingHits(current, ops.results));
+  // A contract fulfilled, or a truce broken by whoever pulled the trigger.
+  const settled = settleDealsAfterHits(current, ops.results);
+  current = settled.state;
+  logs.push(...settled.logs);
 
   const ai = runAllAiTurns(current, random);
   current = ai.state;
   logs.push(...ai.logs);
 
-  const aiOps = resolvePendingOperations(current, random);
+  const aiOps = resolvePendingOperations(current, random, rivalsOnly);
   current = applyLookoutReports(aiOps.state, aiOps.reports);
   for (const hit of aiOps.results) {
+    const op = current.operations.find((o) => o.id === hit.operationId);
     logs.push({
       id: `log_ai_hit_${hit.operationId}`,
       turn: current.turn,
       category: "hit",
       text: hit.headline,
+      family: op && op.family !== current.playerFamily ? op.family : undefined,
     });
   }
+  reel.push(...incomingHits(current, aiOps.results));
+  current = { ...current, incomingHitReel: reel };
+  const aiSettled = settleDealsAfterHits(current, aiOps.results);
+  current = aiSettled.state;
+  logs.push(...aiSettled.logs);
+
+  // The meetings, now that the week's violence is settled.
+  const meetings = holdSitdowns(current, random);
+  current = meetings.state;
+  logs.push(...meetings.logs);
+
+  // Word on the street about what's coming, and about what's unsolved.
+  const rumorPass = generateRumors(current, random);
+  current = rumorPass.state;
+  logs.push(...rumorPass.logs);
 
   // Supplier shipments arrive before deliveries
   const shipments = processShipments(current, random);
@@ -206,9 +310,52 @@ export function endTurn(state: GameState, rng?: Rng): GameState {
     routes: deliveries.routes.filter((r) => r.status === "active"),
     money: current.money + deliveries.moneyDelta,
     dirtyMoney: current.dirtyMoney + deliveries.dirtyDelta,
+    rivalTreasury: deliveries.rivalTreasury,
   };
   current = applyHeatToState(current, deliveries.heatDelta, "deliveries");
   logs.push(...deliveries.logs);
+  // Every player truck taken on the road is a case to work.
+  for (const h of deliveries.hijacks) {
+    current = openIncidentFromHijack(current, h.route, h.hijacker, random).state;
+  }
+
+  // Standing orders roll after the one-off runs: tolls, hot stops, the road, the landing.
+  const supply = processSupplyRoutes(current, random);
+  current = supply.state;
+  turnLedger = mergeLedger(turnLedger, supply.ledger);
+  current = applyHeatToState(current, supply.heatDelta, "supply routes");
+  logs.push(...supply.logs);
+
+  // Truces run out, jobs owed come due, and the odd hothead tears up paper.
+  const tableDeals = tickDeals(current, random);
+  current = tableDeals.state;
+  logs.push(...tableDeals.logs);
+
+  // Families holding a favor decide whether this is the week to collect.
+  const favors = callInFavors(current, random);
+  current = favors.state;
+  logs.push(...favors.logs);
+
+  // Deals that ran their course; routes crossing that turf go back to the table.
+  const dealTick = tickPassageDeals(current);
+  current = dealTick.state;
+  for (const fam of dealTick.expired) {
+    logs.push({
+      id: `log_deal_expired_${fam}_${current.turn}`,
+      turn: current.turn,
+      category: "diplomacy",
+      text: `Your passage deal with ${fam} has run out.`,
+      family: current.playerFamily ?? undefined,
+    });
+    const waiting = (current.supplyRoutes ?? []).find(
+      (r) => r.awaitingFamilies.includes(fam) && r.status !== "suspended",
+    );
+    if (waiting) {
+      const talks = proposePassageSitdown(current, fam, waiting.id, random);
+      current = talks.state;
+      if (talks.log) logs.push(talks.log);
+    }
+  }
 
   if (deliveries.crewUpdates.length) {
     current.crew = current.crew.map((c) => {
@@ -239,12 +386,24 @@ export function endTurn(state: GameState, rng?: Rng): GameState {
 
   const economy = processAllEconomy(current);
   turnLedger = mergeLedger(turnLedger, economy.ledger);
+  const headless =
+    !!current.playerFamily && familyHeadless(current, current.playerFamily);
+  const scaleIncome = (n: number) => (headless && n > 0 ? n * 0.75 : n);
+  if (headless) {
+    logs.push({
+      id: `log_headless_${current.turn}`,
+      turn: current.turn,
+      category: "system",
+      text: "No one is speaking for the family — the rackets run at three quarters.",
+      family: current.playerFamily ?? undefined,
+    });
+  }
   current = {
     ...current,
     territories: economy.territories,
-    money: current.money + economy.moneyDelta,
-    dirtyMoney: current.dirtyMoney + economy.dirtyDelta,
-    lastNetIncome: economy.lastNetIncome,
+    money: current.money + scaleIncome(economy.moneyDelta),
+    dirtyMoney: current.dirtyMoney + scaleIncome(economy.dirtyDelta),
+    lastNetIncome: scaleIncome(economy.lastNetIncome),
     liquorStock: economy.liquorStock,
     rivalTreasury: economy.rivalTreasury,
     launderPlan: pruneLaunderPlan(
@@ -379,14 +538,33 @@ export function endTurn(state: GameState, rng?: Rng): GameState {
   logs.push(...lapsed.logs);
 
   // Influence tick: respect + fear + street drive growth
-  const infDelta =
-    current.reputation.respect * 0.04 +
-    current.reputation.fear * 0.03 +
-    current.reputation.streetInfluence * 0.02 -
-    2;
+  const infDelta = influenceTick(current.reputation);
   current.influence = Math.max(0, Math.min(300, current.influence + infDelta));
+  const rivalInfluence = { ...(current.rivalInfluence ?? {}) };
+  for (const family of ALL_FAMILY_NAMES) {
+    if (family === current.playerFamily) continue;
+    const grown =
+      (rivalInfluence[family] ?? 120) + influenceTick(rivalStandingDrivers(current, family));
+    rivalInfluence[family] = Math.max(0, Math.min(300, grown));
+  }
+  current.rivalInfluence = rivalInfluence;
+
+  const jailed = tickJails(current, random);
+  current = jailed.state;
+  logs.push(...jailed.logs);
 
   current.territories = pruneManagers(current);
+  // The dead don't hold corners.
+  {
+    const dead = new Set(current.crew.filter((c) => c.status === "dead").map((c) => c.id));
+    if (dead.size > 0) {
+      current.territories = current.territories.map((t) =>
+        t.garrisonIds.some((id) => dead.has(id))
+          ? { ...t, garrisonIds: t.garrisonIds.filter((id) => !dead.has(id)) }
+          : t,
+      );
+    }
+  }
   const xpTick = tickAssignmentXp(
     current.crew,
     current.playerFamily,
@@ -398,14 +576,54 @@ export function endTurn(state: GameState, rng?: Rng): GameState {
     logs.push({
       id: `log_xp_tick_${lvl.name}_${current.turn}`,
       turn: current.turn,
-      category: "crew",
+      category: "system",
       text: `${lvl.name} reached level ${lvl.level}.`,
       family: current.playerFamily ?? undefined,
     });
   }
 
+  // Crews: mentoring, the management drip, loyalty drift; then capos ask for men.
+  const mentoring = tickCrewMentoring(current.crew, current.turn, random, current.playerFamily, current);
+  current.crew = mentoring.crew;
+  const learned = new Map<string, string[]>();
+  for (const m of mentoring.logs) {
+    const list = learned.get(m.name) ?? [];
+    list.push(`${m.skill} ${m.value}`);
+    learned.set(m.name, list);
+  }
+  for (const [name, gains] of learned) {
+    logs.push({
+      id: `log_mentor_${name}_${current.turn}`,
+      turn: current.turn,
+      category: "system",
+      text: `${name} is learning from his capo: ${gains.join(", ")}.`,
+      family: current.playerFamily ?? undefined,
+    });
+  }
+  const asks = generateCrewRequests(current, random);
+  current.crewRequests = asks.requests;
+  logs.push(...asks.logs);
+
+  // The boss's block: the men there stand taller, the neighbours get read.
+  const presence = tickBossPresence(current, random);
+  current = presence.state;
+  logs.push(...presence.logs);
+
   current = pruneIntel(current);
   current = pruneGrudges(current);
+
+  // Cold cases and rumor evidence that didn't hold up.
+  const cases = tickIncidents(current);
+  current = cases.state;
+  logs.push(...cases.logs);
+
+  // Where everyone stood at the end of the week. Next week's car bombs compare.
+  current = {
+    ...current,
+    crew: current.crew.map((c) =>
+      c.status === "dead" ? c : { ...c, lastSiteId: resolveCrewTerritoryId(current, c.id) ?? undefined },
+    ),
+  };
   current.victory = checkVictory(current);
   current = appendLogs(current, logs);
 

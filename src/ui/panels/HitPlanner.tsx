@@ -5,6 +5,7 @@ import { useGameStore } from "@/engine/store";
 import { calculateHitOddsBreakdown, defendersFor, estimateFirefightRisk, getawayRisk, territoryHops } from "@/engine/hitOps";
 import { resolveCrewTerritoryId } from "@/engine/crewLocation";
 import { emptyIntel, hasFreshCasing, visibleCrewIn } from "@/engine/intel";
+import { isMessageTargetRole, routeDisputeWith } from "@/engine/passage";
 import {
   approachSpec,
   exposedCrewIds,
@@ -87,6 +88,7 @@ export default function HitPlanner() {
   const [planterId, setPlanterId] = useState<string>("");
   const [negotiatorId, setNegotiatorId] = useState<string>("");
   const [surveilFirst, setSurveilFirst] = useState(false);
+  const [sendMessage, setSendMessage] = useState(false);
 
   // Sync default target when district targets change
   useEffect(() => {
@@ -208,6 +210,11 @@ export default function HitPlanner() {
     : 0;
   const gRisk = draftOp ? getawayRisk(state, draftOp) : 0;
   const missing = missingRequiredRoles(approach, picks);
+  const selectedTarget = rivalTargets.find((c) => c.id === targetCrewId);
+  const dispute = rivalFamily ? routeDisputeWith(state, rivalFamily) : null;
+  const messageEligible =
+    !blind && !!selectedTarget && isMessageTargetRole(selectedTarget) && !!dispute;
+  const message = sendMessage && messageEligible;
   const canOrder =
     missing.length === 0 && (blind || (!!targetCrewId && rivalTargets.length > 0));
   const spec = approachSpec(approach);
@@ -393,6 +400,13 @@ export default function HitPlanner() {
               );
             })}
           </div>
+          {approach === "car_bomb" &&
+            crew.find((c) => c.id === targetCrewId)?.role === "boss" && (
+            <p className="mt-1.5 text-[10px] text-heat">
+              A boss&apos;s car only goes up when he uses it. The package waits up to 3 weeks for
+              him to travel — a sit-down will do it. Every week it sits is a chance it&apos;s found.
+            </p>
+          )}
         </div>
 
         <div className="space-y-3">
@@ -478,6 +492,34 @@ export default function HitPlanner() {
           Surveil first (safer, delays hit by a turn)
         </label>
 
+        {!blind && selectedTarget && (
+          <div
+            className={`rounded-md border p-2 ${
+              message ? "border-amber-400/60 bg-amber-500/10" : "border-panel-border bg-panel/40"
+            }`}
+          >
+            <label
+              className={`flex items-center gap-2 text-xs ${
+                messageEligible ? "text-foreground" : "text-muted-foreground"
+              }`}
+            >
+              <Checkbox
+                checked={message}
+                disabled={!messageEligible}
+                onCheckedChange={(v) => setSendMessage(!!v)}
+              />
+              Send a message — a point about the trucks, not a war
+            </label>
+            <p className="mt-1 text-[10px] text-muted-foreground">
+              {dispute
+                ? isMessageTargetRole(selectedTarget)
+                  ? `${dispute} Half the standing lost, no vendetta. If it lands, ${rivalFamily} asks less for passage and taxes your trucks less for a while.`
+                  : "A message goes to a hitman, consigliere, underboss or senior capo — somebody they'll miss, not the boss."
+                : `No route beef with ${rivalFamily}: nothing to make a point about.`}
+            </p>
+          </div>
+        )}
+
         <div className="rounded-md border border-panel-border bg-panel/50 p-3 space-y-1.5">
           <div className="flex items-center justify-between text-xs text-muted-foreground">
             <span>Estimated Success</span>
@@ -556,10 +598,11 @@ export default function HitPlanner() {
               negotiatorId: negotiatorId || undefined,
               surveilFirst,
               blind,
+              intent: message ? "message" : undefined,
             });
           }}
         >
-          {blind ? "Order Blind Hit" : "Order the Hit"}
+          {blind ? "Order Blind Hit" : message ? "Send the Message" : "Order the Hit"}
         </Button>
       </div>
     </PanelShell>
@@ -574,12 +617,20 @@ function pct(n: number): string {
 /** Compact bottom result card shown after a hit cinematic (or immediately if cinematics skipped). */
 export function HitResultModal() {
   const pendingHitResult = useGameStore((s) => s.pendingHitResult);
-  const cinematicQueue = useGameStore((s) => s.cinematicQueue);
+  const pendingHitCinematic = useGameStore((s) => s.pendingHitCinematic);
   const dismissHitResult = useGameStore((s) => s.dismissHitResult);
   const crew = useGameStore((s) => s.crew);
 
-  if (!pendingHitResult || cinematicQueue.length > 0) return null;
+  if (!pendingHitResult) return null;
   const r = pendingHitResult;
+  const incoming = pendingHitCinematic?.perspective === "incoming" ? pendingHitCinematic : null;
+  const markFate = !incoming
+    ? null
+    : r.targetDead
+      ? `${incoming.targetName} is dead.`
+      : r.outcome === "botched_wounded"
+        ? `${incoming.targetName} is wounded, but alive.`
+        : `${incoming.targetName} slipped away.`;
   const detail = r.casualtyDetail ?? [];
   const byFate = {
     dead: detail.filter((d) => d.fate === "dead"),
@@ -632,6 +683,9 @@ export function HitResultModal() {
         <div className="flex items-start justify-between gap-2">
           <h2 className="font-display text-lg text-heat">{r.headline}</h2>
           <div className="flex shrink-0 flex-col items-end gap-1">
+            {incoming && (
+              <Badge className="bg-heat/25 text-heat">Incoming — {incoming.attackerFamily}</Badge>
+            )}
             {r.blind && (
               <Badge className="bg-heat/25 text-heat">Blind</Badge>
             )}
@@ -658,6 +712,10 @@ export function HitResultModal() {
             </p>
           ))}
         </div>
+        {markFate && <p className="mt-2 text-xs text-heat">{markFate}</p>}
+        {incoming && detail.length > 0 && (
+          <div className="mb-1 mt-2 text-[10px] uppercase text-muted-foreground">Their losses</div>
+        )}
         {row("Killed", byFate.dead, "text-heat")}
         {row("Wounded", byFate.wounded, "text-amber-400")}
         {row("Jailed", byFate.jailed, "text-steel-light")}

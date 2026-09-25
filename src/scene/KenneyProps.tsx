@@ -2,12 +2,11 @@ import { Component, Suspense, useMemo, type ReactNode } from "react";
 import { Instance, Instances, useGLTF } from "@react-three/drei";
 import type { CityLayout } from "@/engine/cityLayout";
 import { hash2 } from "./sceneTheme";
+import { SEDAN_PALETTE, SedanFleet, type SedanSpec } from "./Sedan";
 
 interface Props {
   layout: CityLayout;
 }
-
-const CAR_COLORS = ["#1c1c1e", "#2b2f36", "#3a1f1f", "#20301f", "#1a1a1a"];
 
 /** Catches useGLTF load failures (missing Kenney assets) and renders the procedural fallback instead. */
 class ModelErrorBoundary extends Component<{ fallback: ReactNode; children: ReactNode }, { hasError: boolean }> {
@@ -23,21 +22,24 @@ class ModelErrorBoundary extends Component<{ fallback: ReactNode; children: Reac
   }
 }
 
-/** Simple procedural cars + lamp posts, used whenever Kenney GLBs are unavailable. */
+/** Procedural parked sedans + lamp posts, used whenever Kenney GLBs are unavailable. */
 function ProceduralProps({ layout }: Props) {
   const { cars, lamps } = useMemo(() => {
     const roadBlocks = layout.blocks.filter((b) => b.kind === "road");
-    const cars: { x: number; z: number; color: string; rot: number }[] = [];
+    const cars: SedanSpec[] = [];
     const lamps: { x: number; z: number }[] = [];
 
     roadBlocks.forEach((b, i) => {
       const r = hash2(b.gx, b.gz, 7);
       if (i % 5 === 0 && r > 0.5) {
+        const avenue = b.gx % 4 === 0; // north–south road: park along Z
+        const side = hash2(b.gx, b.gz, 11) > 0.5 ? 0.7 : -0.7;
+        const flip = hash2(b.gx, b.gz, 13) > 0.5 ? Math.PI : 0;
         cars.push({
-          x: b.worldX + (r - 0.5) * 0.6,
-          z: b.worldZ,
-          color: CAR_COLORS[Math.floor(r * CAR_COLORS.length)]!,
-          rot: b.gx % 4 === 0 ? 0 : Math.PI / 2,
+          x: b.worldX + (avenue ? side : (r - 0.5) * 0.5),
+          z: b.worldZ + (avenue ? (r - 0.5) * 0.5 : side),
+          color: SEDAN_PALETTE[Math.floor(r * SEDAN_PALETTE.length)]!,
+          rot: (avenue ? Math.PI / 2 : 0) + flip,
         });
       }
       if (b.gx % 8 === 0 && b.gz % 8 === 0) {
@@ -50,13 +52,7 @@ function ProceduralProps({ layout }: Props) {
 
   return (
     <group>
-      <Instances limit={cars.length || 1} range={cars.length}>
-        <boxGeometry args={[0.9, 0.4, 0.45]} />
-        <meshStandardMaterial roughness={0.4} metalness={0.3} />
-        {cars.map((c, i) => (
-          <Instance key={i} position={[c.x, 0.25, c.z]} rotation={[0, c.rot, 0]} color={c.color} />
-        ))}
-      </Instances>
+      <SedanFleet cars={cars} scale={0.55} />
 
       <Instances limit={lamps.length || 1} range={lamps.length}>
         <cylinderGeometry args={[0.04, 0.04, 1.6, 6]} />

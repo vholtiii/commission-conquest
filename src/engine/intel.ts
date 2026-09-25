@@ -37,6 +37,12 @@ type VisibilityState = Pick<
   "crew" | "territories" | "routes" | "operations" | "playerFamily" | "intel" | "turn"
 >;
 
+/**
+ * Whether you can put a face to a rival: your own crew always, a rival only
+ * with real intel — a lookout's report, a hit, a bribe, or an active district
+ * / family reveal. A street sighting ("was seen in…") is enough to know where
+ * his car is, not who's in it; see `isBossCarVisible`.
+ */
 export function isCrewVisible(state: VisibilityState, crew: CrewMember): boolean {
   if (crew.status === "dead" || crew.status === "jailed") return false;
   if (crew.family === state.playerFamily) return true;
@@ -44,20 +50,34 @@ export function isCrewVisible(state: VisibilityState, crew: CrewMember): boolean
   const territoryId = resolveCrewTerritoryId(state, crew.id);
   if (!territoryId) return false;
 
-  // Rival boss at HQ is always visible
-  if (crew.role === "boss") {
-    const hq = familyHq(state, crew.family);
-    if (hq && hq === territoryId) return true;
-  }
-
   const intel = state.intel ?? emptyIntel();
   const known = intel.known[crew.id];
-  if (known && known.territoryId === territoryId) return true;
+  if (known && known.territoryId === territoryId && known.source !== "sighting") return true;
 
   if ((intel.districtReveal[territoryId] ?? 0) > state.turn) return true;
   if ((intel.familyReveal[crew.family] ?? 0) > state.turn) return true;
 
   return false;
+}
+
+/**
+ * The boss's black sedan is a public tell even when the man himself isn't:
+ * everyone knows where a family's headquarters is and whose car is parked out
+ * front, and the street talks when it's seen somewhere else.
+ */
+export function isBossCarVisible(state: VisibilityState, boss: CrewMember): boolean {
+  if (boss.role !== "boss") return false;
+  if (isCrewVisible(state, boss)) return true;
+  if (boss.status === "dead" || boss.status === "jailed") return false;
+
+  const territoryId = resolveCrewTerritoryId(state, boss.id);
+  if (!territoryId) return false;
+
+  const hq = familyHq(state, boss.family);
+  if (hq && hq === territoryId) return true;
+
+  const known = (state.intel ?? emptyIntel()).known[boss.id];
+  return !!known && known.territoryId === territoryId;
 }
 
 export function visibleCrewIn(state: VisibilityState, territoryId: string): CrewMember[] {

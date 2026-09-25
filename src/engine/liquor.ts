@@ -14,6 +14,7 @@ import type { Rng } from "./rng";
 import { createRng, hashString } from "./rng";
 import { isUnguarded } from "./territoryValue";
 import { findDeliveryPath, hasSafehouse } from "./economy";
+import { BOSS_PRESENCE } from "./bossPresence";
 
 const SPEAKEASY_BASE_INCOME = 280;
 
@@ -418,9 +419,11 @@ export function applyWarehouseShrinkage(
   return { territory: { ...t, rackets }, shrunk, byRacket };
 }
 
-export function productionOutput(racket: Racket): number {
-  if (racket.type === "still") return 5 + racket.level * 3;
-  if (racket.type === "brewery") return 8 + racket.level * 4;
+/** Crates a still or brewery turns out a week; more with the boss on the block. */
+export function productionOutput(racket: Racket, bossHere = false): number {
+  const extra = bossHere ? BOSS_PRESENCE.productionPerLevel * racket.level : 0;
+  if (racket.type === "still") return 5 + racket.level * 3 + extra;
+  if (racket.type === "brewery") return 8 + racket.level * 4 + extra;
   return 0;
 }
 
@@ -432,6 +435,7 @@ export function produceAndStore(
   t: Territory,
   turn = 0,
   lookup?: ManagerLookup,
+  bossHere = false,
 ): {
   territory: Territory;
   produced: number;
@@ -444,7 +448,7 @@ export function produceAndStore(
   let spill = 0;
   let rackets = t.rackets.map((r) => {
     if (!isProducerType(r.type)) return r;
-    const out = productionOutput(r);
+    const out = productionOutput(r, bossHere);
     produced += out;
     const cap = stockCap(r);
     const room = Math.max(0, cap - r.stock);
@@ -517,6 +521,10 @@ export function sellSpeakeasies(
   territory: Territory,
   family: FamilyName,
   incomeBonus = 0,
+  /** A managed warehouse on the same block keeps the bar poured: +1 crate/level sold. */
+  localWarehouse = false,
+  /** The boss drinks here: the room is full every night, +1 crate/level poured. */
+  bossHere = false,
 ): {
   territory: Territory;
   revenue: number;
@@ -537,7 +545,7 @@ export function sellSpeakeasies(
       dirtyRevenue += Math.floor(base * 0.25);
       return r;
     }
-    const amount = Math.min(r.stock, 5 + r.level * 2);
+    const amount = Math.min(r.stock, speakeasyPull(r.level, localWarehouse, bossHere));
     const price = 15 + r.level * 5;
     dirtyRevenue += amount * price;
     revenue += Math.floor(amount * price * 0.3);
@@ -560,14 +568,28 @@ export function sellSpeakeasies(
   };
 }
 
-/** Passive heat from oversized stashes. Allowance 50 crates. Doubled if unguarded. */
+/** Crates a speakeasy moves in a week. */
+export function speakeasyPull(level: number, localWarehouse = false, bossHere = false): number {
+  return 5 + level * 2 + (localWarehouse ? level : 0) + (bossHere ? BOSS_PRESENCE.speakeasyPullPerLevel * level : 0);
+}
+
+/**
+ * Passive heat from oversized stashes. Allowance 50 crates. Doubled if
+ * unguarded. Speakeasy stock in a district with a managed warehouse doesn't
+ * count — the crates live in the back, not behind the bar.
+ */
 export function stashHeat(
   t: Territory,
   unguarded: boolean,
   turn = 0,
   lookup?: ManagerLookup,
 ): number {
-  const { stored } = districtStorage(t, turn, lookup);
+  let { stored } = districtStorage(t, turn, lookup);
+  if (lookup && hasManagedWarehouse(t, lookup, turn)) {
+    for (const r of t.rackets) {
+      if (r.type === "speakeasy") stored -= Math.min(r.stock, capOf(r, lookup));
+    }
+  }
   const base = Math.floor(Math.max(0, stored - 50) / 100);
   return unguarded ? base * 2 : base;
 }

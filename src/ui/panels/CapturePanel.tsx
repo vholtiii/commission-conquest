@@ -79,6 +79,11 @@ export default function CapturePanel() {
         {territory.owner === null && (
           <div className="text-money">Empty block — base garrison resistance only.</div>
         )}
+        {strength.notes.map((n) => (
+          <div key={n} className={n.startsWith("Your boss") || n.includes("away") ? "text-money" : "text-heat"}>
+            {n}
+          </div>
+        ))}
         <div className={allowance.ok ? "" : "text-heat"}>
           Moves this week: {allowance.used}/{allowance.limit}
           {bonusNote ? ` · ${bonusNote}` : ""}

@@ -1,12 +1,23 @@
+import { toast } from "sonner";
 import { useGameStore } from "@/engine/store";
-import type { CrewRole } from "@/types/game";
-import { FAMILY_HEX } from "@/types/game";
+import type { CrewMember, CrewRole, Racket, Territory } from "@/types/game";
+import { FAMILY_HEX, RACKET_LABELS } from "@/types/game";
 import { pathsFromRole, canPromote, xpForLevel } from "@/engine/crew";
 import { successionReadinessReasons } from "@/engine/succession";
+import {
+  canLeadCrew,
+  capoFor,
+  crewCurriculum,
+  crewOf,
+  crewSlots,
+  isFreelanceSoldier,
+  isSettling,
+} from "@/engine/crews";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import PortraitAvatar from "@/ui/PortraitAvatar";
+import Tip from "@/ui/Tip";
 import PanelShell from "./PanelShell";
 import { formatMoney, titleCase } from "../formatters";
 
@@ -25,6 +36,8 @@ export default function CrewSheet() {
   const turn = useGameStore((s) => s.turn);
   const payFuneral = useGameStore((s) => s.payFuneral);
   const promote = useGameStore((s) => s.promote);
+  const assignMember = useGameStore((s) => s.assignMember);
+  const assignManager = useGameStore((s) => s.assignManager);
   const setPanel = useGameStore((s) => s.setPanel);
   const focusReason = useGameStore((s) => s.focusReason);
   const territories = useGameStore((s) => s.territories);
@@ -55,6 +68,21 @@ export default function CrewSheet() {
   const paths = isOwn && member.status === "active" ? pathsFromRole(member.role) : [];
   const successionReasons =
     member.role === "underboss" ? successionReadinessReasons(member, turn) : null;
+
+  const capo = capoFor(crew, member);
+  const learning = capo ? crewCurriculum(capo) : [];
+  const ledCrew = canLeadCrew(member) ? crewOf(crew, member.id) : [];
+  const crewLine = capo
+    ? `Under ${capo.name}${capo.role === "boss" ? " (the boss's shooters)" : capo.role === "consigliere" ? " (the consigliere's school)" : ""} since turn ${member.crewSinceTurn ?? "?"} — learning ${learning
+        .map((k) => SKILL_LABELS[k])
+        .join(" & ")}${isSettling(member, turn) ? " (still settling in)" : ""}`
+    : isFreelanceSoldier(member)
+      ? "Loose soldier — sharp on the street, learns stealth from clean casing"
+      : canLeadCrew(member)
+        ? `Runs a crew of ${ledCrew.length}/${crewSlots(member)} — teaches ${crewCurriculum(member)
+            .map((k) => SKILL_LABELS[k])
+            .join(" & ")}${member.role === "boss" ? " (hitman school)" : member.role === "consigliere" ? " (thinkers)" : ""}`
+        : null;
 
   return (
     <PanelShell
@@ -109,6 +137,37 @@ export default function CrewSheet() {
           </div>
         )}
 
+        {crewLine && (
+          <div className="rounded-md border border-panel-border bg-panel/60 px-2 py-1.5 text-[11px] text-muted-foreground">
+            {crewLine}
+            {ledCrew.length > 0 && (
+              <span className="text-foreground"> · {ledCrew.map((m) => m.name.split(" ").pop()).join(", ")}</span>
+            )}
+          </div>
+        )}
+
+        {isOwn && member.status === "active" && (
+          <PostBlock
+            member={member}
+            crew={crew}
+            territories={territories}
+            turn={turn}
+            isBoss={member.role === "boss" || !!member.isPlayerBoss}
+            onGarrison={(territoryId, name) => {
+              assignMember(member.id, { type: "garrison", territoryId });
+              toast.success(`${member.name} garrisons ${name}`);
+            }}
+            onManage={(territoryId, racketId, label) => {
+              assignManager(territoryId, racketId, member.id);
+              toast.success(`${member.name} takes over ${label}`);
+            }}
+            onIdle={() => {
+              assignMember(member.id, { type: "idle" });
+              toast.success(`${member.name} stands down`);
+            }}
+          />
+        )}
+
         <div className="grid grid-cols-3 gap-2 text-center text-xs">
           <StatBox label="Loyalty" value={member.loyalty} />
           <StatBox label="Wanted" value={member.wanted} accent="text-heat" />
@@ -121,7 +180,12 @@ export default function CrewSheet() {
             {Object.entries(member.skills).map(([key, val]) => (
               <div key={key}>
                 <div className="mb-0.5 flex justify-between text-[11px] text-muted-foreground">
-                  <span>{SKILL_LABELS[key] ?? key}</span>
+                  <span>
+                    {SKILL_LABELS[key] ?? key}
+                    {learning.includes(key as keyof typeof member.skills) && (
+                      <span className="ml-1 text-money" title="Learning from his capo">↑</span>
+                    )}
+                  </span>
                   <span>{val}</span>
                 </div>
                 <Progress value={Math.min(100, val)} className="h-1.5" />
@@ -207,7 +271,12 @@ export default function CrewSheet() {
           </div>
         )}
 
-        {isDead && isOwn && (
+        {isDead && isOwn && member.putAway && (
+          <p className="rounded-md border border-panel-border bg-panel/50 p-3 text-xs text-muted-foreground">
+            {member.name} is doing his time upstate. The family has moved on.
+          </p>
+        )}
+        {isDead && isOwn && !member.putAway && (
           <div className="rounded-md border border-panel-border bg-panel/50 p-3">
             <p className="mb-2 text-xs text-muted-foreground">
               Give {member.name} a proper send-off to steady the crew&apos;s nerves.
@@ -223,6 +292,142 @@ export default function CrewSheet() {
         )}
       </div>
     </PanelShell>
+  );
+}
+
+function postLine(member: CrewMember, territories: Territory[], turn: number): string {
+  const a = member.assignment;
+  const place = (id?: string) => territories.find((t) => t.id === id)?.name ?? "unknown";
+  if (member.awayAt && member.awayAt.untilTurn > turn) return "Away this week";
+  if (a.type === "garrison" && a.territoryId) return `Garrisoned in ${place(a.territoryId)}`;
+  if (a.type === "racket") {
+    const t = territories.find((x) => x.id === a.territoryId);
+    const r = t?.rackets.find((x) => x.id === a.racketId);
+    const label = r ? RACKET_LABELS[r.type] : "a racket";
+    return `Running ${label} in ${place(a.territoryId)}`;
+  }
+  if (a.type === "delivery") return "Out on a delivery";
+  if (a.type === "operation") return "Out on a job";
+  if (a.type === "surveillance") return "Casing a district";
+  return "Idle";
+}
+
+function busyReason(member: CrewMember, turn: number): string | null {
+  if (member.awayAt && member.awayAt.untilTurn > turn) {
+    return member.awayAt.reason === "sitdown"
+      ? "He's committed to a sit-down this week."
+      : "He's already on the road this week.";
+  }
+  if (member.assignment.type === "operation") return "He's out on a job. It clears when the job resolves.";
+  if (member.assignment.type === "surveillance") return "He's casing a district. The report comes in next week.";
+  if (member.assignment.type === "delivery") return "He's on a delivery. He comes back when the truck does.";
+  return null;
+}
+
+function PostBlock({
+  member,
+  crew,
+  territories,
+  turn,
+  isBoss,
+  onGarrison,
+  onManage,
+  onIdle,
+}: {
+  member: CrewMember;
+  crew: CrewMember[];
+  territories: Territory[];
+  turn: number;
+  isBoss: boolean;
+  onGarrison: (territoryId: string, name: string) => void;
+  onManage: (territoryId: string, racketId: string, label: string) => void;
+  onIdle: () => void;
+}) {
+  const owned = territories.filter((t) => t.owner === member.family);
+  const held = busyReason(member, turn);
+  const garrisonValue =
+    member.assignment.type === "garrison" ? member.assignment.territoryId ?? "" : "";
+  const racketValue =
+    member.assignment.type === "racket" && member.assignment.racketId
+      ? `${member.assignment.territoryId}:${member.assignment.racketId}`
+      : "";
+  const rackets: { territory: Territory; racket: Racket }[] = owned.flatMap((t) =>
+    t.rackets.map((r) => ({ territory: t, racket: r })),
+  );
+
+  return (
+    <div className="space-y-1.5 rounded-md border border-panel-border bg-panel/60 px-2 py-1.5">
+      <h3 className="text-[10px] uppercase tracking-wide text-muted-foreground">Post</h3>
+      <p className="text-[11px] text-foreground">{postLine(member, territories, turn)}</p>
+      {held ? (
+        <Tip content={held}>
+          <p className="text-[10px] text-muted-foreground">Tied up — posting waits until that clears.</p>
+        </Tip>
+      ) : (
+        <div className="flex flex-col gap-1.5">
+          <Tip content="Garrison counts toward the district's defence and earns +2 XP a week. On the boss's block he picks up the presence bonuses too.">
+            <select
+              value={garrisonValue}
+              onChange={(e) => {
+                const id = e.target.value;
+                if (!id) return;
+                const name = territories.find((t) => t.id === id)?.name ?? id;
+                onGarrison(id, name);
+              }}
+              className="h-7 w-full rounded border border-panel-border bg-panel/60 px-1 text-[11px]"
+            >
+              <option value="">Garrison…</option>
+              {owned.map((t) => (
+                <option key={t.id} value={t.id}>
+                  Garrison — {t.name}
+                </option>
+              ))}
+            </select>
+          </Tip>
+          {!isBoss && (
+            <Tip content="A manager lifts the unmanaged income penalty. A warehouse with a manager stops losing crates out the back.">
+              <select
+                value={racketValue}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  if (!value) return;
+                  if (value === "idle") {
+                    onIdle();
+                    return;
+                  }
+                  const [territoryId, racketId] = value.split(":");
+                  const hit = rackets.find(
+                    (row) => row.territory.id === territoryId && row.racket.id === racketId,
+                  );
+                  if (!hit) return;
+                  onManage(
+                    hit.territory.id,
+                    hit.racket.id,
+                    `${RACKET_LABELS[hit.racket.type]} in ${hit.territory.name}`,
+                  );
+                }}
+                className="h-7 w-full rounded border border-panel-border bg-panel/60 px-1 text-[11px]"
+              >
+                <option value="">Manage a racket…</option>
+                <option value="idle">Stand down — idle</option>
+                {rackets.map(({ territory, racket }) => {
+                  const other =
+                    racket.managerId && racket.managerId !== member.id
+                      ? crew.find((c) => c.id === racket.managerId)
+                      : undefined;
+                  return (
+                    <option key={racket.id} value={`${territory.id}:${racket.id}`}>
+                      {RACKET_LABELS[racket.type]} — {territory.name}
+                      {other ? ` (replaces ${other.name.split(" ").pop()})` : ""}
+                    </option>
+                  );
+                })}
+              </select>
+            </Tip>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 

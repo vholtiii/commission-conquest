@@ -107,7 +107,7 @@ export const HIT_APPROACH_SPECS: Record<HitApproach, HitApproachSpec> = {
   car_bomb: {
     approach: "car_bomb",
     label: "Car Bomb",
-    description: "Wire a Packard on their usual route. No shootout.",
+    description: "Wire a Packard on their usual route. No shootout. On a boss it waits for him to travel.",
     heatHint: 20,
     skillsHint: "Smarts · Stealth",
     garrisonExposure: 0.25,

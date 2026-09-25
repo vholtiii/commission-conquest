@@ -38,6 +38,7 @@ import { RACKET_VISUALS } from "@/data/racketVisuals";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import PanelShell from "./PanelShell";
+import SupplyRoutesSection from "./SupplyRoutesSection";
 import { formatMoney } from "../formatters";
 
 function activeGarrisonIds(
@@ -262,8 +263,11 @@ export default function WarehousePanel() {
               </Badge>
             )}
             {drySpeakeasies && (
-              <Badge className="bg-heat/20 text-[9px] text-heat">
-                Dry speakeasies
+              <Badge
+                className="bg-heat/20 text-[9px] text-heat"
+                title="A speakeasy only pours what's in its own district. Open a supply route to feed it."
+              >
+                Dry speakeasies — open a supply route
               </Badge>
             )}
             {totalIdleCost > 0 && (
@@ -279,6 +283,8 @@ export default function WarehousePanel() {
           </div>
         </div>
       )}
+
+      <SupplyRoutesSection />
 
       <div className="mb-4 rounded border border-panel-border bg-panel/40 p-2.5">
         <h3 className="mb-2 text-[10px] uppercase tracking-wide text-muted-foreground">

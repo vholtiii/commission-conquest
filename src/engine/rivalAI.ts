@@ -1,4 +1,5 @@
 import type {
+  CrewMember,
   FamilyName,
   GameState,
   RacketType,
@@ -18,9 +19,16 @@ import {
 } from "./economy";
 import { getRelation, setRelationDelta } from "./relations";
 import { hasPact } from "./diplomacy";
+import { atPeace, contractedTargets } from "./deals";
 import { captureAllowance, recordCapture } from "./capture";
+import { aiFillCrews } from "./crews";
+import { AI_SITDOWN_CHANCE, AI_SITDOWN_TRAP_CHANCE, aiProposeSitdown, hasArmedBombOnPlayerBoss } from "./sitdowns";
 import { planHit } from "./hitOps";
-import { resolveCrewTerritoryId } from "./crewLocation";
+import { familyHq, isBossUnderground, resolveCrewTerritoryId } from "./crewLocation";
+import { BOSS_PRESENCE, bossPresentIn, hqIsSoft } from "./bossPresence";
+import { actingUnderboss, bossIsJailed } from "./jail";
+import { familiesPressingSuddenDeath } from "./victory";
+import { recordIntel } from "./intel";
 import {
   isUnguarded,
   maxRacketsFor,
@@ -28,6 +36,8 @@ import {
   allowedRacketTypes,
 } from "./territoryValue";
 import { withdrawCrates } from "./liquor";
+import { openIncidentFromHijack } from "./incidents";
+import { CRATE_STREET_VALUE, passageGrudges } from "./passage";
 import type { HitApproach } from "@/types/game";
 
 const RACKET_PRIORITY: Record<string, RacketType[]> = {
@@ -141,16 +151,25 @@ function tryExpand(
   // special-case grabs (leadership vacuum, vendetta target) stay on the table.
   const targets = adjacentNeutralOrEnemy(state, family).filter(
     (t) =>
-      (!t.owner || !hasPact(state, family, t.owner)) &&
+      (!t.owner || !atPeace(state, family, t.owner)) &&
       captureAllowance(state, family, t).ok,
   );
   if (targets.length === 0) return { state };
 
+  // An HQ whose boss is holding court elsewhere is soft; the block he stands
+  // on is not. Rivals read both.
+  const bossWeight = (t: Territory): number => {
+    if (!t.owner || t.owner === family) return 0;
+    if (bossPresentIn(state, t.owner, t.id)) return BOSS_PRESENCE.aiBossBlockRoll;
+    if (hqIsSoft(state, t.owner) && familyHq(state, t.owner) === t.id) return -BOSS_PRESENCE.aiHqSoftRoll;
+    return 0;
+  };
   const scored = targets
     .map((t) => {
       const softness =
-        (t.owner ? 2 : 0) + t.defenseBonus + t.garrisonIds.length;
-      const score = valueScore(t) / (1 + softness);
+        (t.owner ? 2 : 0) + t.defenseBonus + t.garrisonIds.length + bossWeight(t) * 10;
+      const pressing = t.owner && familiesPressingSuddenDeath(state).includes(t.owner) ? 1.6 : 1;
+      const score = (valueScore(t) / (1 + Math.max(0, softness))) * pressing;
       return { t, softness, score };
     })
     .sort((a, b) => b.score - a.score);
@@ -161,7 +180,12 @@ function tryExpand(
   const roll = rng.next();
   const success =
     !target.owner ||
-    roll > 0.35 + target.defenseBonus + target.garrisonIds.length * 0.05 - 0.05 * Math.min(2, maxRacketsFor(target) - 3);
+    roll >
+      0.35 +
+        target.defenseBonus +
+        target.garrisonIds.length * 0.05 -
+        0.05 * Math.min(2, maxRacketsFor(target) - 3) +
+        bossWeight(target);
 
   if (!success) {
     return {
@@ -205,20 +229,51 @@ function tryExpand(
   };
 }
 
+/**
+ * Chance per planned hit that the street has already placed a boss who has
+ * gone underground (holding court away from his HQ). Otherwise the rival
+ * plans on the address everyone knows and finds an empty chair.
+ */
+export const BOSS_UNDERGROUND_LEAK = 0.4;
+
+/**
+ * Where a rival family believes a boss is this week. The HQ is public, and so
+ * is any trip (sit-down, weekly visit). A boss underground is only found by
+ * a crew that cased him first, or by a leak.
+ */
+export function believedBossSite(
+  state: GameState,
+  boss: CrewMember,
+  surveilled: boolean,
+  rng: Rng,
+): string | null {
+  const real = resolveCrewTerritoryId(state, boss.id);
+  if (!real) return null;
+  if (!isBossUnderground(state, boss)) return real;
+  if (surveilled) return real;
+  if (rng.chance(BOSS_UNDERGROUND_LEAK)) return real;
+  return familyHq(state, boss.family) ?? real;
+}
+
 function tryHit(
   state: GameState,
   family: FamilyName,
   rng: Rng,
   vendetta: boolean,
+  contracted?: FamilyName,
 ): { state: GameState; log?: TurnLogEntry } {
   const def = getFamilyDef(family);
   const crew = getActiveCrew(state.crew, family);
   if (crew.filter((c) => c.role !== "boss").length < 1 && crew.length < 1) return { state };
 
   let targetFamily: FamilyName | undefined;
-  if (vendetta && state.vendettas.includes(family)) {
+  // A job they've been paid for comes first, unless they've since given that family their word.
+  if (contracted && !atPeace(state, family, contracted)) {
+    targetFamily = contracted;
+  }
+  if (!targetFamily && vendetta && state.vendettas.includes(family)) {
     const vendettaTargets = state.vendettas.filter(
-      (v) => v !== family && !hasPact(state, family, v),
+      (v) => v !== family && !atPeace(state, family, v),
     );
     if (vendettaTargets.length > 0) {
       targetFamily = rng.pick(vendettaTargets);
@@ -226,13 +281,16 @@ function tryHit(
   }
   if (!targetFamily) {
     const open = ALL_FAMILY_NAMES.filter(
-      (f) => f !== family && !hasPact(state, family, f),
+      (f) => f !== family && !atPeace(state, family, f),
     );
     if (open.length === 0) return { state };
     const hostile = open.filter(
       (f) => getRelation(state.relations, family, f) < -20,
     );
-    targetFamily = rng.pick(hostile.length > 0 ? hostile : open);
+    const pressing = familiesPressingSuddenDeath(state).filter((f) => open.includes(f));
+    const pool = hostile.length > 0 ? hostile : open;
+    targetFamily =
+      pressing.length > 0 && rng.chance(0.7) ? rng.pick(pressing) : rng.pick(pool);
   }
 
   const targetTerritory =
@@ -241,17 +299,20 @@ function tryHit(
   if (!targetTerritory) return { state };
 
   const targetBoss = getBoss(state.crew, targetFamily!);
+  const surveilled = def.personality === "covert" && rng.chance(0.6);
   const bossTerritoryId = targetBoss
-    ? resolveCrewTerritoryId(
-        { ...state, playerFamily: state.playerFamily },
-        targetBoss.id,
-      )
+    ? believedBossSite(state, targetBoss, surveilled, rng)
     : null;
+  // The street's address, not the man's: a boss underground was not found.
+  const badAddress =
+    !!targetBoss &&
+    !!bossTerritoryId &&
+    bossTerritoryId !== resolveCrewTerritoryId(state, targetBoss.id);
   const hitTerritory =
     (bossTerritoryId && state.territories.find((t) => t.id === bossTerritoryId)) ||
     targetTerritory;
 
-  const approach: HitApproach =
+  let approach: HitApproach =
     def.personality === "covert" && rng.chance(0.5)
       ? "sitdown_betrayal"
       : def.personality === "volatile" && rng.chance(0.4)
@@ -259,6 +320,9 @@ function tryHit(
         : rng.chance(0.3)
           ? "ambush"
           : "car_bomb";
+  // A car bomb rides the boss's car; a crew sent to the wrong kerb has nothing
+  // to wire, so they lie in wait for him instead — and find an empty chair.
+  if (badAddress && approach === "car_bomb") approach = "ambush";
 
   const pool = rng.shuffle([...crew]);
   let shooterIds: string[] = [];
@@ -326,7 +390,7 @@ function tryHit(
       negotiatorId,
       originTerritoryId:
         ownedTerritories(state, family)[0]?.id ?? hitTerritory.id,
-      surveilled: def.personality === "covert" && rng.chance(0.6),
+      surveilled,
       pendingTurns: 1,
     },
     rng,
@@ -411,10 +475,34 @@ function tryHijack(
     r.id === route.id ? { ...r, status: "hijacked" as const } : r,
   );
 
-  let relations = setRelationDelta(state.relations, family, route.family, -15);
+  const relations = setRelationDelta(state.relations, family, route.family, -15);
+  let next: GameState = {
+    ...state,
+    routes,
+    relations,
+    rivalTreasury: {
+      ...state.rivalTreasury,
+      [family]: (state.rivalTreasury?.[family] ?? 0) + route.cargo * CRATE_STREET_VALUE,
+    },
+  };
+
+  // The player's truck: a case, not a confession.
+  if (route.family === state.playerFamily) {
+    next = openIncidentFromHijack(next, route, family, rng).state;
+    return {
+      state: next,
+      log: {
+        id: `ai_hijack_${family}_${state.turn}`,
+        turn: state.turn,
+        category: "delivery",
+        text: `Your liquor truck was hijacked on the road. ${route.cargo} crates gone.`,
+        family: route.family,
+      },
+    };
+  }
 
   return {
-    state: { ...state, routes, relations },
+    state: next,
     log: {
       id: `ai_hijack_${family}_${state.turn}`,
       turn: state.turn,
@@ -423,6 +511,102 @@ function tryHijack(
       family,
     },
   };
+}
+
+/** Skilled non-boss the family wants found in the street. */
+function pickMessageTarget(state: GameState, victim: FamilyName): CrewMember | undefined {
+  const men = getActiveCrew(state.crew, victim).filter((c) => c.role !== "boss");
+  const weight = (c: CrewMember): number => {
+    switch (c.role) {
+      case "hitman":
+        return 3 + c.level * 0.5;
+      case "consigliere":
+        return 2.5 + c.level * 0.4;
+      case "underboss":
+        return 1.5 + c.level * 0.3;
+      case "capo":
+        return c.level >= 3 ? 2 + c.level * 0.4 : 0;
+      default:
+        return 0;
+    }
+  };
+  return men
+    .map((c) => ({ c, w: weight(c) }))
+    .filter((x) => x.w > 0)
+    .sort((a, b) => b.w - a.w)[0]?.c;
+}
+
+const MESSAGE_COOLDOWN = 6;
+const MESSAGE_THRESHOLD: Record<string, number> = {
+  volatile: 1,
+  smuggler: 1,
+  expansionist: 2,
+  covert: 2,
+  economic: 3,
+};
+
+/**
+ * Enough trucks through their turf without a deal, a broken deal, and the
+ * family sends a message: an ambush or drive-by on one of the player's good
+ * men — never the boss. A sit-down on their terms follows.
+ */
+function tryMessageHit(
+  state: GameState,
+  family: FamilyName,
+  rng: Rng,
+): { state: GameState; log?: TurnLogEntry } {
+  const player = state.playerFamily;
+  if (!player || family === player) return { state };
+  if (atPeace(state, family, player)) return { state };
+  const grudges = passageGrudges(state, family);
+  const def = getFamilyDef(family);
+  if (grudges.length < (MESSAGE_THRESHOLD[def.personality] ?? 2)) return { state };
+  if ((state.messageHitTurns?.[family] ?? -99) + MESSAGE_COOLDOWN > state.turn) return { state };
+  if (
+    state.operations.some(
+      (o) => !o.resolved && o.kind === "hit" && o.family === family && o.intent === "message",
+    )
+  ) {
+    return { state };
+  }
+
+  const target = pickMessageTarget(state, player);
+  if (!target) return { state };
+  const where = resolveCrewTerritoryId(state, target.id);
+  if (!where) return { state };
+
+  const pool = rng
+    .shuffle(getActiveCrew(state.crew, family).filter((c) => c.role !== "boss"))
+    .sort((a, b) => b.skills.muscle - a.skills.muscle);
+  if (pool.length < 2) return { state };
+  const wheelman = pool.find((c) => c.traits.includes("wheelman")) ?? [...pool].sort((a, b) => b.skills.driving - a.skills.driving)[0];
+  const approach: HitApproach = wheelman && rng.chance(0.6) ? "drive_by" : "ambush";
+  const shooters = pool
+    .filter((c) => approach !== "drive_by" || c.id !== wheelman?.id)
+    .slice(0, 2)
+    .map((c) => c.id);
+  if (shooters.length < 1) return { state };
+
+  const op = planHit(
+    state,
+    {
+      family,
+      targetTerritoryId: where,
+      targetFamily: player,
+      targetCrewId: target.id,
+      approach,
+      shooterIds: shooters,
+      wheelmanId: approach === "drive_by" ? wheelman?.id : undefined,
+      lookoutId: pool.find((c) => !shooters.includes(c.id) && c.id !== wheelman?.id)?.id,
+      originTerritoryId: ownedTerritories(state, family)[0]?.id ?? where,
+      pendingTurns: 1,
+      intent: "message",
+      motive: "route_dispute",
+    },
+    rng,
+  );
+  // No public log: the rumor mill is the only warning the player gets.
+  return { state: { ...state, operations: [...state.operations, op] } };
 }
 
 function tryShiftGarrison(
@@ -593,11 +777,20 @@ function tryBribe(state: GameState, family: FamilyName, rng: Rng): GameState {
   return state;
 }
 
+/** Same street price the player pays for a new man. */
+const AI_RECRUIT_COST = 800;
+
 function tryRecruit(state: GameState, family: FamilyName, rng: Rng): GameState {
   const count = getActiveCrew(state.crew, family).length;
   if (count >= 12 || !rng.chance(0.2)) return state;
+  const treasury = state.rivalTreasury?.[family] ?? 0;
+  if (treasury < AI_RECRUIT_COST) return state;
   const recruit = createCrewMember(rng, family, "associate");
-  return { ...state, crew: [...state.crew, recruit] };
+  return {
+    ...state,
+    crew: [...state.crew, recruit],
+    rivalTreasury: { ...(state.rivalTreasury ?? {}), [family]: treasury - AI_RECRUIT_COST },
+  };
 }
 
 export interface AiTurnResult {
@@ -619,6 +812,8 @@ export function runAiTurn(
 
   const logs: TurnLogEntry[] = [];
   let current = tryRecruit(state, family, rng);
+  // Capos fill their crews from the family's loose soldiers.
+  current = { ...current, crew: aiFillCrews(current.crew, family, current.turn) };
 
   const actions: Array<() => { state: GameState; log?: TurnLogEntry }> = [];
 
@@ -671,11 +866,24 @@ export function runAiTurn(
   const actionCount = Math.max(1, Math.floor(aggression * 2));
   const picked = rng.shuffle(actions).slice(0, actionCount);
 
+  // A contract the player paid for is worked every week, outside the normal budget.
+  const owed = contractedTargets(current, family)[0];
+  if (owed) {
+    picked.unshift(() => tryHit(current, family, rng, false, owed));
+  }
+
   for (const act of picked) {
     if (!rng.chance(Math.min(0.95, 0.5 + aggression * 0.15))) continue;
     const result = act();
     current = result.state;
     if (result.log) logs.push(result.log);
+  }
+
+  // Trucks through their turf without a word: a message, outside the normal budget.
+  {
+    const msg = tryMessageHit(current, family, rng);
+    current = msg.state;
+    if (msg.log) logs.push(msg.log);
   }
 
   current = tryBribe(current, family, rng);
@@ -714,7 +922,150 @@ export function runAiTurn(
   current = shift.state;
   if (shift.log) logs.push(shift.log);
 
+  const travel = tryBossTravel(current, family, rng);
+  current = travel.state;
+  if (travel.log) logs.push(travel.log);
+
+  // A sit-down gets the other boss out of his house.
+  const trapping = hasArmedBombOnPlayerBoss(current, family);
+  if (rng.chance(trapping ? AI_SITDOWN_TRAP_CHANCE : AI_SITDOWN_CHANCE)) {
+    const invite = aiProposeSitdown(current, family, rng);
+    current = invite.state;
+    if (invite.log) logs.push(invite.log);
+  }
+
   return { state: current, logs };
+}
+
+/**
+ * The boss doesn't live behind one desk. Once in a while he spends the week in
+ * another of his districts — and the drive home the week after. Both legs are
+ * the kind of trip a car bomb is waiting for, so a tipped-off boss stays in.
+ */
+function tryBossTravel(
+  state: GameState,
+  family: FamilyName,
+  rng: Rng,
+): { state: GameState; log?: TurnLogEntry } {
+  const boss = getBoss(state.crew, family);
+  if (!boss || boss.status !== "active" || boss.awayAt) return { state };
+
+  const owned = state.territories.filter((t) => t.owner === family);
+  if (owned.length < 2) return { state };
+
+  const def = getFamilyDef(family);
+  let chance = 0.25;
+  if (def.personality === "expansionist" || def.personality === "volatile") chance += 0.1;
+  if (def.personality === "covert") chance -= 0.1;
+  const marked = state.operations.some(
+    (o) =>
+      !o.resolved &&
+      o.kind === "hit" &&
+      o.approach === "car_bomb" &&
+      o.tippedOff &&
+      o.targetFamily === family,
+  );
+  if (marked) chance = 0.05;
+  if (!rng.chance(chance)) return { state };
+
+  const home = resolveCrewTerritoryId(state, boss.id);
+  const options = owned.filter((t) => t.id !== home);
+  if (options.length === 0) return { state };
+  const dest = pickWeighted(
+    rng,
+    options,
+    (t) => t.rackets.length + 1 + (t.leadershipVacuum > 0 ? 3 : 0),
+  );
+  if (!dest) return { state };
+
+  const travelled: GameState = {
+    ...state,
+    crew: state.crew.map((c) =>
+      c.id === boss.id
+        ? {
+            ...c,
+            awayAt: { territoryId: dest.id, untilTurn: state.turn + 1, reason: "visit" as const },
+          }
+        : c,
+    ),
+  };
+
+  return {
+    // "Seen in" is public: the street knows where his car is parked this week.
+    state: recordIntel(travelled, [boss.id], dest.id, "sighting"),
+    log: {
+      id: `ai_boss_visit_${family}_${state.turn}`,
+      turn: state.turn,
+      category: "ai",
+      text: `${boss.name} was seen in ${dest.name} this week.`,
+      family,
+    },
+  };
+}
+
+/**
+ * A headless rival family doesn't stay headless. After the funeral someone
+ * grabs the chair: the underboss if there is one, else the senior capo, else
+ * the consigliere. Until then the family is frozen and its turf is soft.
+ */
+function tryInterimBoss(
+  state: GameState,
+  family: FamilyName,
+  rng: Rng,
+): { state: GameState; log?: TurnLogEntry } {
+  const living = state.crew.filter(
+    (c) => c.family === family && (c.status === "active" || c.status === "wounded"),
+  );
+  if (living.length === 0) return { state };
+  // Funerals take a week; the scramble starts after.
+  if (!rng.chance(0.5)) return { state };
+
+  const rank = (c: CrewMember) =>
+    c.role === "underboss"
+      ? 4
+      : c.role === "capo"
+        ? 3
+        : c.role === "consigliere"
+          ? 2
+          : c.role === "soldier"
+            ? 1
+            : 0;
+  const heir = [...living]
+    .filter((c) => rank(c) > 0)
+    .sort(
+      (a, b) =>
+        Number(b.status === "active") - Number(a.status === "active") ||
+        rank(b) - rank(a) ||
+        b.level - a.level ||
+        b.loyalty - a.loyalty,
+    )[0];
+  if (!heir) return { state };
+
+  const crew = state.crew.map((c) =>
+    c.id === heir.id
+      ? {
+          ...c,
+          role: "boss" as const,
+          roleSinceTurn: state.turn,
+          level: Math.max(c.level, 5),
+          capoId: undefined,
+          crewSinceTurn: undefined,
+        }
+      : c,
+  );
+  const territories = state.territories.map((t) =>
+    t.owner === family ? { ...t, leadershipVacuum: 0 } : t,
+  );
+  return {
+    state: { ...state, crew, territories },
+    log: {
+      id: `ai_interim_boss_${family}_${state.turn}`,
+      turn: state.turn,
+      category: "ai",
+      text: `${heir.name} takes the ${family} chair after the funeral.`,
+      family,
+    },
+  };
 }
 
 export function runAllAiTurns(state: GameState, rng: Rng): AiTurnResult {
@@ -723,10 +1074,22 @@ export function runAllAiTurns(state: GameState, rng: Rng): AiTurnResult {
   const logs: TurnLogEntry[] = [];
 
   for (const family of rivals) {
-    if (getBoss(current.crew, family)) {
+    const boss = getBoss(current.crew, family);
+    if (boss && bossIsJailed(current, family)) {
+      if (!actingUnderboss(current, family)) continue;
       const result = runAiTurn(current, family, rng);
       current = result.state;
       logs.push(...result.logs);
+      continue;
+    }
+    if (boss) {
+      const result = runAiTurn(current, family, rng);
+      current = result.state;
+      logs.push(...result.logs);
+    } else {
+      const interim = tryInterimBoss(current, family, rng);
+      current = interim.state;
+      if (interim.log) logs.push(interim.log);
     }
   }
 

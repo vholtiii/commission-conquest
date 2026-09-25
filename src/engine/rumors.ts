@@ -137,10 +137,24 @@ const OPENERS = [
 export function pendingHitRumorText(
   state: GameState,
   fidelity: RumorFidelity,
-  parts: { territoryId?: string; targetCrewId?: string; approach?: HitApproach; family?: FamilyName },
+  parts: {
+    territoryId?: string;
+    targetCrewId?: string;
+    approach?: HitApproach;
+    family?: FamilyName;
+    message?: boolean;
+  },
   rng: Rng,
 ): string {
   const opener = rng.pick(OPENERS);
+  if (parts.message) {
+    const text = pendingHitRumorText(state, fidelity, { ...parts, message: false }, rng);
+    return `${text} ${rng.pick([
+      "It's not the boss they want — somebody who matters. They mean to make a point about the trucks.",
+      "Word is it's over the routes. They want one of your good men found in the street.",
+      "Not a war, they say. A message. Somebody skilled, somewhere public.",
+    ])}`;
+  }
   const district = parts.territoryId
     ? state.territories.find((t) => t.id === parts.territoryId)?.name
     : undefined;
@@ -246,7 +260,12 @@ export function generateRumors(state: GameState, rng: Rng): RumorGenResult {
       text: "",
       false: false,
     };
-    rumor.text = pendingHitRumorText(state, fidelity, rumor, rng);
+    rumor.text = pendingHitRumorText(
+      state,
+      fidelity,
+      { ...rumor, message: op.intent === "message" },
+      rng,
+    );
     fresh.push(rumor);
 
     // A named family is active against you: nudge every open case they're on.

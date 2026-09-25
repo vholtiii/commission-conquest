@@ -11,6 +11,14 @@ function mentionsPlayer(text: string, player: FamilyName): boolean {
 
 /** Lower numbers surface first. Tier 7 is rival-on-rival noise. */
 export function digestPriority(log: TurnLogEntry, playerFamily: FamilyName | null): number {
+  if (
+    log.id.startsWith("log_sitdown_held_") ||
+    log.id.startsWith("log_sitdown_table_") ||
+    log.id.startsWith("log_sitdown_abort_") ||
+    log.id.startsWith("log_sitdown_host_")
+  ) {
+    return 0;
+  }
   if (log.category === "hit") return 1;
   if (
     log.id.startsWith("log_raid_") ||
@@ -36,14 +44,26 @@ export function digestPriority(log: TurnLogEntry, playerFamily: FamilyName | nul
   ) {
     return 5;
   }
-  if (log.id.startsWith("log_xp_") || log.id.startsWith("log_launder_nudge_")) return 6;
+  if (
+    log.id.startsWith("log_xp_") ||
+    log.id.startsWith("log_launder_nudge_") ||
+    log.id.startsWith("log_boss_")
+  ) {
+    return 6;
+  }
   if (log.category === "ai") return 7;
   return 8;
 }
 
 function isDigestCandidate(log: TurnLogEntry, turn: number): boolean {
   if (log.turn !== turn) return false;
-  if (log.category === "system" && !log.id.startsWith("log_xp_")) return false;
+  if (
+    log.category === "system" &&
+    !log.id.startsWith("log_xp_") &&
+    !log.id.startsWith("log_boss_")
+  ) {
+    return false;
+  }
   return true;
 }
 

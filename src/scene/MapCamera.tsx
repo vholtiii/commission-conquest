@@ -78,7 +78,8 @@ export default function MapCamera({ layout, controlsRef }: Props) {
     const flyToFocus = useGameStore((s) => s.flyToFocus);
     const clearFlyTo = useGameStore((s) => s.clearFlyTo);
   const cinematicPlaying = useGameStore(
-    (s) => s.cinematicQueue.length > 0 && !s.pendingHitResult,
+    (s) =>
+      (s.cinematicQueue.length > 0 && !s.pendingHitResult) || s.sitdownPhase != null,
   );
   const overviewNonce = useMapView((s) => s.overviewNonce);
   const setOverview = useMapView((s) => s.setOverview);

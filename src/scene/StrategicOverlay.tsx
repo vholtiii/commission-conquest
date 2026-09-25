@@ -4,6 +4,7 @@ import { Crown } from "lucide-react";
 import * as THREE from "three";
 import type { CityLayout } from "@/engine/cityLayout";
 import { familyHq, resolveCrewLocation } from "@/engine/crewLocation";
+import { isCrewVisible, normalizeIntel } from "@/engine/intel";
 import { useMapView } from "@/engine/mapView";
 import { useGameStore } from "@/engine/store";
 import { ALL_FAMILY_NAMES, getFamilyDef } from "@/data/families";
@@ -264,6 +265,8 @@ export default function StrategicOverlay({ layout, territories }: Props) {
   const playerFamily = useGameStore((s) => s.playerFamily);
   const routes = useGameStore((s) => s.routes);
   const operations = useGameStore((s) => s.operations);
+  const intel = useGameStore((s) => s.intel);
+  const turn = useGameStore((s) => s.turn);
 
   const byId = useMemo(() => new Map(territories.map((t) => [t.id, t])), [territories]);
 
@@ -275,15 +278,21 @@ export default function StrategicOverlay({ layout, territories }: Props) {
       routes,
       operations,
       playerFamily,
+      intel: normalizeIntel(intel),
+      turn,
     };
 
     for (const family of ALL_FAMILY_NAMES) {
       const hq = familyHq({ territories }, family);
       if (!hq) continue;
       const boss = crew.find((c) => c.family === family && c.role === "boss" && c.status === "active");
-      const lastName =
-        boss?.name.split(" ").slice(-1)[0] ?? getFamilyDef(family).boss.split(" ").slice(-1)[0];
       const isPlayer = family === playerFamily;
+      // The crown marks the HQ, which everyone knows. Who's sitting in the
+      // chair right now is intel: without it the label is just the family.
+      const lastName =
+        boss && (isPlayer || isCrewVisible(locState, boss))
+          ? boss.name.split(" ").slice(-1)[0]!
+          : getFamilyDef(family).boss.split(" ").slice(-1)[0]!;
 
       let tileId = hq;
       if (isPlayer && boss) {
@@ -300,7 +309,7 @@ export default function StrategicOverlay({ layout, territories }: Props) {
       map.set(tileId, { family, label: lastName, isPlayer });
     }
     return map;
-  }, [crew, territories, routes, operations, playerFamily, byId]);
+  }, [crew, territories, routes, operations, playerFamily, intel, turn, byId]);
 
   if (blend <= 0.01 && !overview) return null;
 

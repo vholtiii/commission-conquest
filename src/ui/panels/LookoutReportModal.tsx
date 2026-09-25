@@ -20,6 +20,7 @@ export default function LookoutReportModal() {
   const pendingReports = useGameStore((s) => s.pendingReports);
   const pendingHitResult = useGameStore((s) => s.pendingHitResult);
   const cinematicQueue = useGameStore((s) => s.cinematicQueue);
+  const dealCards = useGameStore((s) => s.pendingDealSettlements?.length ?? 0);
   const dismissLookoutReport = useGameStore((s) => s.dismissLookoutReport);
   const selectTerritory = useGameStore((s) => s.selectTerritory);
   const setPanel = useGameStore((s) => s.setPanel);
@@ -27,7 +28,7 @@ export default function LookoutReportModal() {
   const territories = useGameStore((s) => s.territories);
 
   const report = pendingReports?.[0];
-  if (!report || pendingHitResult || cinematicQueue.length > 0) return null;
+  if (!report || pendingHitResult || cinematicQueue.length > 0 || dealCards > 0) return null;
 
   const district =
     territories.find((t) => t.id === report.territoryId)?.name ?? "District";
