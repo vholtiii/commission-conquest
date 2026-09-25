@@ -66,6 +66,9 @@ export default function DealSettlementModal() {
     settlement.relation !== 0
       ? `Relation ${settlement.relation > 0 ? "+" : "−"}${Math.abs(settlement.relation)} with ${settlement.other}`
       : null,
+    settlement.respect
+      ? `Respect ${settlement.respect > 0 ? "+" : "−"}${Math.abs(settlement.respect)}`
+      : null,
     settlement.standing !== 0 ? `Standing ${settlement.standing > 0 ? "+" : "−"}${Math.abs(settlement.standing)}` : null,
     settlement.outcome === "breached" && settlement.breachedBy && settlement.breachedBy !== playerFamily
       ? `${settlement.breachedBy} answers to every family for it`

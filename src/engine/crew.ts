@@ -105,20 +105,21 @@ export function aggregateTraitEffects(traits: CrewTrait[]): TraitEffect {
   );
 }
 
-function rollSkills(rng: Rng, role: CrewRole): CrewSkills {
+function rollSkills(rng: Rng, role: CrewRole, bonus = 0): CrewSkills {
   const bias = ROLE_SKILL_BIAS[role];
   const roll = () => rng.int(15, 55);
+  const clamp = (n: number) => Math.max(0, Math.min(100, n + bonus));
   return {
-    muscle: roll() + (bias.muscle ?? 0) * 5,
-    stealth: roll() + (bias.stealth ?? 0) * 5,
-    smarts: roll() + (bias.smarts ?? 0) * 5,
-    charm: roll() + (bias.charm ?? 0) * 5,
-    driving: roll() + (bias.driving ?? 0) * 5,
+    muscle: clamp(roll() + (bias.muscle ?? 0) * 5),
+    stealth: clamp(roll() + (bias.stealth ?? 0) * 5),
+    smarts: clamp(roll() + (bias.smarts ?? 0) * 5),
+    charm: clamp(roll() + (bias.charm ?? 0) * 5),
+    driving: clamp(roll() + (bias.driving ?? 0) * 5),
   };
 }
 
-function rollTraits(rng: Rng, role: CrewRole): CrewTrait[] {
-  const count = role === "boss" ? 2 : rng.int(0, 2);
+function rollTraits(rng: Rng, role: CrewRole, minTraits = 0): CrewTrait[] {
+  const count = role === "boss" ? 2 : Math.max(minTraits, rng.int(0, 2));
   const pool = rng.shuffle([...ALL_TRAITS]);
   const traits = pool.slice(0, count);
   if (role === "boss" && !traits.includes("made_man")) {
@@ -131,9 +132,17 @@ export function createCrewMember(
   rng: Rng,
   family: FamilyName,
   role: CrewRole = "soldier",
-  opts?: { name?: string; isPlayerBoss?: boolean; id?: string },
+  opts?: {
+    name?: string;
+    isPlayerBoss?: boolean;
+    id?: string;
+    /** Flat add to every skill, for respect-tier recruits. */
+    skillBonus?: number;
+    /** Guarantee at least this many traits (associates otherwise roll 0–2). */
+    minTraits?: number;
+  },
 ): CrewMember {
-  const traits = rollTraits(rng, role);
+  const traits = rollTraits(rng, role, opts?.minTraits ?? 0);
   const traitAgg = aggregateTraitEffects(traits);
   const baseLoyalty = rng.int(55, 85) + traitAgg.loyaltyMod;
 
@@ -142,7 +151,7 @@ export function createCrewMember(
     name: opts?.name ?? generateName(rng),
     family,
     role,
-    skills: rollSkills(rng, role),
+    skills: rollSkills(rng, role, opts?.skillBonus ?? 0),
     traits,
     loyalty: Math.min(100, Math.max(20, baseLoyalty)),
     wanted: rng.int(0, role === "boss" ? 15 : 5),
@@ -161,10 +170,15 @@ export function generateRecruitmentPool(
   rng: Rng,
   family: FamilyName,
   count = 4,
+  tier?: { skillBonus: number; traitChance: number },
 ): CrewMember[] {
-  return Array.from({ length: count }, () =>
-    createCrewMember(rng, family, "associate"),
-  );
+  return Array.from({ length: count }, () => {
+    const gifted = !!tier && tier.traitChance > 0 && rng.chance(tier.traitChance);
+    return createCrewMember(rng, family, "associate", {
+      skillBonus: tier?.skillBonus ?? 0,
+      minTraits: gifted ? 1 : 0,
+    });
+  });
 }
 
 export interface PromotionPath {

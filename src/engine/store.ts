@@ -26,6 +26,7 @@ import {
   promoteCrew,
   funeralLoyaltyHit,
 } from "./crew";
+import { recruitPrice, recruitTier } from "./recruiting";
 import {
   createRacket,
   upgradeRacket,
@@ -103,7 +104,6 @@ import type {
   SupplyRoutePreview,
 } from "@/types/game";
 import { normalizeIntel } from "./intel";
-import { getFamilyDef } from "@/data/families";
 import { hitCrewIds } from "@/data/hitApproaches";
 import type { CrewRole } from "@/types/game";
 import {
@@ -431,8 +431,7 @@ export const useGameStore = create<GameStore>()(
         if (!s.playerFamily) return;
         const recruit = s.recruitmentPool[poolIndex];
         if (!recruit) return;
-        const def = getFamilyDef(s.playerFamily);
-        const cost = Math.floor(800 * (1 - (def.bonuses.recruitmentDiscount || 0)));
+        const cost = recruitPrice(recruit, s.playerFamily);
         if (s.money < cost) return;
         const hired = {
           ...recruit,
@@ -462,7 +461,7 @@ export const useGameStore = create<GameStore>()(
         const rng = createRng(s.seed + s.turn * 997 + 3);
         set({
           money: s.money - 200,
-          recruitmentPool: generateRecruitmentPool(rng, s.playerFamily, 5),
+          recruitmentPool: generateRecruitmentPool(rng, s.playerFamily, 5, recruitTier(s.reputation.respect)),
         });
       },
 

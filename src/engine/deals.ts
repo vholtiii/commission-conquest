@@ -24,6 +24,7 @@ import { setRelationDelta } from "./relations";
 import { hasPact } from "./diplomacy";
 import { withdrawCrates } from "./liquor";
 import { racketIncome } from "./economy";
+import { HONOR_RESPECT } from "./standing";
 
 /** Standing the breaker loses with the Commission. */
 export const BREAK_STANDING = 20;
@@ -280,12 +281,16 @@ export function honorDeal(state: GameState, dealId: string): { state: GameState;
       {
         ...next,
         relations: setRelationDelta(next.relations, player, other, HONOR_RELATION),
+        reputation: {
+          ...next.reputation,
+          respect: Math.min(100, next.reputation.respect + HONOR_RESPECT),
+        },
         deals: next.deals.map((d) =>
           d.id === dealId ? { ...d, status: "honored" as const, untilTurn: state.turn } : d,
         ),
       },
       deal,
-      { outcome: "honored", cash, relation: HONOR_RELATION, standing: 0, text },
+      { outcome: "honored", cash, relation: HONOR_RELATION, standing: 0, respect: HONOR_RESPECT, text },
     ),
     log: {
       id: `log_deal_honor_${dealId}_${state.turn}`,

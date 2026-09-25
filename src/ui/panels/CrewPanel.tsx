@@ -1,6 +1,5 @@
 import { UserPlus, Users, X } from "lucide-react";
 import { useGameStore } from "@/engine/store";
-import { getFamilyDef } from "@/data/families";
 import type { CrewSkills } from "@/types/game";
 import {
   canJoinCrew,
@@ -11,6 +10,7 @@ import {
   crewSlots,
   isFreelanceSoldier,
 } from "@/engine/crews";
+import { recruitPrice, recruitTier, recruitTierLine } from "@/engine/recruiting";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import PortraitAvatar from "@/ui/PortraitAvatar";
@@ -25,19 +25,31 @@ const SKILL_SHORT: Record<keyof CrewSkills, string> = {
   driving: "Driving",
 };
 
+const SKILL_ABBR: Record<keyof CrewSkills, string> = {
+  muscle: "Mu",
+  stealth: "St",
+  smarts: "Sm",
+  charm: "Ch",
+  driving: "Dr",
+};
+
+function titleCase(id: string): string {
+  return id.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 export default function CrewPanel() {
   const playerFamily = useGameStore((s) => s.playerFamily);
   const crew = useGameStore((s) => s.crew);
   const recruitmentPool = useGameStore((s) => s.recruitmentPool);
   const money = useGameStore((s) => s.money);
+  const respect = useGameStore((s) => s.reputation.respect);
   const recruitFromPool = useGameStore((s) => s.recruitFromPool);
   const selectCrew = useGameStore((s) => s.selectCrew);
   const joinCrew = useGameStore((s) => s.joinCrew);
   const leaveCrew = useGameStore((s) => s.leaveCrew);
 
   if (!playerFamily) return null;
-  const def = getFamilyDef(playerFamily);
-  const recruitCost = Math.floor(800 * (1 - (def.bonuses.recruitmentDiscount || 0)));
+  const tier = recruitTier(respect);
   const playerCrew = crew.filter((c) => c.family === playerFamily);
   // Boss first, then the consigliere, then the capos.
   const LEADER_ORDER: Record<string, number> = { boss: 0, consigliere: 1, capo: 2 };
@@ -55,11 +67,14 @@ export default function CrewPanel() {
           <h3 className="mb-1.5 flex items-center gap-1.5 text-xs uppercase tracking-wide text-muted-foreground">
             <UserPlus className="h-3.5 w-3.5" /> Recruitment Pool
           </h3>
+          <p className="mb-1.5 text-[10px] text-muted-foreground">{recruitTierLine(tier)}</p>
           <div className="space-y-1.5">
             {recruitmentPool.length === 0 && (
-              <p className="text-xs text-muted-foreground">No recruits available. Check back next turn.</p>
+              <p className="text-xs text-muted-foreground">Nobody&apos;s come looking this week.</p>
             )}
-            {recruitmentPool.map((c, i) => (
+            {recruitmentPool.map((c, i) => {
+              const price = recruitPrice(c, playerFamily);
+              return (
               <div
                 key={c.id}
                 className="flex items-center gap-2 rounded-md border border-panel-border bg-panel/50 px-2 py-1.5"
@@ -68,20 +83,27 @@ export default function CrewPanel() {
                 <div className="flex min-w-0 flex-1 flex-col leading-tight">
                   <span className="truncate text-xs font-medium">{c.name}</span>
                   <span className="text-[10px] text-muted-foreground">
-                    Muscle {c.skills.muscle} &middot; Smarts {c.skills.smarts}
+                    {(Object.keys(SKILL_ABBR) as (keyof CrewSkills)[]).map((k, n) => (
+                      <span key={k}>
+                        {n > 0 && " · "}
+                        {SKILL_ABBR[k]} {c.skills[k]}
+                      </span>
+                    ))}
+                    {c.traits.length > 0 && ` · ${c.traits.map(titleCase).join(", ")}`}
                   </span>
                 </div>
                 <Button
                   size="sm"
                   variant="secondary"
-                  disabled={money < recruitCost}
+                  disabled={money < price}
                   onClick={() => recruitFromPool(i)}
                   className="h-7 px-2 text-[11px]"
                 >
-                  {formatMoney(recruitCost)}
+                  {formatMoney(price)}
                 </Button>
               </div>
-            ))}
+              );
+            })}
           </div>
         </div>
 

@@ -1,10 +1,11 @@
-import { Users, ShieldAlert, Landmark, TrendingUp, TrendingDown, Wine } from "lucide-react";
+import { Users, ShieldAlert, Landmark, TrendingUp, TrendingDown, Wine, Award, Flame, Footprints } from "lucide-react";
 import { useGameStore } from "@/engine/store";
 import { getFamilyDef } from "@/data/families";
 import { getBoss } from "@/engine/crew";
 import { successionReadinessReasons } from "@/engine/succession";
 import { influenceTick } from "@/engine/victory";
 import { totalCapacity, totalCrates } from "@/engine/liquor";
+import { nextRecruitTier, recruitTier } from "@/engine/recruiting";
 import { Button } from "@/components/ui/button";
 import { formatDate, formatDelta, formatMoney } from "./formatters";
 
@@ -39,6 +40,11 @@ export default function TopBar() {
   const netPositive = lastNetIncome >= 0;
   const infDelta = influenceTick(reputation);
   const infHint = `${infDelta >= 0 ? "+" : ""}${infDelta.toFixed(1)}/t`;
+  const respectTier = recruitTier(reputation.respect);
+  const respectNext = nextRecruitTier(reputation.respect);
+  const respectHint = respectNext
+    ? `${respectTier.label} · ${respectTier.walkIns}/wk · next ${respectNext.min}`
+    : `${respectTier.label} · ${respectTier.walkIns}/wk`;
   const liquorState = {
     territories,
     turn,
@@ -102,6 +108,22 @@ export default function TopBar() {
           label="Heat"
           value={`${Math.round(heat.level)}`}
           valueClassName="text-heat"
+        />
+        <Stat
+          icon={<Award className="h-3.5 w-3.5 text-steel-light" />}
+          label="Respect"
+          value={String(Math.round(reputation.respect))}
+          sub={respectHint}
+        />
+        <Stat
+          icon={<Flame className="h-3.5 w-3.5 text-steel-light" />}
+          label="Fear"
+          value={String(Math.round(reputation.fear))}
+        />
+        <Stat
+          icon={<Footprints className="h-3.5 w-3.5 text-steel-light" />}
+          label="Street"
+          value={String(Math.round(reputation.streetInfluence))}
         />
         <Stat
           icon={<Landmark className="h-3.5 w-3.5 text-steel-light" />}

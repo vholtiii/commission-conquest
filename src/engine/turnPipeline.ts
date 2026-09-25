@@ -51,6 +51,8 @@ import { processSupplyRoutes } from "./supplyRoutes";
 import { tickPassageDeals } from "./passage";
 import { settleDealsAfterHits, tickDeals } from "./deals";
 import { callInFavors } from "./favors";
+import { walkIns } from "./recruiting";
+import { applyWeeklyStreet } from "./standing";
 
 export interface PlayerHit {
   op: Operation;
@@ -537,6 +539,11 @@ export function endTurn(state: GameState, rng?: Rng): GameState {
   current = lapsed.state;
   logs.push(...lapsed.logs);
 
+  // Storefronts and a boss off his HQ, before the drift so this week counts.
+  const street = applyWeeklyStreet(current);
+  current = street.state;
+  if (street.log) logs.push(street.log);
+
   // Influence tick: respect + fear + street drive growth
   const infDelta = influenceTick(current.reputation);
   current.influence = Math.max(0, Math.min(300, current.influence + infDelta));
@@ -548,6 +555,11 @@ export function endTurn(state: GameState, rng?: Rng): GameState {
     rivalInfluence[family] = Math.max(0, Math.min(300, grown));
   }
   current.rivalInfluence = rivalInfluence;
+
+  // Respect decides who comes looking for work this week.
+  const arrivals = walkIns(current, random);
+  current = arrivals.state;
+  if (arrivals.log) logs.push(arrivals.log);
 
   const jailed = tickJails(current, random);
   current = jailed.state;

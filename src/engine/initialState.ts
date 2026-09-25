@@ -13,6 +13,7 @@ import {
   generateRecruitmentPool,
   assignCrew,
 } from "./crew";
+import { recruitTier } from "./recruiting";
 import { initialRelations } from "./relations";
 import { emptyDiplomacy } from "./diplomacy";
 import { emptyIntel } from "./intel";
@@ -462,7 +463,7 @@ export function startGame(state: GameState, family: FamilyName): GameState {
     launderPlan[deliId] = launderCap(deli, null, state.turn);
   }
 
-  const recruitmentPool = generateRecruitmentPool(rng, family, 4);
+  const recruitmentPool = generateRecruitmentPool(rng, family, 4, recruitTier(15));
   const startTerritoryName =
     territories.find((t) => t.id === startTerritoryId)?.name ?? "Manhattan";
 

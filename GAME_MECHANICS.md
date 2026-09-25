@@ -118,7 +118,16 @@ When a boss dies, a ready underboss (active, loyalty≥60, Lv≥5, held rank ≥
 
 A headless rival family doesn't stay frozen: each turn (50%) an interim boss seizes the chair — underboss, else senior capo, else consigliere, else the best soldier — and the vacuum on their turf clears. Until then the family takes no AI actions and its districts are soft.
 
-Recruitment pool refreshes each turn (and can be bought early). Dead crew can receive funerals to soften loyalty hits.
+**Recruitment** (`src/engine/recruiting.ts`). The top bar shows Respect (0–100) with the current tier and how many men it brings. Each week that many associates walk in, up to a pool of 6; a full pool takes nobody new until someone is hired. A $200 refresh replaces the pool with 5 at the current tier.
+
+| Respect | Tier | Walk-ins / week | Quality |
+|---------|------|-----------------|---------|
+| 0–24 | Nobody | 1 | Base associate |
+| 25–49 | Known | 2 | Base associate |
+| 50–74 | Respected | 3 | Every skill +8, 50% arrive with a trait |
+| 75–100 | Renowned | 4 | Every skill +15, a trait guaranteed |
+
+Price is `round50(800 + max(0, skill total − 175) × 4)`, clamped to $800–$1,400, then the family's recruitment discount. An ordinary man is $800; a Renowned walk-in lands around $1,100–$1,400 before the discount. Dead crew can receive funerals to soften loyalty hits.
 
 ## Economy (`src/engine/economy.ts` + `src/engine/liquor.ts`)
 
@@ -354,7 +363,11 @@ Strike without naming a mark. Trade-offs:
 - Respect −6, influence −5 (extra −3 if empty), street influence −3; fear ×1.4 on kills / +4 on misses
 - Always reveals everyone present afterward ("Spotted" on the result card)
 
-### Fear & influence
+### Fear, respect & influence
+
+Respect (0–100) is on the top bar. It drives the recruitment tier (see Recruitment above) as well as sit-down odds, passage tolls and bribes. Honoring a deal is +2 Respect, and the card says so.
+
+Street also moves at the end of each week, before the influence drift: +1 per live public racket you own (speakeasy, gambling, brothel, restaurant), capped at +2, plus +1 when the boss was seen — on the road to a sit-down, or the week he arrives on a block off the HQ that he hasn't held in the last 10 weeks (`streetSeen`). Staying on a block pays nothing after that first week, so parking him is not a Street farm. A frozen racket does not count.
 
 - Sit-down betrayal odds gain up to +10% from fear
 - Each turn: `influence += respect*0.04 + fear*0.03 + street*0.02 − 2` (0..300)
@@ -456,7 +469,7 @@ Length is chosen next to difficulty on a new game (short 30 turns, medium 50, lo
 
 **Lose:** the boss is dead and no underboss can take the chair; the boss's 4-turn jail window expires with no ready underboss; or both cash pools stay negative for 3 weeks.
 
-**Succession:** the underboss keeps his loyalty at the boss's funeral (`funeralLoyaltyHit` skips the heir), so a ready heir stays ready at the moment he is needed. Rivals pay the same $800 the player pays for a recruit, out of their treasury.
+**Succession:** the underboss keeps his loyalty at the boss's funeral (`funeralLoyaltyHit` skips the heir), so a ready heir stays ready at the moment he is needed. Rivals still pay a flat $800 for a recruit, out of their treasury.
 
 **Jail:** only the boss gets a window (`jailedUntilTurn`). A ready underboss becomes acting boss (income, presence, captures; no sit-downs or pacts; loyalty −2). With nobody ready the family is headless (no captures, income −25%, loyalty −4, no diplomacy). Buying the judge ($6,000 + $2,000 × wanted, clean cash; mayor bribe adds about +0.35) can spring him. Failure burns the full price. Everyone else who is jailed stays jailed.
 

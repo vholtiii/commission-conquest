@@ -571,6 +571,8 @@ export interface DealSettlement {
   relation: number;
   /** Standing change for the player (breaches he committed). */
   standing: number;
+  /** Respect change, when keeping the deal was worth saying so. */
+  respect?: number;
   breachedBy?: FamilyName;
   /** The obligation a called-in favor turned into, if any. */
   becameDealId?: string;
@@ -1237,6 +1239,8 @@ export interface GameState {
   supplyRoutePreview: SupplyRoutePreview | null;
   /** Where each boss has been holding court, and since when (`bossPresence.ts`). */
   bossStay?: Partial<Record<FamilyName, { territoryId: string; since: number }>>;
+  /** Last week the player's boss was seen arriving on each block (`standing.ts`). */
+  streetSeen?: Record<string, number>;
   /** Why the camera landed where it did after selecting a crew member. */
   focusReason: string | null;
   pendingHitResult: HitResult | null;
