@@ -1,6 +1,110 @@
-import type { BribeStatus, GameState, HeatState, TurnLogEntry } from "@/types/game";
+import type { BribeStatus, CrewMember, GameState, HeatState, TurnLogEntry } from "@/types/game";
 import { getFamilyDef } from "@/data/families";
 import { jailInCrew } from "./jail";
+import { isLegitBusiness, isRacketFrozen, legitCoverWantedDrop } from "./economy";
+import { SAFEHOUSE, laidLowHouse } from "./safehouse";
+
+/** When the law starts picking men up at the end of the week. */
+export const WARRANT = {
+  /** Family heat at which bench warrants go out. */
+  heatFloor: 60,
+  /** A man has to be wanted above this to be on the warrant list. */
+  wantedFloor: 5,
+  /** Weekly chance a man on the list is picked up. */
+  chance: 0.08,
+} as const;
+
+export interface ArrestReducer {
+  /** Short label for the UI chip, e.g. "Cops paid". */
+  label: string;
+  /** What it's doing, e.g. "−2 heat/wk". */
+  effect: string;
+}
+
+export interface ArrestRisk {
+  /** Chance this man is picked up at the end of the week, 0–1. */
+  chance: number;
+  /** True when he's on the warrant list right now (heat and wanted both over the line). */
+  listed: boolean;
+  /** Things pulling his odds down — bribes cooling the heat, a safehouse or legit front shedding his wanted. */
+  reducers: ArrestReducer[];
+  /** One-line explanation for a tooltip. */
+  note: string;
+}
+
+type ArrestState = Pick<GameState, "heat" | "bribes" | "territories" | "turn" | "playerFamily" | "ratLeakTurn">;
+
+/** A spared rat keeps talking for this many weeks. */
+const RAT_LEAK_WEEKS = 4;
+
+function ratLeaking(state: Pick<ArrestState, "ratLeakTurn" | "turn">): boolean {
+  return state.ratLeakTurn != null && state.turn >= state.ratLeakTurn && state.turn < state.ratLeakTurn + RAT_LEAK_WEEKS;
+}
+
+const BRIBE_LABEL: Record<keyof GameState["bribes"], string> = {
+  cops: "cops",
+  captains: "captains",
+  chiefs: "chiefs",
+  mayor: "mayor",
+  judge: "judge",
+};
+
+/**
+ * The odds a man gets picked up this week and what's working in his favour.
+ * Mirrors `applyWarrantConsequences`: the roll only happens once the family's
+ * heat is at the warrant line and the man is wanted above the floor.
+ */
+export function arrestRisk(state: ArrestState, m: CrewMember): ArrestRisk {
+  const reducers: ArrestReducer[] = [];
+
+  const paid = (Object.keys(state.bribes) as (keyof GameState["bribes"])[]).filter((k) => {
+    const b = state.bribes[k];
+    return b?.isActive && bribeEffects(k, true).heatReduction > 0;
+  });
+  if (paid.length > 0) {
+    const cooling = paid.reduce((sum, k) => sum + bribeEffects(k, true).heatReduction, 0);
+    reducers.push({
+      label: `${paid.map((k) => BRIBE_LABEL[k]).join(", ")} paid`,
+      effect: `−${cooling} heat/wk`,
+    });
+  }
+
+  if (m.status === "active" || m.status === "wounded") {
+    const house = laidLowHouse(state, m);
+    if (house) {
+      reducers.push({
+        label: "lying low",
+        effect: `−${house.level + SAFEHOUSE.wantedBonus} wanted/wk`,
+      });
+    } else {
+      let front = 0;
+      for (const t of state.territories) {
+        for (const r of t.rackets) {
+          if (r.managerId !== m.id || !isLegitBusiness(r.type) || isRacketFrozen(r, state.turn)) continue;
+          front = Math.max(front, legitCoverWantedDrop(r.level));
+        }
+      }
+      if (front > 0) reducers.push({ label: "legit front", effect: `−${front} wanted/wk` });
+    }
+  }
+
+  if (m.status !== "active") {
+    return { chance: 0, listed: false, reducers, note: "Not on the street — nothing to pick up." };
+  }
+
+  const leaking = ratLeaking(state);
+  const wantedFloor = leaking ? WARRANT.wantedFloor - 2 : WARRANT.wantedFloor;
+  const hot = state.heat.level >= WARRANT.heatFloor;
+  const wanted = m.wanted > wantedFloor;
+  const listed = hot && wanted;
+  const chance = listed ? (leaking ? 0.14 : WARRANT.chance) : 0;
+  const heatLine = `heat ${Math.round(state.heat.level)}/${WARRANT.heatFloor}`;
+  const wantedLine = `wanted ${m.wanted} (list starts at ${wantedFloor + 1})`;
+  const note = listed
+    ? `On the warrant list (${heatLine}, ${wantedLine}): ${Math.round(chance * 100)}% a week he's picked up.`
+    : `Warrants go out at heat ${WARRANT.heatFloor} for men wanted over ${WARRANT.wantedFloor}; then it's ${Math.round(WARRANT.chance * 100)}% a week. Now: ${heatLine}, ${wantedLine}.`;
+  return { chance, listed, reducers, note };
+}
 
 export interface HeatThreshold {
   level: number;
@@ -203,16 +307,37 @@ export function processHeatTurn(state: GameState): HeatTurnResult {
 }
 
 export function applyWarrantConsequences(state: GameState): GameState {
-  if (state.heat.level < 60 || !state.playerFamily) return state;
+  if (!state.playerFamily) return state;
 
   let crew = state.crew;
-  for (const c of state.crew) {
+  let turnLog = state.turnLog;
+  // The week a spared rat starts talking, wanted climbs across the family.
+  if (ratLeaking(state) && state.turn === state.ratLeakTurn) {
+    crew = crew.map((c) =>
+      c.family === state.playerFamily && c.status === "active" ? { ...c, wanted: c.wanted + 1 } : c,
+    );
+    turnLog = [
+      ...turnLog,
+      {
+        id: `log_rat_leak_${state.turn}`,
+        turn: state.turn,
+        category: "heat" as const,
+        text: "The rat you spared is still talking. Wanted levels climb across the family.",
+        family: state.playerFamily,
+      },
+    ];
+  }
+
+  if (state.heat.level < WARRANT.heatFloor) return { ...state, crew, turnLog };
+
+  for (const c of crew) {
     if (c.family !== state.playerFamily) continue;
     if (c.status !== "active") continue;
-    if (c.wanted > 5 && Math.random() < 0.08) {
+    const { chance } = arrestRisk(state, c);
+    if (chance > 0 && Math.random() < chance) {
       crew = jailInCrew(crew, c.id, state.turn);
     }
   }
 
-  return { ...state, crew };
+  return { ...state, crew, turnLog };
 }

@@ -22,6 +22,8 @@ import BoroughOverlay from "./BoroughOverlay";
 import StreetLabels from "./StreetLabels";
 import BlockPlumbing from "./BlockPlumbing";
 import AmbientTells from "./AmbientTells";
+import Atmosphere from "./Atmosphere";
+import PostFx from "./PostFx";
 
 /** Canvas wrapper for the city view. Reads territories and crew from the store. */
 export default function CityScene() {
@@ -32,6 +34,7 @@ export default function CityScene() {
     (s) =>
       (s.cinematicQueue.length > 0 && !s.pendingHitResult) || s.sitdownPhase != null,
   );
+  const postFx = useGameStore((s) => s.settings.postFx !== false);
 
   // Layout geometry only depends on static position/borough fields, not on owner/rackets,
   // so we key the memo off those to avoid rebuilding the whole city grid every turn.
@@ -48,6 +51,7 @@ export default function CityScene() {
     <div className="absolute inset-0 z-0 h-full w-full">
       <Canvas
         shadows
+        flat={postFx}
         frameloop="always"
         dpr={[1, 1.75]}
         camera={{ position: [0, 34, 30], fov: 42, near: 0.1, far: 300 }}
@@ -58,31 +62,10 @@ export default function CityScene() {
           if (!cinematicPlaying) selectTerritory(null);
         }}
         style={{ width: "100%", height: "100%", display: "block" }}
-        className="h-full w-full bg-[#0d0e10]"
+        className="h-full w-full bg-[#11141a]"
         gl={{ antialias: true, alpha: false, powerPreference: "high-performance" }}
-        onCreated={({ gl }) => {
-          gl.setClearColor("#11141a");
-        }}
       >
-        <color attach="background" args={["#11141a"]} />
-        <fog attach="fog" args={["#11141a", 42, 130]} />
-
-        <hemisphereLight args={["#cbd7e8", "#241d16", 0.55]} />
-        <ambientLight intensity={0.22} />
-        <directionalLight
-          position={[30, 45, 20]}
-          intensity={1.35}
-          color="#ffd9a8"
-          castShadow
-          shadow-mapSize-width={2048}
-          shadow-mapSize-height={2048}
-          shadow-camera-left={-60}
-          shadow-camera-right={60}
-          shadow-camera-top={60}
-          shadow-camera-bottom={-60}
-          shadow-camera-near={1}
-          shadow-camera-far={150}
-        />
+        <Atmosphere />
 
         <MapControls
           ref={controlsRef}
@@ -132,6 +115,7 @@ export default function CityScene() {
         <Suspense fallback={null}>
           <KenneyProps layout={layout} />
         </Suspense>
+        {postFx && <PostFx />}
       </Canvas>
     </div>
   );

@@ -264,12 +264,18 @@ function LotPads({ layout, territory }: { layout: CityLayout; territory: Territo
   const spots = useMemo(() => {
     const out: { x: number; z: number }[] = [];
     const slots = territory.racketSlots ?? 0;
-    for (let i = territory.rackets.length; i < slots; i++) {
+    const taken = new Set(
+      territory.rackets.map((r, i) =>
+        typeof r.siteIndex === "number" ? r.siteIndex : i,
+      ),
+    );
+    for (let i = 0; i < slots; i++) {
+      if (taken.has(i)) continue;
       const b = racketBlockFor(layout, territory.id, i);
       if (b) out.push({ x: b.worldX, z: b.worldZ });
     }
     return out;
-  }, [layout, territory.id, territory.rackets.length, territory.racketSlots]);
+  }, [layout, territory.id, territory.rackets, territory.racketSlots]);
 
   return (
     <group>

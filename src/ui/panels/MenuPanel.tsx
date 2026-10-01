@@ -60,6 +60,13 @@ export default function MenuPanel() {
             Show rival-on-rival hits (brief)
           </label>
           <label className="mt-1.5 flex items-center gap-2 rounded-md border border-panel-border bg-panel/50 px-3 py-2 text-xs">
+            <Checkbox
+              checked={settings.postFx !== false}
+              onCheckedChange={(v) => updateSettings({ postFx: !!v })}
+            />
+            Post-processing
+          </label>
+          <label className="mt-1.5 flex items-center gap-2 rounded-md border border-panel-border bg-panel/50 px-3 py-2 text-xs">
             <span className="shrink-0">Sound effects</span>
             <input
               type="range"

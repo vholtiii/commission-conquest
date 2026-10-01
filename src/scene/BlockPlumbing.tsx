@@ -152,8 +152,11 @@ export default function BlockPlumbing({ layout, territories }: Props) {
       {territory.rackets.map((racket) => {
         if (racket.type !== "warehouse") return null;
         if (!warehouseManagerMods(lookup(racket)).managed) return null;
-        const index = territory.rackets.indexOf(racket);
-        const block = racketBlockFor(layout, territory.id, index);
+        const site =
+          typeof racket.siteIndex === "number"
+            ? racket.siteIndex
+            : territory.rackets.indexOf(racket);
+        const block = racketBlockFor(layout, territory.id, site);
         if (!block) return null;
         return (
           <Figure

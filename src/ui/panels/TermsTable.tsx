@@ -28,6 +28,8 @@ import { hasConsigliere } from "@/engine/diplomacy";
 import { familyHq } from "@/engine/crewLocation";
 import { Button } from "@/components/ui/button";
 import { TermRow } from "@/ui/panels/SitdownRequestModal";
+import { canCallCommission } from "@/engine/commission";
+import Tip from "@/ui/Tip";
 
 /**
  * An open agenda table: their number, the player's counter, three rounds.
@@ -47,6 +49,8 @@ export function TermsTable({
   const dirtyMoney = useGameStore((s) => s.dirtyMoney);
   const influence = useGameStore((s) => s.influence);
   const answerTable = useGameStore((s) => s.answerTable);
+  const callCommission = useGameStore((s) => s.callCommission);
+  const beginSitdownExit = useGameStore((s) => s.beginSitdownExit);
 
   const family = sitdown.proposer === playerFamily ? sitdown.other : sitdown.proposer;
   const agenda = sitdown.purpose!;
@@ -72,6 +76,30 @@ export function TermsTable({
   const cashStep = Math.abs(ask.cash) >= 1000 ? 100 : 50;
   const hq = familyHq(state, playerFamily);
   const chips = sellableDistricts(state).filter((t) => t.id !== hq && t.id !== ask.territoryId);
+
+  if (sitdown.table?.walkedOut && agenda === "truce") {
+    const check = canCallCommission(state, family);
+    return (
+      <div className={embedded ? "" : "absolute inset-0 z-40 flex items-center justify-center bg-black/75 backdrop-blur-sm"}>
+        <div className={embedded ? "w-full" : "panel-surface-elevated w-[480px] rounded-lg border p-5"}>
+          <h2 className="font-display text-lg text-steel-light">The table breaks up</h2>
+          <p className="mt-1 text-sm text-foreground/90">Nothing on the truce with {family}.</p>
+          <Tip wrapDisabled content={check.ok ? "Put the war in front of the other families." : check.reason}>
+            <Button
+              className="mt-3 w-full"
+              disabled={!check.ok}
+              onClick={() => {
+                callCommission(family);
+                beginSitdownExit();
+              }}
+            >
+              Take it to the Commission
+            </Button>
+          </Tip>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className={embedded ? "" : "absolute inset-0 z-40 flex items-center justify-center bg-black/75 backdrop-blur-sm"}>

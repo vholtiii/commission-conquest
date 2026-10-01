@@ -43,9 +43,8 @@ export default function EventModal() {
               <span className="text-sm font-medium">{choice.text}</span>
               <span className="mt-1 flex flex-wrap gap-2 text-[10px] text-muted-foreground">
                 {Object.entries(choice.effects).map(([key, val]) => {
-                  if (key === "crewStatus" || key === "relationDelta" || val === undefined)
-                    return null;
-                  const num = val as number;
+                  if (typeof val !== "number") return null;
+                  const num = val;
                   if (key === "shipmentLoss") {
                     return (
                       <span key={key} className="text-heat">

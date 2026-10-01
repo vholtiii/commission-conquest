@@ -124,6 +124,7 @@ const APPROACH_HINT: Record<HitApproach, string[]> = {
     "somebody wants a sit-down with him, real friendly",
     "there's an invitation coming he shouldn't take",
   ],
+  summons: ["he's been told to come by the house", "the boss wants a word with him, alone"],
 };
 
 const OPENERS = [

@@ -6,8 +6,8 @@ import type { CityLayout } from "@/engine/cityLayout";
 import { blockKey, racketBlockFor } from "@/engine/cityLayout";
 import { racketFreshness } from "@/engine/economy";
 import { RACKET_VISUALS } from "@/data/racketVisuals";
-import type { RacketType, Territory } from "@/types/game";
-import { RACKET_LABELS } from "@/types/game";
+import type { FamilyName, RacketType, Territory } from "@/types/game";
+import { FAMILY_HEX, RACKET_LABELS } from "@/types/game";
 import { useGameStore } from "@/engine/store";
 
 interface Props {
@@ -529,8 +529,12 @@ function RacketBuilding({
   turn: number;
 }) {
   const racket = territory.rackets[racketIndex]!;
-  const block = racketBlockFor(layout, territory.id, racketIndex);
+  const site =
+    typeof racket.siteIndex === "number" ? racket.siteIndex : racketIndex;
+  const block = racketBlockFor(layout, territory.id, site);
   const invalidate = useThree((s) => s.invalidate);
+  const owner = territory.owner as FamilyName | null;
+  const ownerHex = owner ? FAMILY_HEX[owner] : null;
 
   const groupRef = useRef<THREE.Group>(null);
   const neonRef = useRef<THREE.MeshStandardMaterial>(null);
@@ -552,11 +556,14 @@ function RacketBuilding({
   const isSafehouse = racket.type === "safehouse";
   // Quiet fronts: no neon, no bands, no roof beacon.
   const hideout = racket.type === "still" || racket.type === "warehouse" || isSafehouse;
-  const bodyColor = isSafehouse
+  const typeColor = isSafehouse
     ? tintToward("#2c2019", visual.color, 0.45)
     : hideout
       ? tintToward("#12110e", visual.color, 0.18)
       : tintToward("#3a3c40", visual.color, 0.62);
+  // Family tint on the body so a taken-over racket still reads as the same
+  // business, but clearly under new ownership.
+  const bodyColor = ownerHex ? tintToward(typeColor, ownerHex, 0.28) : typeColor;
   const Icon = visual.Icon;
   const haloGeo = useMemo(() => makeSquareRingGeometry(2.8, 2.15), []);
 
@@ -750,14 +757,33 @@ function RacketBuilding({
             </span>
           )}
           <div
-            className="flex items-center gap-1 rounded-md border border-black/40 px-1.5 py-0.5 shadow"
-            style={{ background: `${visual.color}ee` }}
+            className="flex items-center gap-1 rounded-md border px-1.5 py-0.5 shadow"
+            style={{
+              background: `${visual.color}ee`,
+              borderColor: ownerHex ?? "rgba(0,0,0,0.4)",
+              boxShadow: ownerHex ? `0 0 0 1.5px ${ownerHex}` : undefined,
+            }}
           >
+            {ownerHex && (
+              <span
+                className="h-1.5 w-1.5 shrink-0 rounded-full"
+                style={{ background: ownerHex }}
+                title={owner ?? undefined}
+              />
+            )}
             <Icon className="h-3 w-3 text-black/90" />
             <span className="text-[9px] font-bold uppercase tracking-wide text-black/90">
               {visual.sign}
             </span>
           </div>
+          {owner && (
+            <span
+              className="rounded px-1 text-[8px] font-semibold uppercase tracking-wide text-white"
+              style={{ background: `${ownerHex}cc` }}
+            >
+              {owner}
+            </span>
+          )}
           <div className="flex gap-0.5">
             {Array.from({ length: 5 }).map((_, i) => (
               <span
@@ -782,8 +808,9 @@ export function useOccupiedRacketBlocks(
   return useMemo(() => {
     const occupied = new Set<string>();
     for (const t of territories) {
-      t.rackets.forEach((_, i) => {
-        const b = racketBlockFor(layout, t.id, i);
+      t.rackets.forEach((r, i) => {
+        const site = typeof r.siteIndex === "number" ? r.siteIndex : i;
+        const b = racketBlockFor(layout, t.id, site);
         if (b) occupied.add(blockKey(b.gx, b.gz));
       });
     }

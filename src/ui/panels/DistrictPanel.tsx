@@ -3,7 +3,7 @@ import { useState } from "react";
 import { useGameStore } from "@/engine/store";
 import { getFamilyDef } from "@/data/families";
 import { FAMILY_HEX, RACKET_LABELS } from "@/types/game";
-import { racketIncome, racketCrewBonusPct, racketPayment, isLegitBusiness, isRacketFrozen, launderCap, launderSiteStatus, fundingLabel, racketFunding, hijackRisk } from "@/engine/economy";
+import { racketIncome, racketCrewBonusPct, racketPayment, isLegitBusiness, isRacketFrozen, launderCap, launderSiteStatus, fundingLabel, racketFunding, hijackRisk, needsManager, legitCoverWantedDrop } from "@/engine/economy";
 import { isProducerType, isStorageType, planFeedSpeakeasy, stockCap, warehouseManagerEffectText } from "@/engine/liquor";
 import { isUnguarded, maxRacketsFor, lotTier, lotTierHint, lotTierLabel, allowedRacketTypes } from "@/engine/territoryValue";
 import { RACKET_VISUALS } from "@/data/racketVisuals";
@@ -19,11 +19,14 @@ import {
   presenceLoyaltyGain,
 } from "@/engine/bossPresence";
 import { currentRumors } from "@/engine/rumors";
+import { canLieLow, laidLowIn, SAFEHOUSE, safehouseCapacity, safehouseHitPenalty } from "@/engine/safehouse";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import PortraitAvatar from "@/ui/PortraitAvatar";
 import Tip from "@/ui/Tip";
+import WantedTag, { pct as riskPct } from "@/ui/WantedTag";
+import { arrestRisk } from "@/engine/heat";
 import PanelShell from "./PanelShell";
 import { formatMoney } from "../formatters";
 import type { CrewMember, GameState, Racket } from "@/types/game";
@@ -58,6 +61,12 @@ function managerTip(r: Racket, manager: CrewMember | null | undefined): string {
       ? `Manager: ${warehouseManagerEffectText(manager, r.stock)}`
       : "Assign a manager — unmanaged warehouses lose 12% of crates each turn.";
   }
+  if (isLegitBusiness(r.type)) {
+    const drop = legitCoverWantedDrop(r.level);
+    return manager
+      ? `${manager.name} runs this front — sheds ${drop} wanted a week (slower than a safehouse).`
+      : `Unmanaged rackets earn −30% income. A manager also sheds ${drop} wanted a week behind the counter.`;
+  }
   return manager
     ? `${manager.name} runs this racket. Remove or replace from the dropdown.`
     : "Unmanaged rackets earn −30% income. Assign crew to manage.";
@@ -77,6 +86,7 @@ export default function DistrictPanel() {
   const setPanel = useGameStore((s) => s.setPanel);
   const selectCrew = useGameStore((s) => s.selectCrew);
   const assignMember = useGameStore((s) => s.assignMember);
+  const lieLow = useGameStore((s) => s.lieLow);
   const upgradeRacketAt = useGameStore((s) => s.upgradeRacketAt);
   const assignManager = useGameStore((s) => s.assignManager);
   const setupLaunderSite = useGameStore((s) => s.setupLaunderSite);
@@ -86,7 +96,10 @@ export default function DistrictPanel() {
   const supplyRoutes = useGameStore((s) => s.supplyRoutes ?? []);
   const rumors = useGameStore((s) => s.rumors ?? []);
   const bossStay = useGameStore((s) => s.bossStay);
+  const heat = useGameStore((s) => s.heat);
+  const bribes = useGameStore((s) => s.bribes);
   const [caseLookoutId, setCaseLookoutId] = useState("");
+  const riskState = { heat, bribes, territories, turn, playerFamily };
 
   const territory = territories.find((t) => t.id === selectedTerritoryId);
   if (!territory || !playerFamily) return null;
@@ -115,11 +128,15 @@ export default function DistrictPanel() {
         .filter(Boolean) as NonNullable<ReturnType<typeof crew.find>>[])
     : visible.filter((c) => c.family === territory.owner);
   const unknown = isRival ? hiddenCountIn(locState, territory.id) : 0;
+  const managingIds = new Set(
+    territories.flatMap((t) => t.rackets.map((r) => r.managerId).filter((id): id is string => !!id)),
+  );
   const lookouts = crew.filter(
     (c) =>
       c.family === playerFamily &&
       c.status === "active" &&
-      (c.assignment.type === "idle" || c.assignment.type === "garrison"),
+      (c.assignment.type === "idle" || c.assignment.type === "garrison") &&
+      !managingIds.has(c.id),
   );
   const managerCandidates = crew.filter(
     (c) =>
@@ -223,6 +240,21 @@ export default function DistrictPanel() {
           : "He'll hold court here until you send him elsewhere.",
     });
   };
+  // The safehouse: who's inside, how many beds, who could go in.
+  const beds = isOwned ? safehouseCapacity(territory, turn) : 0;
+  const inside = beds > 0 ? laidLowIn(crew, territory.id).filter((c) => c.family === playerFamily) : [];
+  const couldLieLow =
+    beds > 0
+      ? crew
+          .filter((c) => c.family === playerFamily && canLieLow({ crew, territories, turn }, c, territory.id).ok)
+          .sort((a, b) => b.wanted - a.wanted)
+      : [];
+  const backOnTheStreet = (man: CrewMember) => {
+    assignMember(man.id, { type: "garrison", territoryId: territory.id });
+    toast.success(`${man.name} is back on the street`, {
+      description: man.role === "boss" ? "He holds court here again." : "He counts toward the block's defence again.",
+    });
+  };
   const racketSlots = maxRacketsFor(territory);
   const slotsFull = territory.rackets.length >= racketSlots;
   const tier = lotTier(territory);
@@ -314,6 +346,9 @@ export default function DistrictPanel() {
               >
                 <PortraitAvatar seed={c.portraitSeed} size={24} ringColor={FAMILY_HEX[c.family]} role={c.role} family={c.family} isPlayerBoss={c.isPlayerBoss} alt={c.name} />
                 <span className="text-xs">{c.name}</span>
+                {c.family === playerFamily && c.wanted > 0 && (
+                  <WantedTag member={c} className="text-[10px] text-muted-foreground" showReducers={false} />
+                )}
                 <span className="ml-auto text-[10px] text-muted-foreground">{c.role}</span>
               </button>
             ))}
@@ -336,6 +371,54 @@ export default function DistrictPanel() {
               </select>
             </Tip>
           )}
+          {isOwned && beds > 0 && (
+            <div className="mt-2 space-y-1.5 rounded border border-panel-border bg-panel/60 px-2 py-1.5">
+              <div className="flex items-center justify-between text-[11px]">
+                <Tip content={`Level ${beds} house. Inside, a man sheds ${SAFEHOUSE.wantedBonus + beds} wanted a week, and a rival crew has to case this block before they can find him — even then they fight at −${Math.round(safehouseHitPenalty(beds) * 100)}%. Men inside come out shooting when the family is hit here or next door (each counts as ${(SAFEHOUSE.coverBase + SAFEHOUSE.coverPerLevel * beds).toFixed(2)} defenders). Your own hits nearby get a door to run through, trucks passing the house duck police checkpoints, and the block holds +${Math.round(beds * SAFEHOUSE.captureDefPerLevel * 100)}% harder against capture. Nobody has to run it. He doesn't guard the block or run anything while he's down; a boss inside gives up his presence bonuses.`}>
+                  <span className="text-foreground">Safehouse</span>
+                </Tip>
+                <span className="text-muted-foreground">
+                  {inside.length}/{beds} {beds === 1 ? "bed" : "beds"}
+                </span>
+              </div>
+              {inside.map((c) => (
+                <div key={c.id} className="flex items-center gap-2 text-[11px]">
+                  <PortraitAvatar seed={c.portraitSeed} size={20} ringColor={FAMILY_HEX[c.family]} role={c.role} family={c.family} isPlayerBoss={c.isPlayerBoss} alt={c.name} />
+                  <button type="button" className="min-w-0 truncate text-left hover:underline" onClick={() => selectCrew(c.id)}>
+                    {c.name}
+                  </button>
+                  <WantedTag member={c} className="text-[10px] text-muted-foreground" showReducers={false} />
+                  <button
+                    type="button"
+                    className="ml-auto shrink-0 text-[10px] text-steel-light hover:underline"
+                    onClick={() => backOnTheStreet(c)}
+                  >
+                    Back on the street
+                  </button>
+                </div>
+              ))}
+              {inside.length < beds && couldLieLow.length > 0 && (
+                <select
+                  value=""
+                  onChange={(e) => {
+                    if (e.target.value) lieLow(e.target.value, territory.id);
+                  }}
+                  className="h-7 w-full rounded border border-panel-border bg-panel/60 px-1 text-[11px]"
+                >
+                  <option value="">Send a man inside…</option>
+                  {couldLieLow.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name} · {c.role}
+                      {c.wanted > 0 ? ` · wanted ${c.wanted} (${riskPct(arrestRisk(riskState, c))})` : ""}
+                    </option>
+                  ))}
+                </select>
+              )}
+              {inside.length === 0 && couldLieLow.length === 0 && (
+                <p className="text-[10px] text-muted-foreground">Nobody free to go inside.</p>
+              )}
+            </div>
+          )}
           {isOwned && boss && (
             <div
               className={`mt-2 space-y-1.5 rounded border px-2 py-1.5 ${
@@ -349,7 +432,9 @@ export default function DistrictPanel() {
                   <Crown className="h-3.5 w-3.5 shrink-0 text-amber-300" />
                   <span className="truncate text-muted-foreground">
                     {bossHere
-                      ? `${boss.name} holds court here.`
+                      ? boss.assignment.type === "safehouse"
+                        ? `${boss.name} is laid low here. No court this week.`
+                        : `${boss.name} holds court here.`
                       : bossHereName
                         ? `Boss is in ${bossHereName}.`
                         : "Boss location unknown."}
@@ -656,7 +741,9 @@ export default function DistrictPanel() {
                       </div>
                       <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
                         {r.type === "safehouse" ? (
-                          <span>Hideout · −{r.level} wanted/turn for garrisoned crew</span>
+                          <span>
+                            Hideout · {r.level} {r.level === 1 ? "bed" : "beds"} · −{r.level + SAFEHOUSE.wantedBonus} wanted/turn · −{Math.round(safehouseHitPenalty(r.level) * 100)}% to hits inside · block defence +{Math.round(r.level * SAFEHOUSE.captureDefPerLevel * 100)}% · runs itself
+                          </span>
                         ) : (
                           <span className="text-money">
                             ${income}/turn
@@ -750,7 +837,7 @@ export default function DistrictPanel() {
                           </div>
                         );
                       })()}
-                      {isOwned && (
+                      {isOwned && needsManager(r.type) && (
                         <div className="mt-1 flex items-center gap-1.5">
                           {manager ? (
                             <button
@@ -785,7 +872,11 @@ export default function DistrictPanel() {
                               className="h-6 max-w-[9rem] rounded border border-panel-border bg-panel/60 px-1 text-[10px]"
                             >
                               <option value="">Assign manager…</option>
-                              {managerCandidates.map((c) => (
+                              {managerCandidates
+                                .filter(
+                                  (c) => c.assignment.type !== "racket" || c.id === r.managerId,
+                                )
+                                .map((c) => (
                                 <option key={c.id} value={c.id}>
                                   {c.name.split(" ").slice(-1)[0]} ({c.role})
                                 </option>

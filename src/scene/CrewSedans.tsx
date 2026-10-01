@@ -22,8 +22,9 @@ import { SedanFleet, type SedanSpec } from "./Sedan";
 
 export const BOSS_CAR_SCALE = 0.95;
 const CREW_CAR_SCALE = 0.85;
-/** Cars per district before the rest are "parked round the corner". */
-const KERB_SLOTS = 6;
+/** Cars per district. A second row sits a step off the kerb so a dinner fits. */
+const KERB_SLOTS = 16;
+const KERB_ROW = 8;
 /** Distance from an avenue's centreline to its west kerb. */
 const WEST_KERB = 0.7;
 /** Nose-to-nose spacing along the kerb. */
@@ -114,6 +115,34 @@ function streetRows(layout: CityLayout): number[] {
   return [...rows].sort((a, b) => a - b);
 }
 
+/** Slot `n` along the kerb: at the centre, then one south, one north, two south… A second row steps west. */
+function kerbOffset(n: number): { x: number; z: number } {
+  const row = Math.floor(n / KERB_ROW);
+  const i = n % KERB_ROW;
+  const step = Math.ceil(i / 2);
+  return {
+    x: -row * 1.15,
+    z: (i % 2 === 1 ? step : -step) * KERB_PITCH,
+  };
+}
+
+function tooClose(a: Spot, b: Spot): boolean {
+  return Math.abs(a.x - b.x) < KERB_PITCH * 0.5 && Math.abs(a.z - b.z) < KERB_PITCH * 0.9;
+}
+
+/**
+ * The nth kerb slot for a district, walked further along the avenue if
+ * another district's row already parked there. Two cars never share a spot.
+ */
+function freeKerbSpot(kerb: Spot, nth: number, taken: Spot[]): Spot | null {
+  for (let n = nth; n < nth + KERB_SLOTS * 3; n++) {
+    const off = kerbOffset(n);
+    const spot = { x: kerb.x + off.x, z: kerb.z + off.z };
+    if (!taken.some((t) => tooClose(t, spot))) return spot;
+  }
+  return null;
+}
+
 function nearestRow(rows: number[], z: number): number {
   let best = rows[0] ?? z;
   for (const r of rows) if (Math.abs(r - z) < Math.abs(best - z)) best = r;
@@ -156,14 +185,17 @@ export function crewSedans(
   });
 
   const parkedAt = new Map<string, number>();
+  const taken: Spot[] = [];
   const cars: CrewCar[] = [];
   for (const { member, territoryId, body } of candidates) {
     const nth = parkedAt.get(territoryId) ?? 0;
     if (nth >= KERB_SLOTS) continue;
-    parkedAt.set(territoryId, nth + 1);
     const center = centerById.get(territoryId)!;
     const kerb = nearestAvenue(layout, center.worldX, center.worldZ);
-    const spot = { x: kerb.x, z: kerb.z + nth * KERB_PITCH };
+    const spot = freeKerbSpot(kerb, nth, taken);
+    if (!spot) continue;
+    parkedAt.set(territoryId, nth + 1);
+    taken.push(spot);
     cars.push({
       id: member.id,
       territoryId,

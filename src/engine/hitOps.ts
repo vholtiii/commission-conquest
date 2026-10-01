@@ -19,11 +19,15 @@ import { CAR_BOMB_ARMED_MAX_TURNS } from "@/types/game";
 import { getFamilyDef } from "@/data/families";
 import { approachSpec, exposedCrewIds, hitCrewIds } from "@/data/hitApproaches";
 import type { Rng } from "./rng";
-import { aggregateTraitEffects, crewCombatScore, funeralLoyaltyHit, grantXpToCrew } from "./crew";
+import { aggregateTraitEffects, assignCrew, bumpLoyalty, crewCombatScore, funeralLoyaltyHit, grantXpToCrew } from "./crew";
+import { unseatedCrew } from "./crews";
 import { jailInCrew } from "./jail";
 import { setRelationDelta } from "./relations";
-import { crewPresentIn, resolveCrewTerritoryId } from "./crewLocation";
+import { crewPresentIn, familyHq, resolveCrewTerritoryId } from "./crewLocation";
+import { safehouseCapacity } from "./safehouse";
+import { isLegitBusiness } from "./economy";
 import { emptyIntel, hasFreshCasing, recordIntel } from "./intel";
+import { coverFire, getawayCover, isLaidLow, laidLowHouse, safehouseHitPenalty } from "./safehouse";
 import { buildLookoutReport, runCasing, rungToOutcome, type CasingResult } from "./lookout";
 import { applySuccession } from "./succession";
 import {
@@ -85,6 +89,7 @@ const APPROACH_MODS: Record<
   drive_by: { stealth: -0.05, power: 0.05, heat: 12 },
   car_bomb: { stealth: 0.05, power: 0.25, heat: 20 },
   sitdown_betrayal: { stealth: 0.25, power: 0.15, heat: 6, betrayal: true },
+  summons: { stealth: 0.3, power: 0.1, heat: 5 },
 };
 
 /** Diminishing returns for additional shooters (best first). */
@@ -164,8 +169,25 @@ export function getawayRisk(state: GameState, op: Operation, opts?: OddsOptions)
   }
   const wheelman = findCrew(state, op.wheelmanId);
   const driving = wheelman?.skills.driving ?? 0;
-  const raw = (hops - 1) * 0.08 - driving / 250;
+  let raw = (hops - 1) * 0.08 - driving / 250;
+  // A safehouse near the job is a door to run through.
+  const cover = getawayCover(state, op.family, op.targetTerritoryId);
+  if (cover) raw -= cover.bonus;
   return Math.max(-0.1, Math.min(0.3, raw));
+}
+
+/**
+ * Defenders plus the men shooting from a nearby safehouse: what the hit team
+ * faces after the shot, as opposed to what stands between them and the mark.
+ */
+export function firefightStrength(
+  state: GameState,
+  op: Operation,
+  opts?: OddsOptions,
+): { defenders: number; cover: ReturnType<typeof coverFire>; total: number } {
+  const defenders = defendersFor(state, op, opts);
+  const cover = coverFire(state, op.targetFamily, op.targetTerritoryId);
+  return { defenders, cover, total: defenders + cover.weight };
 }
 
 function weightedShooterBonus(
@@ -205,7 +227,7 @@ export function calculateHitOddsBreakdown(
   const defenders = defendersFor(state, op, opts);
   const clues = usesClues(state, op);
 
-  let base = 0.35;
+  const base = 0.35;
   let roles = 0;
   let targetMod = 0;
   let district = 0;
@@ -214,7 +236,7 @@ export function calculateHitOddsBreakdown(
   let tipped = 0;
   let intel = 0;
   let heat = 0;
-  let approachMod = mods.stealth + mods.power;
+  const approachMod = mods.stealth + mods.power;
   let other = 0;
   let fear = 0;
 
@@ -294,6 +316,11 @@ export function calculateHitOddsBreakdown(
       target.role === "boss" ? 0.15 : target.role === "underboss" ? 0.1 : 0.05;
     if (target.traits.includes("ghost")) targetMod -= 0.1;
   }
+  // Even found, a man inside a safehouse is behind a door with his back to a wall.
+  if (target && isLaidLow(target)) {
+    const house = laidLowHouse(state, target);
+    if (house) targetMod -= safehouseHitPenalty(house.level);
+  }
 
   if (territory) {
     district -= territory.defenseBonus * 0.2;
@@ -369,10 +396,10 @@ export function calculateHitOdds(state: GameState, op: Operation, opts?: OddsOpt
 export function estimateFirefightRisk(state: GameState, op: Operation): number {
   const approach = op.approach ?? "ambush";
   const exposure = approachSpec(approach).garrisonExposure;
-  const defenders = defendersFor(state, op);
+  const guns = firefightStrength(state, op).total;
   const exposed = exposedCrewIds(op);
-  if (defenders <= 0 || exposure <= 0 || exposed.length === 0) return 0;
-  const raw = exposure * 0.06 * defenders / Math.sqrt(exposed.length);
+  if (guns <= 0 || exposure <= 0 || exposed.length === 0) return 0;
+  const raw = exposure * 0.06 * guns / Math.sqrt(exposed.length);
   let mult = 1;
   if (op.surveilled) mult *= 0.7;
   if (op.lookoutId) mult *= 0.8;
@@ -479,6 +506,98 @@ export function copCluesFor(
   return out;
 }
 
+export interface HitSeats {
+  shooterIds: string[];
+  wheelmanId?: string;
+  lookoutId?: string;
+  bombMakerId?: string;
+  planterId?: string;
+  negotiatorId?: string;
+}
+
+function seatIds(seats: HitSeats): string[] {
+  return [
+    ...seats.shooterIds,
+    seats.wheelmanId,
+    seats.lookoutId,
+    seats.bombMakerId,
+    seats.planterId,
+    seats.negotiatorId,
+  ].filter((id): id is string => !!id);
+}
+
+/**
+ * A boss, capo, or consigliere on the job brings his free crew. Empty single
+ * seats fill first; anyone left rides as a shooter.
+ */
+export function bringCrewOnHit(crew: CrewMember[], seats: HitSeats, approach: HitApproach): HitSeats {
+  const spec = approachSpec(approach);
+  const next: HitSeats = { ...seats, shooterIds: [...seats.shooterIds] };
+  for (const group of unseatedCrew(crew, seatIds(next))) {
+    for (const man of group.men) {
+      if (seatIds(next).includes(man.id)) continue;
+      let placed = false;
+      for (const slot of spec.roles) {
+        if (slot.multi || slot.role === "shooter" || slot.role === "backup") continue;
+        if (slot.role === "wheelman" && !next.wheelmanId) {
+          next.wheelmanId = man.id;
+          placed = true;
+          break;
+        }
+        if (slot.role === "lookout" && !next.lookoutId) {
+          next.lookoutId = man.id;
+          placed = true;
+          break;
+        }
+        if (slot.role === "bomb_maker" && !next.bombMakerId) {
+          next.bombMakerId = man.id;
+          placed = true;
+          break;
+        }
+        if (slot.role === "planter" && !next.planterId) {
+          next.planterId = man.id;
+          placed = true;
+          break;
+        }
+        if (slot.role === "negotiator" && !next.negotiatorId) {
+          next.negotiatorId = man.id;
+          placed = true;
+          break;
+        }
+      }
+      if (!placed) next.shooterIds = [...next.shooterIds, man.id];
+    }
+  }
+  return next;
+}
+
+/** The men on a hit leave their garrison and any racket they were running. */
+export function commitHitCrew(
+  state: GameState,
+  op: Operation,
+  assignmentType: "operation" | "surveillance" = "operation",
+): GameState {
+  const ids = hitCrewIds(op);
+  if (ids.length === 0) return state;
+  const idSet = new Set(ids);
+  let crew = state.crew;
+  for (const id of ids) {
+    crew = assignCrew(crew, id, {
+      type: assignmentType,
+      operationId: op.id,
+      territoryId: op.targetTerritoryId,
+    });
+  }
+  const territories = state.territories.map((t) => ({
+    ...t,
+    garrisonIds: t.garrisonIds.filter((id) => !idSet.has(id)),
+    rackets: t.rackets.map((r) =>
+      r.managerId && idSet.has(r.managerId) ? { ...r, managerId: null } : r,
+    ),
+  }));
+  return { ...state, crew, territories };
+}
+
 export function planHit(
   state: GameState,
   params: {
@@ -533,7 +652,7 @@ function pickBlindTarget(
   rng: Rng,
 ): CrewMember | undefined {
   const present = crewPresentIn(state, op.targetTerritoryId).filter(
-    (c) => c.family === op.targetFamily && c.status === "active",
+    (c) => c.family === op.targetFamily && c.status === "active" && !isLaidLow(c),
   );
   if (present.length === 0) return undefined;
   const weight = (c: CrewMember) =>
@@ -651,11 +770,19 @@ export function resolveHit(
 
   const defenders = defendersFor(state, workingOp, TRUTH);
 
+  // Laid low behind a door nobody watched: the crew never finds him.
+  const markHidden =
+    !!plannedTarget &&
+    !blind &&
+    !bossBomb &&
+    isLaidLow(plannedTarget) &&
+    !venueCasedBy(state, op.family, op.targetTerritoryId);
   const markMoved =
     !!plannedTarget &&
     !blind &&
     !bossBomb &&
-    (plannedTarget.status === "dead" ||
+    (markHidden ||
+      plannedTarget.status === "dead" ||
       plannedTarget.status === "jailed" ||
       plannedTarget.status === "held" ||
       resolveCrewTerritoryId(state, plannedTarget.id) !== op.targetTerritoryId);
@@ -745,6 +872,8 @@ export function resolveHit(
       heatGain += 6;
       if (emptyBlock) {
         headline = `Blind hit on ${districtName} found nothing.`;
+      } else if (markHidden) {
+        headline = `${targetName} was nowhere on the street — he's gone to ground.`;
       } else if (markMoved) {
         headline = `${targetName} wasn't there — he'd already moved on.`;
       } else if (markAbsent) {
@@ -761,9 +890,11 @@ export function resolveHit(
     else fearGain += 4;
   }
 
-  // Garrison return fire
+  // Garrison return fire, plus whoever comes out of a nearby safehouse shooting.
   const firefightNames: string[] = [];
-  if (!emptyBlock && defenders > 0 && spec.garrisonExposure > 0 && exposed.length > 0) {
+  const cover = coverFire(state, workingOp.targetFamily, workingOp.targetTerritoryId);
+  const guns = defenders + cover.weight;
+  if (!emptyBlock && guns > 0 && spec.garrisonExposure > 0 && exposed.length > 0) {
     let mult = 1;
     if (outcome === "clean_kill") mult *= 0.5;
     else if (outcome === "messy_kill") mult *= 1.0;
@@ -775,9 +906,9 @@ export function resolveHit(
 
     const perChance = Math.min(
       0.4,
-      (spec.garrisonExposure * 0.06 * defenders) / Math.sqrt(exposed.length) * mult,
+      (spec.garrisonExposure * 0.06 * guns) / Math.sqrt(exposed.length) * mult,
     );
-    const maxCas = Math.ceil(defenders / 2);
+    const maxCas = Math.ceil((defenders + cover.men) / 2);
     let firefightCount = 0;
     const alreadyHit = new Set(casualtyDetail.map((d) => d.crewId));
     const shuffled = rng.shuffle([...exposed]);
@@ -851,11 +982,14 @@ export function resolveHit(
       : c,
   );
 
+  const door = getawayCover(state, op.family, workingOp.targetTerritoryId);
   const built = buildBeats(rng, approach, outcome, targetName, {
     tippedOff,
     markAbsent: markAbsent || emptyBlock,
     firefightNames,
     trap,
+    coverFrom: cover.men > 0 && cover.weight >= defenders ? cover.from[0]?.territory.name : undefined,
+    escapeDoor: door && door.hops <= 1 && !markAbsent && !emptyBlock ? door.territory.name : undefined,
   });
   let beats = built.beats;
   let complication = built.complication;
@@ -888,6 +1022,11 @@ export function resolveHit(
   );
   const revealedIds = presentRivals.map((c) => c.id);
 
+  const loyaltyAmount = targetDead ? 4 : 2;
+  const loyal = bumpLoyalty(crew, op.shooterIds ?? [], loyaltyAmount);
+  crew = loyal.crew;
+  const ours = op.family === state.playerFamily;
+
   const result: HitResult = {
     operationId: op.id,
     outcome,
@@ -909,6 +1048,8 @@ export function resolveHit(
     markAbsent: markAbsent || emptyBlock,
     trap,
     strikeTerritoryId: workingOp.targetTerritoryId,
+    loyaltyDelta: ours && loyal.gained.length > 0 ? loyaltyAmount : undefined,
+    loyaltyNames: ours && loyal.gained.length > 0 ? loyal.gained : undefined,
   };
 
   // Heat, fear, respect and influence belong to the player. A rival's hit only
@@ -1058,6 +1199,10 @@ function buildBeats(
     markAbsent: boolean;
     firefightNames: string[];
     trap: boolean;
+    /** Block name of the safehouse the shooting came from, when it wasn't the garrison. */
+    coverFrom?: string;
+    /** Block name of the attackers' own safehouse they ran to. */
+    escapeDoor?: string;
   },
 ): { beats: HitBeat[]; complication: HitComplication } {
   const approachText: Record<HitApproach, string> = {
@@ -1065,6 +1210,7 @@ function buildBeats(
     drive_by: "A black sedan rolls slow past the target's hangout.",
     car_bomb: "A wired Packard is parked on the mark's usual route.",
     sitdown_betrayal: "A friendly sit-down is arranged over coffee and lies.",
+    summons: "A trusted man is told to come by the house tonight.",
   };
 
   const complicationByApproach: Record<HitApproach, { key: HitComplication; text: string }[]> = {
@@ -1092,6 +1238,10 @@ function buildBeats(
       { key: "kitchen_backup", text: "Hidden backup is spotted in the kitchen." },
       { key: "toast", text: "The sit-down starts with an unexpected toast — delay." },
     ],
+    summons: [
+      { key: "witness", text: "A neighbour is on the stoop when he pulls up." },
+      { key: "patrol", text: "A patrol wagon idles at the corner as he parks." },
+    ],
   };
 
   const executionClean: Record<HitApproach, string> = {
@@ -1099,18 +1249,21 @@ function buildBeats(
     drive_by: `Windows shatter — ${targetName} never sees the car leave.`,
     car_bomb: `The Packard erupts. ${targetName} never makes the corner.`,
     sitdown_betrayal: `The handshake ends under the table. ${targetName} is finished.`,
+    summons: `The back room. One shot. ${targetName} doesn't come back out.`,
   };
   const executionMessy: Record<HitApproach, string> = {
     ambush: `Lead flies wild. ${targetName} is hit but the block erupts in chaos.`,
     drive_by: `Spray paints the sidewalk — ${targetName} goes down in full view.`,
     car_bomb: `The blast takes half the street with ${targetName}.`,
     sitdown_betrayal: `Chairs overturn; ${targetName} dies loud in the cafe.`,
+    summons: `${targetName} puts up a fight. It takes two shots and the neighbours hear.`,
   };
   const executionBotched: Record<HitApproach, string> = {
     ambush: `The hit goes sideways — sirens already wail in the distance.`,
     drive_by: `The sedan catches fire from return shots; abort.`,
     car_bomb: `The package fails. Smoke and panic, no body.`,
     sitdown_betrayal: `The mark smells the trap and flips the table.`,
+    summons: `${targetName} smells it and runs. The street saw him go.`,
   };
   const executionEscape = `${targetName} slips away in the confusion.`;
 
@@ -1137,6 +1290,9 @@ function buildBeats(
   else if (outcome === "target_escaped") executionText = executionEscape;
 
   let getawayText = "The crew vanishes into the tenements before uniforms arrive.";
+  if (opts.escapeDoor) {
+    getawayText = `The crew is through the ${opts.escapeDoor} safehouse door before the first siren.`;
+  }
   if (outcome === "botched_arrested" || outcome === "botched_killed") {
     getawayText = "Police blockades seal off the neighborhood.";
   }
@@ -1145,7 +1301,9 @@ function buildBeats(
       opts.firefightNames.length === 1
         ? opts.firefightNames[0]
         : `${opts.firefightNames[0]} and others`;
-    getawayText = `The garrison returns fire from the stoops — ${who} takes a slug on the way out.`;
+    getawayText = opts.coverFrom
+      ? `Windows open in the ${opts.coverFrom} safehouse and the lead comes down — ${who} takes a slug on the way out.`
+      : `The garrison returns fire from the stoops — ${who} takes a slug on the way out.`;
   }
 
   return {
@@ -1184,6 +1342,58 @@ export function buildHitCinematic(
     targetFamily: op.targetFamily,
     targetCrewId: op.targetCrewId,
     targetName: target?.name ?? "the mark",
+  };
+}
+
+/**
+ * The reel for calling one of your own in. He drives to your safehouse, your
+ * HQ, or a legit front, and doesn't come back out. No result card.
+ */
+export function buildSummonsCinematic(state: GameState, victim: CrewMember, innocent = false): HitCinematic {
+  const player = state.playerFamily ?? victim.family;
+  const turn = state.turn;
+  const from = resolveCrewTerritoryId(state, victim.id);
+  const house = state.territories.find((t) => t.owner === player && safehouseCapacity(t, turn) > 0);
+  const front = state.territories.find(
+    (t) => t.owner === player && t.rackets.some((r) => isLegitBusiness(r.type)),
+  );
+  const venue = house?.id ?? familyHq(state, player) ?? front?.id ?? from ?? state.territories[0]?.id ?? "";
+  const path = from && from !== venue ? [from, venue] : [venue];
+  const where = state.territories.find((t) => t.id === venue)?.name ?? "the house";
+  const beats: HitBeat[] = [
+    { phase: "approach", text: `The call goes out: ${victim.name}, come by ${where} tonight.` },
+    { phase: "complication", text: `He parks outside ${where} and checks the street before he goes in.` },
+    { phase: "execution", text: `The back room. One shot. ${victim.name} doesn't come back out.` },
+    { phase: "getaway", text: "His car is driven off. By morning it's somebody else's problem." },
+  ];
+  const result: HitResult = {
+    operationId: `summons_${victim.id}_${turn}`,
+    outcome: "clean_kill",
+    beats,
+    heatGain: 5,
+    fearGain: 8,
+    casualties: [victim.id],
+    casualtyDetail: [{ crewId: victim.id, fate: "dead", cause: "firefight" }],
+    defenders: 0,
+    tippedOff: false,
+    targetDead: true,
+    headline: `${victim.name} was called in.`,
+    successChance: 1,
+    complication: innocent ? "innocent" : undefined,
+    strikeTerritoryId: venue,
+  };
+  return {
+    operationId: result.operationId,
+    originTerritoryId: path[0] ?? venue,
+    targetTerritoryId: venue,
+    path,
+    approach: "summons",
+    result,
+    perspective: "ours",
+    attackerFamily: player,
+    targetFamily: player,
+    targetCrewId: victim.id,
+    targetName: victim.name,
   };
 }
 
@@ -1565,7 +1775,9 @@ function applyCasingFallout(
     if (learned !== crew && lookout && op.family === state.playerFamily) {
       consequences.push(`${lookoutName} is getting quieter on his feet. Stealth +1.`);
     }
-    return { state: { ...next, crew: learned }, outcome: "clean", relationDelta, consequences };
+    const paid = lookout ? bumpLoyalty(learned, [lookout.id], 3) : { crew: learned, gained: [] as string[] };
+    if (paid.gained.length > 0 && op.family === state.playerFamily) consequences.push("Loyalty +3.");
+    return { state: { ...next, crew: paid.crew }, outcome: "clean", relationDelta, consequences };
   }
 
   // noticed / made / grabbed all put the block on alert.
@@ -1647,6 +1859,16 @@ function applyCasingFallout(
     }
   }
 
+  if (lookout && rung !== "grabbed") {
+    const paid = bumpLoyalty(crew, [lookout.id], 2);
+    crew = paid.crew;
+    if (paid.gained.length > 0 && op.family === state.playerFamily) consequences.push("Loyalty +2.");
+  } else if (lookout && casing.roll.grabbedFate !== "killed") {
+    const paid = bumpLoyalty(crew, [lookout.id], 1);
+    crew = paid.crew;
+    if (paid.gained.length > 0 && op.family === state.playerFamily) consequences.push("Loyalty +1.");
+  }
+
   relations = setRelationDelta(relations, op.family, op.targetFamily, relationDelta);
 
   next = {
@@ -1671,17 +1893,21 @@ function casingLogText(
   if (casing.roll.copTrouble === "arrested") {
     return `Your lookout was picked up by the cops before he saw anything in ${district}.`;
   }
+  const loyal = fallout.consequences.find((c) => c.startsWith("Loyalty +"));
+  const withLoyal = (text: string) => (loyal ? `${text} ${loyal}` : text);
   switch (rung) {
     case "clean":
     case "turned":
-      return `Your lookout reports ${n} ${op.targetFamily} men in ${district} (clean).`;
+      return withLoyal(`Your lookout reports ${n} ${op.targetFamily} men in ${district} (clean).`);
     case "noticed":
-      return `Your lookout was noticed casing ${district} — the block is on alert.`;
+      return withLoyal(`Your lookout was noticed casing ${district} — the block is on alert.`);
     case "made":
-      return `Your lookout was made casing ${district}. They know his face.`;
+      return withLoyal(`Your lookout was made casing ${district}. They know his face.`);
     case "grabbed":
-      return `Your lookout was grabbed casing ${district}. ${fallout.consequences[fallout.consequences.length - 1] ?? ""}`.trim();
+      return withLoyal(
+        `Your lookout was grabbed casing ${district}. ${fallout.consequences.filter((c) => !c.startsWith("Loyalty +")).at(-1) ?? ""}`.trim(),
+      );
     default:
-      return `Your lookout reports from ${district}.`;
+      return withLoyal(`Your lookout reports from ${district}.`);
   }
 }

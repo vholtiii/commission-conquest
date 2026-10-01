@@ -145,6 +145,7 @@ export default function RightRoster() {
   const selectCrew = useGameStore((s) => s.selectCrew);
   const selectTerritory = useGameStore((s) => s.selectTerritory);
   const setPanel = useGameStore((s) => s.setPanel);
+  const showLiquorRoutes = useGameStore((s) => s.showLiquorRoutes);
 
   if (!playerFamily) return null;
 
@@ -257,8 +258,8 @@ export default function RightRoster() {
               {deliveryCount === 0 && (
                 <EmptyHint
                   text="No crates on the road. Open a supply route to feed a speakeasy every week, or send a one-off run."
-                  action="Open Liquor"
-                  onClick={() => setPanel("warehouse")}
+                  action="Manage routes"
+                  onClick={() => showLiquorRoutes()}
                 />
               )}
               {supplyRoutes.map((r) => {
@@ -282,7 +283,7 @@ export default function RightRoster() {
                 return (
                   <button
                     key={r.id}
-                    onClick={() => setPanel("warehouse")}
+                    onClick={() => showLiquorRoutes(r.id)}
                     className="flex w-full flex-col rounded-md px-1.5 py-1 text-left text-xs hover:bg-panel-elevated"
                   >
                     <span className="flex items-center gap-1.5 font-medium">

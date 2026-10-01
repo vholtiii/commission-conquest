@@ -1,13 +1,17 @@
 import { Trophy, Skull } from "lucide-react";
 import { useGameStore } from "@/engine/store";
+import { screenHeld } from "@/engine/screen";
 import { Button } from "@/components/ui/button";
 
 export default function VictoryOverlay() {
   const victory = useGameStore((s) => s.victory);
   const newGame = useGameStore((s) => s.newGame);
   const turn = useGameStore((s) => s.turn);
+  // If the week ended with a hit, the player watches it and reads the card first.
+  const held = useGameStore(screenHeld);
 
   if (!victory.won && !victory.lost) return null;
+  if (held) return null;
 
   const won = victory.won;
 

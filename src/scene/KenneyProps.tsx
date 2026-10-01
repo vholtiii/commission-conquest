@@ -33,7 +33,9 @@ function ProceduralProps({ layout }: Props) {
       const r = hash2(b.gx, b.gz, 7);
       if (i % 5 === 0 && r > 0.5) {
         const avenue = b.gx % 4 === 0; // north–south road: park along Z
-        const side = hash2(b.gx, b.gz, 11) > 0.5 ? 0.7 : -0.7;
+        // Crew cars take the west kerb of every avenue (see CrewSedans), so
+        // street dressing stays on the east side and never ends up under one.
+        const side = avenue ? 0.7 : hash2(b.gx, b.gz, 11) > 0.5 ? 0.7 : -0.7;
         const flip = hash2(b.gx, b.gz, 13) > 0.5 ? Math.PI : 0;
         cars.push({
           x: b.worldX + (avenue ? side : (r - 0.5) * 0.5),

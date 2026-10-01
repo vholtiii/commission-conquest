@@ -17,8 +17,8 @@ export default function PanelShell({ title, subtitle, children, className, onClo
   const setPanel = useGameStore((s) => s.setPanel);
 
   return (
-    <div className={cn("panel-surface-elevated pointer-events-auto relative z-40 flex max-h-[calc(100%-2rem)] flex-col rounded-lg border shadow-card-elevated", width, className)}>
-      <div className="flex items-center justify-between border-b border-panel-border px-4 py-2.5">
+    <div className={cn("panel-surface-elevated pointer-events-auto relative z-40 flex max-h-full min-h-0 flex-col overflow-hidden rounded-lg border shadow-card-elevated", width, className)}>
+      <div className="flex shrink-0 items-center justify-between border-b border-panel-border px-4 py-2.5">
         <div>
           <h2 className="font-display text-sm text-steel-light">{title}</h2>
           {subtitle && <p className="text-[11px] text-muted-foreground">{subtitle}</p>}
@@ -31,7 +31,7 @@ export default function PanelShell({ title, subtitle, children, className, onClo
           <X className="h-4 w-4" />
         </button>
       </div>
-      <div className="scrollbar-thin flex-1 overflow-y-auto p-4">{children}</div>
+      <div className="scrollbar-thin min-h-0 flex-1 overflow-y-auto overscroll-contain p-4">{children}</div>
     </div>
   );
 }

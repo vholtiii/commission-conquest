@@ -127,10 +127,40 @@ export default {
             height: "0",
           },
         },
+        "curtain-in": {
+          from: { opacity: "0" },
+          to: { opacity: "1" },
+        },
+        "curtain-out": {
+          from: { opacity: "1" },
+          to: { opacity: "0" },
+        },
+        "stat-flash-up": {
+          "0%, 35%": { filter: "brightness(1.7)" },
+          "100%": { filter: "brightness(1)" },
+        },
+        "stat-flash-down": {
+          "0%, 35%": { filter: "brightness(0.55)" },
+          "100%": { filter: "brightness(1)" },
+        },
+        "delta-float": {
+          "0%": { opacity: "1", transform: "translateY(2px)" },
+          "100%": { opacity: "0", transform: "translateY(-8px)" },
+        },
+        "digest-in": {
+          "0%": { opacity: "0", transform: "translateY(-10px)" },
+          "100%": { opacity: "1", transform: "translateY(0)" },
+        },
       },
       animation: {
         "accordion-down": "accordion-down 0.2s ease-out",
         "accordion-up": "accordion-up 0.2s ease-out",
+        "curtain-in": "curtain-in 220ms ease-out forwards",
+        "curtain-out": "curtain-out 250ms ease-in forwards",
+        "stat-flash-up": "stat-flash-up 900ms ease-out",
+        "stat-flash-down": "stat-flash-down 900ms ease-out",
+        "delta-float": "delta-float 900ms ease-out forwards",
+        "digest-in": "digest-in 250ms ease-out",
       },
     },
   },

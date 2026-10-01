@@ -16,6 +16,7 @@ import type {
   CrewSkills,
   FamilyName,
   GameState,
+  Territory,
   TurnLogEntry,
 } from "@/types/game";
 import {
@@ -25,6 +26,8 @@ import {
   CREW_VETERAN_LEVEL,
 } from "@/types/game";
 import type { Rng } from "./rng";
+import { createRng, hashString } from "./rng";
+import { walkToRival } from "./defection";
 import { resolveCrewTerritoryId, type LocationState } from "./crewLocation";
 import { BOSS_PRESENCE, bossPresenceDistrict } from "./bossPresence";
 
@@ -84,6 +87,88 @@ export function crewSlots(capo: CrewMember): number {
 /** Everyone tagged to this capo, whatever their status. */
 export function crewOf(crew: CrewMember[], capoId: string): CrewMember[] {
   return crew.filter((c) => c.capoId === capoId && c.status !== "dead");
+}
+
+/** Jobs that keep a soldier where he is. Only idle and garrisoned men are free to be pulled. */
+const HELD_ASSIGNMENTS: CrewMember["assignment"]["type"][] = [
+  "operation",
+  "surveillance",
+  "delivery",
+  "safehouse",
+  "racket",
+];
+
+/** Already out: a hit, a casing, a route, lying low, running a racket, or not on his feet. */
+export function isHeldOff(c: CrewMember): boolean {
+  return c.status !== "active" || HELD_ASSIGNMENTS.includes(c.assignment.type);
+}
+
+/**
+ * Men a boss, capo, or consigliere pulls with him. Soldiers on a job stay put.
+ * Loose soldiers, the hitman, and anyone with no crew are never in this list.
+ */
+export function freeCrewOf(crew: CrewMember[], leaderId: string): CrewMember[] {
+  return crewOf(crew, leaderId).filter((c) => !isHeldOff(c));
+}
+
+/** Leaders already on a job whose free men still have no seat. */
+export function unseatedCrew(
+  crew: CrewMember[],
+  seatedIds: string[],
+): { leader: CrewMember; men: CrewMember[] }[] {
+  const seated = new Set(seatedIds);
+  const out: { leader: CrewMember; men: CrewMember[] }[] = [];
+  for (const id of seatedIds) {
+    const leader = crew.find((c) => c.id === id);
+    if (!leader || leader.status !== "active" || !canLeadCrew(leader)) continue;
+    const men = freeCrewOf(crew, leader.id).filter((m) => !seated.has(m.id));
+    if (men.length > 0) out.push({ leader, men });
+  }
+  return out;
+}
+
+/** The attackers, plus the free crew of any boss, capo, or consigliere among them. */
+export function captureParty(crew: CrewMember[], attackerIds: string[]): string[] {
+  const ids = [...attackerIds];
+  const have = new Set(ids);
+  for (const id of attackerIds) {
+    const leader = crew.find((c) => c.id === id);
+    if (!leader || leader.status !== "active" || !canLeadCrew(leader)) continue;
+    for (const man of freeCrewOf(crew, leader.id)) {
+      if (have.has(man.id)) continue;
+      have.add(man.id);
+      ids.push(man.id);
+    }
+  }
+  return ids;
+}
+
+/**
+ * Garrison a leader's free crew on the block he just took. Men running a racket
+ * stay on it. The leader himself is left to the caller.
+ */
+export function placeCrewAt<T extends { crew: CrewMember[]; territories: Territory[] }>(
+  state: T,
+  leaderId: string,
+  territoryId: string,
+): T {
+  const men = freeCrewOf(state.crew, leaderId);
+  if (men.length === 0) return state;
+  const ids = new Set(men.map((m) => m.id));
+  const crew = state.crew.map((c) =>
+    ids.has(c.id) ? { ...c, assignment: { type: "garrison" as const, territoryId } } : c,
+  );
+  const territories = state.territories.map((t) => {
+    const garrisonIds = t.garrisonIds.filter((id) => !ids.has(id));
+    return {
+      ...t,
+      garrisonIds: t.id === territoryId ? [...garrisonIds, ...men.map((m) => m.id)] : garrisonIds,
+      rackets: t.rackets.map((r) =>
+        r.managerId && ids.has(r.managerId) ? { ...r, managerId: null } : r,
+      ),
+    };
+  });
+  return { ...state, crew, territories };
 }
 
 /** Crew members who are on the block and not out on a job. */
@@ -537,6 +622,36 @@ export function answerCrewRequest(
     return {
       state: { ...state, crewRequests: setStatus("pending", { deferred: (req.deferred ?? 0) + 1 }) },
       message: `${capoName} will ask again next week.`,
+    };
+  }
+
+  // A man asking to leave after one of his own was taken out.
+  if (req.kind === "walk") {
+    const walker = state.crew.find((c) => c.id === req.candidateId);
+    if (!walker) return { state: { ...state, crewRequests: setStatus("expired") }, message: "" };
+    if (answer === "reject") {
+      const crew = state.crew.map((c) =>
+        c.id === walker.id ? { ...c, loyalty: Math.max(0, c.loyalty - 15) } : c,
+      );
+      return {
+        state: { ...state, crew, crewRequests: setStatus("rejected") },
+        message: `${walker.name} stays. He won't forget you made him.`,
+      };
+    }
+    const rng = createRng(hashString(`${state.seed}:walk:${walker.id}:${state.turn}`));
+    const gone = walkToRival(state, walker.id, rng);
+    const log: TurnLogEntry = {
+      id: `log_walk_${walker.id}_${state.turn}`,
+      turn: state.turn,
+      category: "system",
+      text: gone.to
+        ? `${walker.name} walks. He turns up with the ${gone.to}.`
+        : `${walker.name} walks. Nobody sees where.`,
+      family: state.playerFamily ?? undefined,
+    };
+    return {
+      state: { ...gone.state, crewRequests: setStatus("approved"), turnLog: [...gone.state.turnLog, log].slice(-200) },
+      message: log.text,
     };
   }
 

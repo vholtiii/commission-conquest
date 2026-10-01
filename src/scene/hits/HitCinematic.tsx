@@ -4,14 +4,17 @@ import type * as THREE from "three";
 import type { CityLayout } from "@/engine/cityLayout";
 import type { HitApproach, HitCinematic as HitCinematicData, HitResult } from "@/types/game";
 import { useGameStore } from "@/engine/store";
-import { burst, engine, explosion, fizzle, footsteps, glass, mutedShot, setSfxVolume, siren, stopAll } from "@/audio/sfx";
+import { useTurnTransition } from "@/ui/turnTransition";
+import { burst, engine, explosion, fizzle, footsteps, glass, mutedShot, setSfxVolume, siren } from "@/audio/sfx";
 import { applyShake } from "./cameraRig";
 import { phaseAt, timelineFor, totalDuration, type PhaseDef } from "./timeline";
 import { siteFor } from "./site";
+import { useReelHold } from "./reelHold";
 import CarBombCinematic from "./CarBombCinematic";
 import DriveByCinematic from "./DriveByCinematic";
 import AmbushCinematic from "./AmbushCinematic";
 import SitdownBetrayalCinematic from "./SitdownBetrayalCinematic";
+import SummonsCinematic from "./SummonsCinematic";
 
 interface Props {
   layout: CityLayout;
@@ -23,26 +26,27 @@ const SCENES: Record<HitApproach, typeof CarBombCinematic> = {
   drive_by: DriveByCinematic,
   ambush: AmbushCinematic,
   sitdown_betrayal: SitdownBetrayalCinematic,
+  summons: SummonsCinematic,
 };
 
 function playCue(approach: HitApproach, phase: string, result: HitResult): void {
   const police = result.outcome === "botched_arrested" || result.outcome === "botched_killed";
-  if (phase === "plant" || phase === "roll" || phase === "arrive" || phase === "position") {
+  if (phase === "plant" || phase === "roll" || phase === "arrive" || phase === "position" || phase === "drive") {
     engine(approach === "drive_by" ? 2 : 1.2);
-    if (phase === "position") footsteps(4);
+    if (phase === "position") footsteps(4, 0.5);
   }
   if (phase === "detonate") {
     if (result.complication === "dud" || result.complication === "rain") fizzle();
     else explosion();
   }
-  if (phase === "abort") footsteps(3);
+  if (phase === "abort") footsteps(5, 0.3);
   if (phase === "spray") {
     burst(result.defenders > 0 ? 8 : 5, 0.08);
     glass();
   }
   if (phase === "strike" && result.complication !== "patrol" && !result.markAbsent) burst(3, 0.12);
   if (
-    phase === "handshake" &&
+    (phase === "handshake" || phase === "back_room") &&
     !result.markAbsent &&
     result.complication !== "pat_down" &&
     result.complication !== "toast"
@@ -60,7 +64,6 @@ function playCue(approach: HitApproach, phase: string, result: HitResult): void 
 export default function HitCinematic({ layout, controlsRef }: Props) {
   const cinematicQueue = useGameStore((s) => s.cinematicQueue);
   const pendingHitResult = useGameStore((s) => s.pendingHitResult);
-  const finishCinematic = useGameStore((s) => s.finishCinematic);
   const sfxVolume = useGameStore((s) => s.settings.sfxVolume ?? 0.7);
   const { invalidate } = useThree();
 
@@ -85,6 +88,7 @@ export default function HitCinematic({ layout, controlsRef }: Props) {
     finishedRef.current = false;
     lastCue.current = "";
     shake.current = 0;
+    useReelHold.getState().setHeld(false);
     setLive(phases[0] ? { phase: phases[0], local: 0 } : null);
     setSfxVolume(sfxVolume);
     if (controlsRef.current) controlsRef.current.enabled = !current;
@@ -104,7 +108,14 @@ export default function HitCinematic({ layout, controlsRef }: Props) {
 
   useFrame(({ clock }) => {
     if (!current || phases.length === 0) return;
-    if (startTime.current === null) startTime.current = clock.getElapsedTime();
+    if (startTime.current === null) {
+      // Don't roll under the turn curtain; the first beat is the setup.
+      if (useTurnTransition.getState().phase !== "idle") {
+        invalidate();
+        return;
+      }
+      startTime.current = clock.getElapsedTime();
+    }
     const elapsed = clock.getElapsedTime() - startTime.current;
     const total = totalDuration(phases);
     const at = phaseAt(phases, elapsed);
@@ -120,11 +131,10 @@ export default function HitCinematic({ layout, controlsRef }: Props) {
     );
     invalidate();
     if (elapsed >= total && !finishedRef.current) {
+      // Hold the last frame. The player moves on from the captions when ready;
+      // finishCinematic then advances the queue and re-enables the camera.
       finishedRef.current = true;
-      stopAll();
-      if (controlsRef.current) controlsRef.current.enabled = true;
-      finishCinematic();
-      startTime.current = null;
+      useReelHold.getState().setHeld(true);
     }
   });
 

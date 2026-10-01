@@ -37,10 +37,17 @@ export default function BuildFx({ layout }: Props) {
   const center = useMemo(() => {
     if (!buildFx) return null;
     const t = territories.find((x) => x.id === buildFx.territoryId);
-    const racketIndex = t
-      ? Math.max(0, t.rackets.findIndex((r) => r.id === buildFx.racketId))
-      : 0;
-    const block = racketBlockFor(layout, buildFx.territoryId, racketIndex < 0 ? 0 : racketIndex);
+    const racket =
+      t && buildFx.racketId
+        ? t.rackets.find((r) => r.id === buildFx.racketId)
+        : undefined;
+    const site =
+      typeof racket?.siteIndex === "number"
+        ? racket.siteIndex
+        : t
+          ? Math.max(0, t.rackets.findIndex((r) => r.id === buildFx.racketId))
+          : 0;
+    const block = racketBlockFor(layout, buildFx.territoryId, site);
     if (block) return { x: block.worldX, z: block.worldZ };
     const c = layout.centers.find((c) => c.territoryId === buildFx.territoryId);
     return c ? { x: c.worldX, z: c.worldZ } : null;

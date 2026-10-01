@@ -1,4 +1,5 @@
 import { useGameStore } from "@/engine/store";
+import { reelOnScreen } from "@/engine/screen";
 import { FAMILY_HEX } from "@/types/game";
 import type { CrewMember, CrewSkills } from "@/types/game";
 import { crewCurriculum, crewOf, crewSlots, pendingCrewRequests } from "@/engine/crews";
@@ -22,16 +23,55 @@ export default function CrewRequestModal() {
   const activeEvent = useGameStore((s) => s.activeEvent);
   const pendingHitResult = useGameStore((s) => s.pendingHitResult);
   const dealCards = useGameStore((s) => s.pendingDealSettlements?.length ?? 0);
+  const reel = useGameStore(reelOnScreen);
   const answer = useGameStore((s) => s.answerCrewRequest);
 
-  // Let hit results, events and deal cards take the screen first.
-  if (activeEvent || pendingHitResult || dealCards > 0) return null;
+  // Let the reel, hit results, events and deal cards take the screen first.
+  if (reel || activeEvent || pendingHitResult || dealCards > 0) return null;
   const req = pendingCrewRequests({ crewRequests })[0];
   if (!req) return null;
 
   const capo = crew.find((c) => c.id === req.capoId);
   const candidate = crew.find((c) => c.id === req.candidateId);
   if (!capo || !candidate) return null;
+
+  if (req.kind === "walk") {
+    return (
+      <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/75 backdrop-blur-sm">
+        <div className="panel-surface-elevated w-[420px] rounded-lg border p-5">
+          <div className="flex items-center gap-3">
+            <PortraitAvatar
+              seed={candidate.portraitSeed}
+              size={44}
+              ringColor={FAMILY_HEX[candidate.family]}
+              role={candidate.role}
+              family={candidate.family}
+              alt={candidate.name}
+            />
+            <div className="min-w-0">
+              <h2 className="font-display text-lg text-steel-light">{candidate.name} wants out</h2>
+              <p className="text-[11px] text-muted-foreground">{titleCase(candidate.role)} · Loyalty {candidate.loyalty}</p>
+            </div>
+          </div>
+          <p className="mt-3 text-sm italic text-foreground/85">&ldquo;{req.pitch}&rdquo;</p>
+          <p className="mt-2 text-[11px] text-muted-foreground">
+            Let him go and he takes his skills to a rival. Talk him down and he stays, but he remembers.
+          </p>
+          <div className="mt-4 flex gap-2">
+            <Button variant="ghost" className="flex-1" onClick={() => answer(req.id, "later")}>
+              Later
+            </Button>
+            <Button variant="secondary" className="flex-1" onClick={() => answer(req.id, "reject")}>
+              Talk him down
+            </Button>
+            <Button className="flex-1" onClick={() => answer(req.id, "approve")}>
+              Let him go
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const teaches = crewCurriculum(capo);
   const members = crewOf(crew, capo.id);

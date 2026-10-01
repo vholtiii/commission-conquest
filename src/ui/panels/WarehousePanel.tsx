@@ -92,6 +92,9 @@ export default function WarehousePanel() {
   const assignManager = useGameStore((s) => s.assignManager);
   const selectTerritory = useGameStore((s) => s.selectTerritory);
   const setPanel = useGameStore((s) => s.setPanel);
+  const liquorView = useGameStore((s) => s.liquorView) ?? "stock";
+  const setLiquorView = useGameStore((s) => s.setLiquorView);
+  const routeCount = useGameStore((s) => s.supplyRoutes?.length ?? 0);
 
   const lookup = useMemo(
     () => makeManagerLookup(crew, playerFamily),
@@ -203,9 +206,38 @@ export default function WarehousePanel() {
   return (
     <PanelShell
       title="Liquor"
-      subtitle="Warehouse logistics — managers, buy, stash, run crates"
+      subtitle={liquorView === "routes" ? "Standing liquor routes — hold, run hot, or close them" : "Warehouse logistics — managers, buy, stash, run crates"}
       width="w-[440px]"
     >
+      <div className="mb-3 flex gap-1">
+        <button
+          type="button"
+          onClick={() => setLiquorView("stock")}
+          className={`rounded border px-2 py-0.5 text-[10px] uppercase tracking-wide ${
+            liquorView === "stock"
+              ? "border-steel-light text-foreground"
+              : "border-panel-border text-muted-foreground hover:border-steel-light"
+          }`}
+        >
+          Stock
+        </button>
+        <button
+          type="button"
+          onClick={() => setLiquorView("routes")}
+          className={`rounded border px-2 py-0.5 text-[10px] uppercase tracking-wide ${
+            liquorView === "routes"
+              ? "border-steel-light text-foreground"
+              : "border-panel-border text-muted-foreground hover:border-steel-light"
+          }`}
+        >
+          Routes ({routeCount})
+        </button>
+      </div>
+
+      {liquorView === "routes" ? (
+        <SupplyRoutesSection />
+      ) : (
+      <>
       <div className="mb-3 flex flex-wrap gap-2 text-[11px]">
         <Badge variant="outline">
           Crates {crates}/{cap}
@@ -283,8 +315,6 @@ export default function WarehousePanel() {
           </div>
         </div>
       )}
-
-      <SupplyRoutesSection />
 
       <div className="mb-4 rounded border border-panel-border bg-panel/40 p-2.5">
         <h3 className="mb-2 text-[10px] uppercase tracking-wide text-muted-foreground">
@@ -467,7 +497,9 @@ export default function WarehousePanel() {
                             className="mt-1 w-full rounded-md border border-panel-border bg-panel/60 px-2 py-1 text-xs"
                           >
                             <option value="">Assign manager…</option>
-                            {managerCandidates.map((c) => (
+                            {managerCandidates
+                              .filter((c) => c.assignment.type !== "racket")
+                              .map((c) => (
                               <option key={c.id} value={c.id}>
                                 {c.name} (smarts {c.skills.smarts}
                                 {c.traits.includes("bookkeeper")
@@ -488,7 +520,11 @@ export default function WarehousePanel() {
                             className="mt-1 w-full rounded-md border border-panel-border bg-panel/60 px-2 py-1 text-xs"
                           >
                             <option value="">Remove manager</option>
-                            {managerCandidates.map((c) => (
+                            {managerCandidates
+                              .filter(
+                                (c) => c.assignment.type !== "racket" || c.id === wh.managerId,
+                              )
+                              .map((c) => (
                               <option key={c.id} value={c.id}>
                                 {c.name} (smarts {c.skills.smarts}
                                 {c.traits.includes("bookkeeper")
@@ -641,6 +677,8 @@ export default function WarehousePanel() {
           </div>
         )}
       </div>
+      </>
+      )}
     </PanelShell>
   );
 }

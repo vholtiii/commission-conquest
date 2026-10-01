@@ -195,19 +195,52 @@ function centerFallbackBlock(
   };
 }
 
-/** Deterministic block used for the Nth racket in a territory. */
+/** Deterministic block used for a racket's stable site slot in a territory. */
 export function racketBlockFor(
   layout: CityLayout,
   territoryId: string,
-  index: number,
+  siteIndex: number,
 ): CityBlock | null {
   const buildings = getDistrictBlocksNearestFirst(layout, territoryId);
-  if (buildings.length > 0) return buildings[index % buildings.length] ?? null;
+  if (buildings.length > 0) return buildings[siteIndex % buildings.length] ?? null;
   // Empty lot: use the district's open ground first, then spread the rest
   // around the centre so three hideouts never stack on one spot.
   const lots = getDistrictLotBlocks(layout, territoryId);
-  if (index < lots.length) return lots[index] ?? null;
-  return centerFallbackBlock(layout, territoryId, index - lots.length);
+  if (siteIndex < lots.length) return lots[siteIndex] ?? null;
+  return centerFallbackBlock(layout, territoryId, siteIndex - lots.length);
+}
+
+/**
+ * Next free site slot on a district. Prefers the lowest unused index so old
+ * saves that used array position keep looking the same after backfill.
+ */
+export function nextRacketSiteIndex(
+  rackets: { siteIndex?: number }[],
+): number {
+  const taken = new Set(
+    rackets
+      .map((r, i) => (typeof r.siteIndex === "number" ? r.siteIndex : i))
+      .filter((n) => Number.isFinite(n)),
+  );
+  let i = 0;
+  while (taken.has(i)) i += 1;
+  return i;
+}
+
+/** Backfill missing siteIndex from current array order (one-time for old saves). */
+export function ensureRacketSites<T extends { siteIndex?: number }>(rackets: T[]): T[] {
+  if (rackets.every((r) => typeof r.siteIndex === "number")) return rackets;
+  const used = new Set<number>();
+  return rackets.map((r, i) => {
+    if (typeof r.siteIndex === "number" && !used.has(r.siteIndex)) {
+      used.add(r.siteIndex);
+      return r;
+    }
+    let slot = i;
+    while (used.has(slot)) slot += 1;
+    used.add(slot);
+    return { ...r, siteIndex: slot };
+  });
 }
 
 /** Nearest road cell to a world position (for cinematic car pathing). */

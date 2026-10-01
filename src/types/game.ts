@@ -28,6 +28,8 @@ export type CrewTrait =
 export type AssignmentType =
   | "idle"
   | "garrison"
+  /** Inside the block's safehouse: off the street, off the blotter, off the garrison. */
+  | "safehouse"
   | "racket"
   | "delivery"
   | "operation"
@@ -48,7 +50,7 @@ export type RacketType =
   | "trucking"
   | "safehouse";
 
-export type HitApproach = "ambush" | "drive_by" | "car_bomb" | "sitdown_betrayal";
+export type HitApproach = "ambush" | "drive_by" | "car_bomb" | "sitdown_betrayal" | "summons";
 
 export type HitRole =
   | "shooter"
@@ -83,6 +85,8 @@ export type HitComplication =
   | "pat_down"
   | "witness"
   | "kitchen_backup"
+  /** A summons that took an innocent man. */
+  | "innocent"
   | "toast"
   | "tipped"
   | "trap"
@@ -165,7 +169,14 @@ export interface CrewMember {
    * A temporary trip that overrides his normal location until `untilTurn`
    * (exclusive): a sit-down or an AI boss's weekly visit.
    */
-  awayAt?: { territoryId: string; untilTurn: number; reason: "sitdown" | "visit" };
+  awayAt?: { territoryId: string; untilTurn: number; reason: "sitdown" | "visit" | "dinner" };
+  /** The family he came up in, when it wasn't this one (a scattered man from a finished family). */
+  origin?: FamilyName;
+  /**
+   * While he waits in the recruitment pool: last turn (exclusive) he'll work
+   * for nothing before he gives up and goes to a rival.
+   */
+  freeUntilTurn?: number;
 }
 
 /** A capo asking the boss to bring a man into his crew. */
@@ -177,6 +188,8 @@ export interface CrewRequest {
   /** The capo's line. */
   pitch: string;
   status: "pending" | "approved" | "rejected" | "expired";
+  /** "walk" is a man asking to leave after one of his own was taken out. */
+  kind?: "walk";
   /** Turns the boss said "later"; the ask expires after one deferral. */
   deferred?: number;
 }
@@ -197,6 +210,11 @@ export interface Racket {
   stock: number;
   heatGen: number;
   upgradeCost: number;
+  /**
+   * Stable map slot for this racket in its district. Assigned at build time and
+   * kept for life so demolitions / reordering never move the building.
+   */
+  siteIndex?: number;
   /** Turn this racket was built (for map "NEW" feedback). */
   builtTurn?: number;
   /** Turn this racket was last upgraded (for map "UPGRADED" feedback). */
@@ -353,7 +371,7 @@ export interface Operation {
    * than a plain hit, never starts a vendetta, and the shooter's family follows
    * it with a sit-down.
    */
-  intent?: "message";
+  intent?: "message" | "summons" | "commission_message";
 }
 
 /** How long a planted car bomb waits for a boss to use his car. */
@@ -637,6 +655,12 @@ export interface Sitdown {
     rounds: number;
     /** Set when the rival came asking after a message hit or a hot run. */
     demanded?: boolean;
+    /** The number the player walked in with. */
+    playerOpening?: PassageTerms;
+    /** What was agreed, when the opener was taken on the spot. */
+    struck?: PassageTerms;
+    /** Lines for the table when it settled before anyone countered. */
+    lines?: string[];
   };
 }
 
@@ -669,9 +693,12 @@ export interface HitResult {
   revealedIds?: string[];
   /** True when the strike was ordered blind. */
   blind?: boolean;
-  /** Reputation deltas shown on the result card. */
+  /** Respect and influence the result card should show. Player hits only. */
   respectDelta?: number;
   influenceDelta?: number;
+  /** Loyalty the men who went picked up. Player hits only. */
+  loyaltyDelta?: number;
+  loyaltyNames?: string[];
   /** Verdict line when this hit answered an open case. */
   caseJudgment?: string;
   /** Street wrinkle the cinematic branches on. */
@@ -732,6 +759,8 @@ export interface GameEventChoice {
     shipmentLoss: number;
     crewStatus: { crewId: string; status: CrewStatus };
     relationDelta: { family: FamilyName; delta: number };
+    /** Call one of your own in and have him taken out. */
+    takeOut: { crewId: string };
   }>;
 }
 
@@ -742,6 +771,10 @@ export interface GameEvent {
   description: string;
   choices: GameEventChoice[];
   isActive: boolean;
+  /** The man a rat event is about, named when the event is drawn. */
+  subjectCrewId?: string;
+  /** Hidden until it's resolved: was he actually the rat. */
+  subjectIsRat?: boolean;
 }
 
 export interface TurnLogEntry {
@@ -759,6 +792,12 @@ export interface TurnLogEntry {
     | "system";
   text: string;
   family?: FamilyName;
+  /** Hit lines: how sure the street is about who ordered it. `family` is set only when named. */
+  attribution?: "named" | "suspected" | "unknown";
+  /** Hit lines: who the street points at when it isn't sure. */
+  suspect?: FamilyName;
+  /** Hit lines: the family on the receiving end. */
+  victim?: FamilyName;
 }
 
 export interface DiplomacyState {
@@ -771,6 +810,54 @@ export interface DiplomacyState {
    * Key `${host}|${guest}`, value exclusive expiry turn.
    */
   hostBans?: Record<string, number>;
+  /** First turn the player may call the Commission again. */
+  commissionCooldown?: number;
+  /** The player defied a ruling. Seats won't sit with him until this turn. */
+  sanctionUntil?: number;
+  /** Rulings the player has refused. Two and the table sanctions him. */
+  refusals?: number;
+}
+
+export interface SeatVote {
+  family: FamilyName;
+  /** Positive leans toward the caller. */
+  lean: number;
+  vote?: "caller" | "accused" | "abstain";
+  line?: string;
+}
+
+/** What the table is being asked: a ruling on the trouble, or war on a family that ignored one. */
+export type CommissionCallKind = "ruling" | "war";
+
+export interface CommissionRuling {
+  id: string;
+  turn: number;
+  kind?: CommissionCallKind;
+  caller: FamilyName;
+  accused: FamilyName;
+  forCaller: number;
+  against: number;
+  terms: AgendaTerms;
+  verdict: "caller" | "accused" | "deadlock";
+  callerAnswer?: "accept" | "refuse";
+  accusedAnswer?: "accept" | "refuse";
+  /** The seat that sent a message, when the table answered a refusal. */
+  messageSent?: FamilyName;
+  /** Seats that voted with the ruling. */
+  forRuling: FamilyName[];
+}
+
+export interface CommissionCall {
+  id: string;
+  turn: number;
+  kind?: CommissionCallKind;
+  caller: FamilyName;
+  accused: FamilyName;
+  seats: SeatVote[];
+  /** Seats the player bought this call, and how. */
+  lobbied: Partial<Record<FamilyName, "cash" | "influence">>;
+  phase: "lobby" | "voted" | "answered";
+  ruling?: CommissionRuling;
 }
 
 /** Where the player is pointed after a sit-down result card. */
@@ -1005,7 +1092,8 @@ export type Motive =
   | "route_dispute"
   | "contract"
   | "power_grab"
-  | "opportunist";
+  | "opportunist"
+  | "commission";
 
 export type IncidentKind = "hit" | "hijack";
 
@@ -1121,6 +1209,8 @@ export interface GameSettings {
   rivalCinematics?: "brief" | "off";
   /** Sound-effects loudness, 0 (off) to 1. Defaults to 0.7. */
   sfxVolume?: number;
+  /** Bloom, vignette, film grain, and filmic tone mapping. Defaults to on. */
+  postFx?: boolean;
 }
 
 /** How many districts each family has grabbed on a given turn. */
@@ -1184,6 +1274,8 @@ export interface GameState {
   captureTally: CaptureTally;
   /** Capos asking to bring men into their crews (pending first, then history). */
   crewRequests: CrewRequest[];
+  /** Families with nobody left to take the chair. Their men have scattered. */
+  defunctFamilies: FamilyName[];
   /** Sit-downs both bosses must travel to (scheduled, then held or aborted). */
   sitdowns: Sitdown[];
   /** Result cards waiting after a table breaks up. */
@@ -1208,6 +1300,27 @@ export interface GameState {
   passageLeverage: Partial<Record<FamilyName, number>>;
   /** Last turn each rival sent a message (cooldown). */
   messageHitTurns: Partial<Record<FamilyName, number>>;
+  /**
+   * A rat you spared is still talking. While the turn is at or past this,
+   * the weekly warrant roll picks men up more readily.
+   */
+  ratLeakTurn?: number;
+  /** Which man is still talking, when a real rat was spared. */
+  ratLeakCrewId?: string;
+  /** Last turn the player called one of his own in. */
+  lastCallInTurn?: number;
+  /** The family is at a safehouse for two weeks. */
+  familyDinner?: { startTurn: number; territoryId: string; knownBy: FamilyName[] } | null;
+  /** Last turn a family dinner was called. */
+  lastDinnerTurn?: number;
+  /** A summons reel waiting to play, queued by the store when an event resolves. */
+  pendingSummons?: HitCinematic | null;
+  /** A Commission call in progress. */
+  commissionCall?: CommissionCall | null;
+  /** Rulings handed down, newest last. */
+  commissionHistory: CommissionRuling[];
+  /** A ruling waiting on the player's accept or refuse. */
+  pendingRulings: CommissionRuling[];
   victory: VictoryState;
   liquorStock: number;
   /** Supplier orders awaiting arrival. */
@@ -1294,6 +1407,7 @@ export const APPROACH_LABELS: Record<HitApproach, string> = {
   drive_by: "Drive-by",
   car_bomb: "Car Bomb",
   sitdown_betrayal: "Sit-down Betrayal",
+  summons: "The Call",
 };
 
 export const MOTIVE_LABELS: Record<Motive, string> = {
@@ -1304,6 +1418,7 @@ export const MOTIVE_LABELS: Record<Motive, string> = {
   contract: "Contract",
   power_grab: "Power grab",
   opportunist: "Opportunist",
+  commission: "The Commission's message",
 };
 
 export const CLUE_LABELS: Record<ClueKind, string> = {

@@ -1,7 +1,10 @@
-import type { GameEvent, GameEventChoice, GameState, LiquorLedger } from "@/types/game";
+import type { CrewMember, GameEvent, GameEventChoice, GameState, LiquorLedger } from "@/types/game";
 import { ALL_FAMILY_NAMES } from "@/data/families";
 import type { Rng } from "./rng";
 import { createRng, hashString } from "./rng";
+import { buildSummonsCinematic } from "./hitOps";
+import { removeMan, walkRequestFor } from "./callIn";
+import { DINNER_RAT_GRACE } from "./dinner";
 import {
   applyCrateEffect,
   emptyLiquorLedger,
@@ -24,7 +27,47 @@ export interface EventTemplate {
   requiresLiquor?: boolean;
   /** Only fire if player has pending whisky shipments. */
   requiresShipments?: boolean;
-  buildChoices: (state: GameState, rng: Rng) => GameEventChoice[];
+  buildChoices: (state: GameState, rng: Rng, subject?: RatSubject) => GameEventChoice[];
+  /** Names the man the event is about. Null when nobody fits. */
+  subject?: (state: GameState, rng: Rng) => RatSubject | null;
+  /** Description once the man is named. */
+  blurb?: (name: string) => string;
+}
+
+export interface RatSubject {
+  crewId: string;
+  isRat: boolean;
+}
+
+/** A man in the family the whispers could be about, weighted toward the likely ones. */
+function pickSuspect(state: GameState, rng: Rng): RatSubject | null {
+  const player = state.playerFamily;
+  if (!player) return null;
+  const men = state.crew.filter(
+    (c) => c.family === player && c.status === "active" && c.role !== "boss",
+  );
+  if (men.length === 0) return null;
+  const weight = (c: CrewMember) =>
+    1 +
+    Math.max(0, (60 - c.loyalty) / 20) +
+    c.wanted / 5 +
+    (c.origin && c.origin !== c.family ? 2 : 0) +
+    (c.jailedUntilTurn != null ? 1 : 0);
+  const total = men.reduce((sum, c) => sum + weight(c), 0);
+  let roll = rng.next() * total;
+  let picked = men[0]!;
+  for (const c of men) {
+    roll -= weight(c);
+    if (roll <= 0) {
+      picked = c;
+      break;
+    }
+  }
+  return { crewId: picked.id, isRat: rng.chance(0.65) };
+}
+
+function suspectName(state: GameState, subject?: RatSubject): string {
+  return state.crew.find((c) => c.id === subject?.crewId)?.name ?? "him";
 }
 
 function choice(
@@ -122,14 +165,14 @@ export const EVENT_TEMPLATES: EventTemplate[] = [
     description: "Whispers say someone in your crew is feeding tips to the bulls.",
     weight: 9,
     minHeat: 10,
-    buildChoices: () => [
-      choice("investigate", "Quiet investigation", { money: -200, loyalty: 5 }),
-      choice("purge", "Purge suspected associates", {
-        fear: 12,
-        loyalty: -10,
-        heat: 5,
+    subject: pickSuspect,
+    blurb: (name) => `Whispers say ${name} is feeding tips to the bulls.`,
+    buildChoices: (state, _rng, subject) => [
+      choice("call_in", `Call him in — ${suspectName(state, subject)} doesn't come back`, {
+        takeOut: { crewId: subject?.crewId ?? "" },
       }),
-      choice("ignore_rumor", "Ignore the rumor", { loyalty: -8 }),
+      choice("relocate", `Move ${suspectName(state, subject)} out of the city`, { money: -300, heat: -5 }),
+      choice("watch", "Watch and wait", { heat: 5, loyalty: -5 }),
     ],
   },
   {
@@ -413,13 +456,13 @@ export const EVENT_TEMPLATES: EventTemplate[] = [
     description: "Word is a made man is wearing a wire for the Bureau.",
     weight: 8,
     minHeat: 50,
-    buildChoices: () => [
-      choice("silence", "Silence the rat permanently", {
-        heat: 20,
-        fear: 15,
-        loyalty: 5,
+    subject: pickSuspect,
+    blurb: (name) => `Word is ${name} is wearing a wire for the Bureau.`,
+    buildChoices: (state, _rng, subject) => [
+      choice("call_in", `Call him in — ${suspectName(state, subject)} doesn't come back`, {
+        takeOut: { crewId: subject?.crewId ?? "" },
       }),
-      choice("relocate", "Relocate the suspect", { money: -300, heat: -5 }),
+      choice("relocate", `Move ${suspectName(state, subject)} out of the city`, { money: -300, heat: -5 }),
       choice("watch", "Watch and wait", { heat: 5, loyalty: -5 }),
     ],
   },
@@ -482,6 +525,19 @@ function templateEligible(t: EventTemplate, state: GameState): boolean {
   if (t.requiresShipments && (state.pendingShipments?.length ?? 0) === 0) {
     return false;
   }
+  if (
+    t.subject &&
+    !state.crew.some((c) => c.family === state.playerFamily && c.status === "active" && c.role !== "boss")
+  ) {
+    return false;
+  }
+  if (
+    (t.id === "informant_rumor" || t.id === "federal_informant") &&
+    state.lastDinnerTurn != null &&
+    state.turn < state.lastDinnerTurn + DINNER_RAT_GRACE
+  ) {
+    return false;
+  }
   return true;
 }
 
@@ -512,14 +568,19 @@ export function drawEvent(state: GameState, rng: Rng): GameEvent | null {
     }
   }
 
-  const choices = picked.buildChoices(state, rng);
+  const subject = picked.subject?.(state, rng) ?? null;
+  if (picked.subject && !subject) return null;
+  const choices = picked.buildChoices(state, rng, subject ?? undefined);
+  const man = subject ? state.crew.find((c) => c.id === subject.crewId) : undefined;
   return {
     id: `evt_${picked.id}_${state.turn}`,
     templateId: picked.id,
     title: picked.title,
-    description: picked.description,
+    description: man && picked.blurb ? picked.blurb(man.name) : picked.description,
     choices,
     isActive: true,
+    subjectCrewId: subject?.crewId,
+    subjectIsRat: subject?.isRat,
   };
 }
 
@@ -559,10 +620,77 @@ export function applyEventChoice(
   }
 
   let territories = state.territories;
+  let operations = state.operations;
+  let supplyRoutes = state.supplyRoutes ?? [];
   let dirtyExtra = 0;
   let logs = state.turnLog;
   let ledger: LiquorLedger | null = state.liquorLedger;
   let pendingShipments = state.pendingShipments ?? [];
+  let pendingSummons = state.pendingSummons ?? null;
+  let crewRequests = state.crewRequests ?? [];
+  let ratLeakTurn = state.ratLeakTurn;
+  let ratLeakCrewId = state.ratLeakCrewId;
+  let heatExtra = 0;
+  let fearExtra = 0;
+
+  if (fx.takeOut && state.playerFamily) {
+    const id = fx.takeOut.crewId;
+    const victim = crew.find((c) => c.id === id && c.status !== "dead");
+    if (victim) {
+      const before = crew;
+      const removed = removeMan(
+        { ...state, crew, territories, operations, supplyRoutes, crewRequests },
+        id,
+      );
+      crew = removed.crew;
+      territories = removed.territories;
+      operations = removed.operations;
+      supplyRoutes = removed.supplyRoutes;
+      const rat = event.subjectIsRat === true;
+      heatExtra += rat ? -10 : 5;
+      fearExtra += 8;
+      if (!rat) {
+        crew = crew.map((c) =>
+          c.family === state.playerFamily && c.id !== id && c.status === "active"
+            ? { ...c, loyalty: Math.max(0, c.loyalty - 10) }
+            : c,
+        );
+        const roll = createRng(hashString(`${state.seed}:walk:${id}:${state.turn}`));
+        if (roll.chance(0.4)) {
+          const ask = walkRequestFor(state, before, victim);
+          if (ask) crewRequests = [...crewRequests, ask];
+        }
+      }
+      logs = [
+        ...logs,
+        ...removed.logs,
+        {
+          id: `log_takeout_${id}_${state.turn}`,
+          turn: state.turn,
+          category: "hit" as const,
+          text: rat
+            ? `${victim.name} was the rat. It's done, and the heat eases off.`
+            : `${victim.name} wasn't the rat. The family knows it.`,
+          family: state.playerFamily,
+        },
+      ];
+      pendingSummons = buildSummonsCinematic({ ...state, crew, territories }, victim, !rat);
+    }
+  } else if (event.subjectIsRat && event.subjectCrewId) {
+    ratLeakTurn = state.turn + 1;
+    ratLeakCrewId = event.subjectCrewId;
+    const spared = crew.find((c) => c.id === event.subjectCrewId);
+    logs = [
+      ...logs,
+      {
+        id: `log_rat_spared_${state.turn}`,
+        turn: state.turn,
+        category: "heat" as const,
+        text: `You let ${spared?.name ?? "him"} be. If he really is talking, the law will hear more.`,
+        family: state.playerFamily ?? undefined,
+      },
+    ];
+  }
 
   if (fx.crates) {
     const rng = createRng(
@@ -628,12 +756,14 @@ export function applyEventChoice(
   return {
     ...state,
     territories,
+    operations,
+    supplyRoutes,
     pendingShipments,
     money: state.money + (fx.money ?? 0),
     dirtyMoney: state.dirtyMoney + (fx.dirtyMoney ?? 0) + dirtyExtra,
     heat: {
       ...state.heat,
-      level: Math.max(0, Math.min(100, state.heat.level + (fx.heat ?? 0))),
+      level: Math.max(0, Math.min(100, state.heat.level + (fx.heat ?? 0) + heatExtra)),
     },
     reputation: {
       ...state.reputation,
@@ -641,7 +771,7 @@ export function applyEventChoice(
         0,
         Math.min(100, state.reputation.respect + (fx.respect ?? 0)),
       ),
-      fear: Math.max(0, Math.min(100, state.reputation.fear + (fx.fear ?? 0))),
+      fear: Math.max(0, Math.min(100, state.reputation.fear + (fx.fear ?? 0) + fearExtra)),
       loyalty: Math.max(
         0,
         Math.min(100, state.reputation.loyalty + (fx.loyalty ?? 0)),
@@ -649,6 +779,10 @@ export function applyEventChoice(
     },
     relations,
     crew,
+    crewRequests,
+    ratLeakTurn,
+    ratLeakCrewId,
+    pendingSummons,
     turnLog: logs,
     liquorLedger: ledger,
     activeEvent: null,

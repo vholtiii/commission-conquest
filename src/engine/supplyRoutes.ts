@@ -27,7 +27,7 @@ import type {
 } from "@/types/game";
 import { ALL_FAMILY_NAMES } from "@/data/families";
 import type { Rng } from "./rng";
-import { assignCrew } from "./crew";
+import { assignCrew, bumpLoyalty } from "./crew";
 import { crewPresentIn } from "./crewLocation";
 import { hasActiveIntel } from "./intel";
 import {
@@ -38,6 +38,7 @@ import {
   withdrawCrates,
 } from "./liquor";
 import { addEvidence, makeEvidence, openIncidentFromHijack } from "./incidents";
+import { seizureCover } from "./safehouse";
 import { getRelation, setRelationDelta, statusFromScore } from "./relations";
 import {
   CRATE_STREET_VALUE,
@@ -821,19 +822,32 @@ export function processSupplyRoutes(state: GameState, rng: Rng): SupplyRunResult
         hurt.push(escort!.name);
       }
       next = { ...next, crew };
+      const rode = bumpLoyalty(next.crew, [driver.id, escortRides ? escort!.id : ""], 1);
+      next = { ...next, crew: rode.crew };
       const text = `Truck ${srcName} → ${destName} hijacked. Lost ${cargo} crates${hurt.length ? `; ${hurt.join(" and ")} wounded` : ""}.`;
       next = markLast(next, route.id, { turn: state.turn, outcome: "hijacked", text });
       log(route.id, text);
       continue;
     }
 
-    if (cargo > 0 && rng.chance(next.heat.level > 50 ? 0.12 : 0.04)) {
-      heatDelta += 4;
-      ledger = mergeLedger(ledger, { seized: cargo, heat: 4 });
-      const text = `Police seized the ${srcName} → ${destName} run (${cargo} crates).`;
-      next = markLast(next, route.id, { turn: state.turn, outcome: "seized", text });
-      log(route.id, text);
-      continue;
+    // Police checkpoint. A safehouse along the road is a garage to duck into.
+    if (cargo > 0) {
+      const checkpoint = next.heat.level > 50 ? 0.12 : 0.04;
+      const garage = seizureCover(next, player, route.path);
+      const roll = rng.next();
+      if (roll < checkpoint) {
+        if (garage && roll >= checkpoint * (1 - garage.evasion)) {
+          notes.push(`ducked a checkpoint into the ${garage.territory.name} safehouse`);
+        } else {
+          heatDelta += 4;
+          ledger = mergeLedger(ledger, { seized: cargo, heat: 4 });
+          const text = `Police seized the ${srcName} → ${destName} run (${cargo} crates).`;
+          next = { ...next, crew: bumpLoyalty(next.crew, [driver.id, escortRides ? escort!.id : ""], 1).crew };
+          next = markLast(next, route.id, { turn: state.turn, outcome: "seized", text });
+          log(route.id, text);
+          continue;
+        }
+      }
     }
 
     // Landed.
@@ -848,6 +862,8 @@ export function processSupplyRoutes(state: GameState, rng: Rng): SupplyRunResult
       ledger = mergeLedger(ledger, { cashIn: payout });
     }
     const outcome = stoppedBy ? "stopped" : "delivered";
+    const rode = bumpLoyalty(next.crew, [driver.id, escortRides ? escort!.id : ""], 1);
+    next = { ...next, crew: rode.crew };
     const text =
       `${dep.moved} crates landed in ${destName}` +
       (dep.overflow > 0 ? `; ${dep.overflow} street-sold for $${payout}` : "") +

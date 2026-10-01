@@ -18,6 +18,7 @@ import { createRng, hashString } from "./rng";
 import { aggregateTraitEffects, roleUpkeep } from "./crew";
 import { crewIncomeMult } from "./crews";
 import { BOSS_PRESENCE, bossPresenceDistrict } from "./bossPresence";
+import { DINNER_INCOME_MULT, dinnerActive } from "./dinner";
 import {
   applyWarehouseShrinkage,
   depositCrates,
@@ -190,6 +191,72 @@ export function isRacketFrozen(racket: Racket, turn: number): boolean {
   return (racket.frozenUntil ?? 0) > turn;
 }
 
+/**
+ * Wanted shed per week while managing an unfrozen legit front.
+ * Slower than a safehouse: Lv1–2 → 1, Lv3–4 → 2, Lv5 → 3.
+ */
+export function legitCoverWantedDrop(level: number): number {
+  return 1 + Math.floor(Math.max(1, level) / 2);
+}
+
+/**
+ * End-of-week pass: managers of live legit businesses shed a little wanted.
+ * Does not stack with lying low — skip anyone already in a safehouse.
+ */
+export function tickLegitCover(state: GameState): { state: GameState; logs: TurnLogEntry[] } {
+  const logs: TurnLogEntry[] = [];
+  const player = state.playerFamily;
+  const turn = state.turn;
+  const dropById = new Map<string, number>();
+
+  for (const t of state.territories) {
+    for (const r of t.rackets) {
+      if (!isLegitBusiness(r.type) || isRacketFrozen(r, turn) || !r.managerId) continue;
+      const drop = legitCoverWantedDrop(r.level);
+      const prev = dropById.get(r.managerId) ?? 0;
+      if (drop > prev) dropById.set(r.managerId, drop);
+    }
+  }
+  if (dropById.size === 0) return { state, logs };
+
+  const cooled: string[] = [];
+  const clean: string[] = [];
+  const crew = state.crew.map((m) => {
+    const drop = dropById.get(m.id);
+    if (!drop || drop <= 0) return m;
+    if (m.assignment.type === "safehouse") return m;
+    if (m.status !== "active" && m.status !== "wounded") return m;
+    if (m.wanted <= 0) return m;
+    const wanted = Math.max(0, m.wanted - drop);
+    if (m.family === player) {
+      if (wanted < m.wanted) cooled.push(m.name);
+      if (wanted === 0 && m.wanted > 0) clean.push(m.name);
+    }
+    return { ...m, wanted };
+  });
+
+  if (player && cooled.length > 0) {
+    logs.push({
+      id: `log_legit_cover_${turn}`,
+      turn,
+      category: "system",
+      text: `${cooled.join(", ")} kept a low profile behind the counter — wanted dropped.`,
+      family: player,
+    });
+  }
+  if (player && clean.length > 0) {
+    logs.push({
+      id: `log_legit_cover_clean_${turn}`,
+      turn,
+      category: "system",
+      text: `${clean.join(", ")} ${clean.length === 1 ? "is" : "are"} off the blotter — the front did its job.`,
+      family: player,
+    });
+  }
+
+  return { state: { ...state, crew }, logs };
+}
+
 function liveSafehouses(t: Pick<Territory, "rackets">, turn: number): Racket[] {
   return t.rackets.filter((r) => r.type === "safehouse" && !isRacketFrozen(r, turn));
 }
@@ -271,6 +338,7 @@ export function createRacket(
   type: RacketType,
   level = 1,
   turn = 0,
+  siteIndex?: number,
 ): Racket {
   return {
     id,
@@ -288,6 +356,7 @@ export function createRacket(
     heatGen: RACKET_HEAT[type] * level,
     upgradeCost: racketUpgradeCost(type, level),
     builtTurn: turn,
+    ...(typeof siteIndex === "number" ? { siteIndex } : {}),
   };
 }
 
@@ -311,6 +380,11 @@ export function racketFreshness(
   if (racket.upgradedTurn === turn) return "upgraded";
   if (racket.builtTurn === turn) return "new";
   return null;
+}
+
+/** A safehouse is a door and some beds; nobody has to run it. */
+export function needsManager(type: RacketType): boolean {
+  return type !== "safehouse";
 }
 
 /**
@@ -528,7 +602,7 @@ export function processDeliveries(
   rng: Rng,
 ): DeliveryProcessResult {
   const logs: TurnLogEntry[] = [];
-  let moneyDelta = 0;
+  const moneyDelta = 0;
   let dirtyDelta = 0;
   let heatDelta = 0;
   const crewUpdates: DeliveryProcessResult["crewUpdates"] = [];
@@ -1052,7 +1126,8 @@ export function processEconomyTurn(
                 c.status === "active",
             )
           : null;
-        const inc = racketIncome(racket, incomeBonus, manager, state.crew, bossHere);
+        let inc = racketIncome(racket, incomeBonus, manager, state.crew, bossHere);
+        if (isPlayer && dinnerActive(state)) inc = Math.floor(inc * DINNER_INCOME_MULT);
         if (isLegitBusiness(racket.type)) {
           moneyDelta += inc;
         } else if (["gambling", "brothel", "loan_shark"].includes(racket.type)) {
@@ -1075,14 +1150,19 @@ export function processEconomyTurn(
       bossHere,
     );
     updated = sell.territory;
-    moneyDelta += sell.revenue;
-    dirtyDelta += sell.dirtyRevenue;
+    const thin = isPlayer && dinnerActive(state) ? DINNER_INCOME_MULT : 1;
+    moneyDelta += Math.floor(sell.revenue * thin);
+    dirtyDelta += Math.floor(sell.dirtyRevenue * thin);
     if (isPlayer) {
       ledger = mergeLedger(ledger, {
         sold: sell.sold,
         cashIn: sell.dirtyRevenue + sell.revenue,
       });
     }
+
+    // Every held district kicks back a tenth of its base income in clean cash.
+    // General territory money, not liquor: it stays out of the crate ledger.
+    moneyDelta += Math.floor(t.baseIncome * (1 + incomeBonus) * 0.1);
 
     if (t.strategicBonus?.type === "income") {
       moneyDelta += Math.floor(t.strategicBonus.value * (1 + incomeBonus));
@@ -1104,7 +1184,7 @@ export function processEconomyTurn(
   });
 
   let finalTerritories = territories;
-  let racketUpdates: Racket[] = [];
+  const racketUpdates: Racket[] = [];
   if (isPlayer) {
     const wash = processLaundering(
       {

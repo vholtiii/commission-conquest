@@ -17,16 +17,20 @@ import {
   racketIncome,
   hasSafehouse,
 } from "./economy";
+import { nextRacketSiteIndex } from "./cityLayout";
 import { getRelation, setRelationDelta } from "./relations";
 import { hasPact } from "./diplomacy";
 import { atPeace, contractedTargets } from "./deals";
 import { captureAllowance, recordCapture } from "./capture";
-import { aiFillCrews } from "./crews";
+import { aiFillCrews, canLeadCrew, freeCrewOf, isHeldOff, placeCrewAt } from "./crews";
 import { AI_SITDOWN_CHANCE, AI_SITDOWN_TRAP_CHANCE, aiProposeSitdown, hasArmedBombOnPlayerBoss } from "./sitdowns";
-import { planHit } from "./hitOps";
+import { bringCrewOnHit, commitHitCrew, planHit } from "./hitOps";
+import { dinnerActive } from "./dinner";
 import { familyHq, isBossUnderground, resolveCrewTerritoryId } from "./crewLocation";
+import { isLaidLow, SAFEHOUSE, safehouseCaptureDefence } from "./safehouse";
 import { BOSS_PRESENCE, bossPresentIn, hqIsSoft } from "./bossPresence";
 import { actingUnderboss, bossIsJailed } from "./jail";
+import { canInheritChair, isDefunct, isFamilyFinished, scatterFamily } from "./defection";
 import { familiesPressingSuddenDeath } from "./victory";
 import { recordIntel } from "./intel";
 import {
@@ -118,6 +122,7 @@ function tryBuildRacket(
     type,
     1,
     state.turn,
+    nextRacketSiteIndex(target.rackets),
   );
   const territories = state.territories.map((t) =>
     t.id === target.id ? { ...t, rackets: [...t.rackets, racket] } : t,
@@ -142,6 +147,12 @@ function tryBuildRacket(
   };
 }
 
+/** Garrison a rival counts when muscling in. A dinner empties the player's blocks. */
+export function expandGarrisonCount(state: GameState, territory: Territory): number {
+  if (dinnerActive(state) && territory.owner === state.playerFamily) return 0;
+  return territory.garrisonIds.length;
+}
+
 function tryExpand(
   state: GameState,
   family: FamilyName,
@@ -164,28 +175,49 @@ function tryExpand(
     if (hqIsSoft(state, t.owner) && familyHq(state, t.owner) === t.id) return -BOSS_PRESENCE.aiHqSoftRoll;
     return 0;
   };
+  // A safehouse on the block is a fortified door: it reads as extra defence.
+  const fortification = (t: Territory): number =>
+    t.owner ? safehouseCaptureDefence(t, state.turn) - 1 : 0;
+  const openStreet = (t: Territory) => dinnerActive(state) && t.owner === state.playerFamily;
   const scored = targets
     .map((t) => {
+      const garrison = expandGarrisonCount(state, t);
       const softness =
-        (t.owner ? 2 : 0) + t.defenseBonus + t.garrisonIds.length + bossWeight(t) * 10;
+        (t.owner ? 2 : 0) + t.defenseBonus + fortification(t) + garrison + bossWeight(t) * 10;
       const pressing = t.owner && familiesPressingSuddenDeath(state).includes(t.owner) ? 1.6 : 1;
-      const score = (valueScore(t) / (1 + Math.max(0, softness))) * pressing;
+      const heard = openStreet(t) && state.familyDinner?.knownBy.includes(family) ? 1.6 : 1;
+      const score = (valueScore(t) / (1 + Math.max(0, softness))) * pressing * heard;
       return { t, softness, score };
     })
     .sort((a, b) => b.score - a.score);
   const target = scored[0]!.t;
+  const garrison = expandGarrisonCount(state, target);
   const softness =
-    (target.owner ? 2 : 0) + target.defenseBonus + target.garrisonIds.length;
+    (target.owner ? 2 : 0) + target.defenseBonus + fortification(target) + garrison;
+
+  // A capo (or the consigliere, or the boss) brings his free crew. Their muscle softens the door.
+  const rank = (c: CrewMember) => (c.role === "capo" ? 0 : c.role === "consigliere" ? 1 : 2);
+  const grab = getActiveCrew(state.crew, family)
+    .filter((c) => canLeadCrew(c) && !isHeldOff(c))
+    .map((leader) => ({ leader, men: freeCrewOf(state.crew, leader.id) }))
+    .filter((x) => x.men.length > 0)
+    .sort((a, b) => rank(a.leader) - rank(b.leader) || b.men.length - a.men.length)[0];
+  const crewBoost = grab ? 0.04 * grab.men.length : 0;
 
   const roll = rng.next();
   const success =
     !target.owner ||
     roll >
-      0.35 +
-        target.defenseBonus +
-        target.garrisonIds.length * 0.05 -
-        0.05 * Math.min(2, maxRacketsFor(target) - 3) +
-        bossWeight(target);
+      Math.max(
+        0.05,
+        0.35 +
+          target.defenseBonus +
+          fortification(target) +
+          garrison * 0.05 -
+          0.05 * Math.min(2, maxRacketsFor(target) - 3) +
+          bossWeight(target) -
+          crewBoost,
+      );
 
   if (!success) {
     return {
@@ -201,7 +233,7 @@ function tryExpand(
   }
 
   const prevOwner = target.owner;
-  const territories = state.territories.map((t) =>
+  let territories = state.territories.map((t) =>
     t.id === target.id
       ? {
           ...t,
@@ -217,13 +249,28 @@ function tryExpand(
     relations = setRelationDelta(relations, family, prevOwner, -20);
   }
 
+  let crew = state.crew;
+  if (grab) {
+    const placed = placeCrewAt({ crew, territories }, grab.leader.id, target.id);
+    crew = assignCrew(placed.crew, grab.leader.id, { type: "garrison", territoryId: target.id });
+    const leadId = grab.leader.id;
+    territories = placed.territories.map((t) => ({
+      ...t,
+      garrisonIds:
+        t.id === target.id
+          ? [...new Set([...t.garrisonIds, leadId])]
+          : t.garrisonIds.filter((id) => id !== leadId),
+    }));
+  }
+
+  const withCrew = grab ? ` ${grab.leader.name} brings ${grab.men.length} of his crew.` : "";
   return {
-    state: recordCapture({ ...state, territories, relations }, family),
+    state: recordCapture({ ...state, crew, territories, relations }, family),
     log: {
       id: `ai_expand_${family}_${state.turn}_${target.id}`,
       turn: state.turn,
       category: "ai",
-      text: `${family} seized ${target.name}${prevOwner ? ` from ${prevOwner}` : ""}${softness < 1 ? " (lightly held)" : ""}.`,
+      text: `${family} seized ${target.name}${prevOwner ? ` from ${prevOwner}` : ""}${softness < 1 ? " (lightly held)" : ""}.${withCrew}`,
       family,
     },
   };
@@ -246,11 +293,25 @@ export function believedBossSite(
   boss: CrewMember,
   surveilled: boolean,
   rng: Rng,
+  observer?: FamilyName,
 ): string | null {
   const real = resolveCrewTerritoryId(state, boss.id);
   if (!real) return null;
-  if (!isBossUnderground(state, boss)) return real;
   if (surveilled) return real;
+  // A dinner only the families who heard about it can place. Everyone else
+  // still thinks he's at the HQ and finds an empty chair.
+  if (
+    boss.awayAt?.reason === "dinner" &&
+    observer &&
+    !state.familyDinner?.knownBy.includes(observer)
+  ) {
+    return familyHq(state, boss.family) ?? real;
+  }
+  // Laid low: the street barely talks, even if it's the HQ block.
+  if (isLaidLow(boss)) {
+    return rng.chance(SAFEHOUSE.bossLeak) ? real : (familyHq(state, boss.family) ?? real);
+  }
+  if (!isBossUnderground(state, boss)) return real;
   if (rng.chance(BOSS_UNDERGROUND_LEAK)) return real;
   return familyHq(state, boss.family) ?? real;
 }
@@ -301,7 +362,7 @@ function tryHit(
   const targetBoss = getBoss(state.crew, targetFamily!);
   const surveilled = def.personality === "covert" && rng.chance(0.6);
   const bossTerritoryId = targetBoss
-    ? believedBossSite(state, targetBoss, surveilled, rng)
+    ? believedBossSite(state, targetBoss, surveilled, rng, family)
     : null;
   // The street's address, not the man's: a boss underground was not found.
   const badAddress =
@@ -374,6 +435,12 @@ function tryHit(
   if (approach === "car_bomb" && (!bombMakerId || !planterId)) return { state };
   if (approach === "sitdown_betrayal" && !negotiatorId) return { state };
 
+  const seated = bringCrewOnHit(
+    state.crew,
+    { shooterIds, wheelmanId, lookoutId, bombMakerId, planterId, negotiatorId },
+    approach,
+  );
+
   const op = planHit(
     state,
     {
@@ -382,12 +449,12 @@ function tryHit(
       targetFamily: targetFamily!,
       targetCrewId: targetBoss?.id,
       approach,
-      shooterIds,
-      wheelmanId,
-      lookoutId,
-      bombMakerId,
-      planterId,
-      negotiatorId,
+      shooterIds: seated.shooterIds,
+      wheelmanId: seated.wheelmanId,
+      lookoutId: seated.lookoutId,
+      bombMakerId: seated.bombMakerId,
+      planterId: seated.planterId,
+      negotiatorId: seated.negotiatorId,
       originTerritoryId:
         ownedTerritories(state, family)[0]?.id ?? hitTerritory.id,
       surveilled,
@@ -396,8 +463,9 @@ function tryHit(
     rng,
   );
 
+  const committed = commitHitCrew(state, op);
   return {
-    state: { ...state, operations: [...state.operations, op] },
+    state: { ...committed, operations: [...committed.operations, op] },
     log: {
       id: `ai_hit_${family}_${state.turn}`,
       turn: state.turn,
@@ -514,7 +582,7 @@ function tryHijack(
 }
 
 /** Skilled non-boss the family wants found in the street. */
-function pickMessageTarget(state: GameState, victim: FamilyName): CrewMember | undefined {
+export function pickMessageTarget(state: GameState, victim: FamilyName): CrewMember | undefined {
   const men = getActiveCrew(state.crew, victim).filter((c) => c.role !== "boss");
   const weight = (c: CrewMember): number => {
     switch (c.role) {
@@ -587,6 +655,16 @@ function tryMessageHit(
     .map((c) => c.id);
   if (shooters.length < 1) return { state };
 
+  const seated = bringCrewOnHit(
+    state.crew,
+    {
+      shooterIds: shooters,
+      wheelmanId: approach === "drive_by" ? wheelman?.id : undefined,
+      lookoutId: pool.find((c) => !shooters.includes(c.id) && c.id !== wheelman?.id)?.id,
+    },
+    approach,
+  );
+
   const op = planHit(
     state,
     {
@@ -595,9 +673,9 @@ function tryMessageHit(
       targetFamily: player,
       targetCrewId: target.id,
       approach,
-      shooterIds: shooters,
-      wheelmanId: approach === "drive_by" ? wheelman?.id : undefined,
-      lookoutId: pool.find((c) => !shooters.includes(c.id) && c.id !== wheelman?.id)?.id,
+      shooterIds: seated.shooterIds,
+      wheelmanId: seated.wheelmanId,
+      lookoutId: seated.lookoutId,
       originTerritoryId: ownedTerritories(state, family)[0]?.id ?? where,
       pendingTurns: 1,
       intent: "message",
@@ -606,7 +684,8 @@ function tryMessageHit(
     rng,
   );
   // No public log: the rumor mill is the only warning the player gets.
-  return { state: { ...state, operations: [...state.operations, op] } };
+  const committed = commitHitCrew(state, op);
+  return { state: { ...committed, operations: [...committed.operations, op] } };
 }
 
 function tryShiftGarrison(
@@ -637,7 +716,7 @@ function tryShiftGarrison(
   const to = pickWeighted(rng, dests, (t) => maxRacketsFor(t));
   if (!to) return { state };
 
-  let crew = assignCrew(state.crew, soldier.id, {
+  const crew = assignCrew(state.crew, soldier.id, {
     type: "garrison",
     territoryId: to.id,
   });
@@ -1007,6 +1086,7 @@ function tryBossTravel(
  * A headless rival family doesn't stay headless. After the funeral someone
  * grabs the chair: the underboss if there is one, else the senior capo, else
  * the consigliere. Until then the family is frozen and its turf is soft.
+ * Soldiers don't inherit — a family down to soldiers is finished (defection.ts).
  */
 function tryInterimBoss(
   state: GameState,
@@ -1021,17 +1101,9 @@ function tryInterimBoss(
   if (!rng.chance(0.5)) return { state };
 
   const rank = (c: CrewMember) =>
-    c.role === "underboss"
-      ? 4
-      : c.role === "capo"
-        ? 3
-        : c.role === "consigliere"
-          ? 2
-          : c.role === "soldier"
-            ? 1
-            : 0;
+    c.role === "underboss" ? 3 : c.role === "capo" ? 2 : c.role === "consigliere" ? 1 : 0;
   const heir = [...living]
-    .filter((c) => rank(c) > 0)
+    .filter((c) => canInheritChair(c))
     .sort(
       (a, b) =>
         Number(b.status === "active") - Number(a.status === "active") ||
@@ -1074,7 +1146,14 @@ export function runAllAiTurns(state: GameState, rng: Rng): AiTurnResult {
   const logs: TurnLogEntry[] = [];
 
   for (const family of rivals) {
+    if (isDefunct(current, family)) continue;
     const boss = getBoss(current.crew, family);
+    if (!boss && isFamilyFinished(current, family)) {
+      const gone = scatterFamily(current, family, rng);
+      current = gone.state;
+      logs.push(...gone.logs);
+      continue;
+    }
     if (boss && bossIsJailed(current, family)) {
       if (!actingUnderboss(current, family)) continue;
       const result = runAiTurn(current, family, rng);

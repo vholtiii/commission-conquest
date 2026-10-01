@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { toast } from "sonner";
 import { useGameStore } from "@/engine/store";
 import type { CrewMember, CrewRole, Racket, Territory } from "@/types/game";
@@ -5,6 +6,7 @@ import { FAMILY_HEX, RACKET_LABELS } from "@/types/game";
 import { pathsFromRole, canPromote, xpForLevel } from "@/engine/crew";
 import { successionReadinessReasons } from "@/engine/succession";
 import {
+  canJoinCrew,
   canLeadCrew,
   capoFor,
   crewCurriculum,
@@ -13,13 +15,17 @@ import {
   isFreelanceSoldier,
   isSettling,
 } from "@/engine/crews";
+import { canLieLow, safehouseCapacity } from "@/engine/safehouse";
+import { needsManager } from "@/engine/economy";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import PortraitAvatar from "@/ui/PortraitAvatar";
 import Tip from "@/ui/Tip";
+import { pct, riskTip, useArrestRisk } from "@/ui/WantedTag";
 import PanelShell from "./PanelShell";
 import { formatMoney, titleCase } from "../formatters";
+import { callInCosts, callInRead, canCallIn } from "@/engine/callIn";
 
 const SKILL_LABELS: Record<string, string> = {
   muscle: "Muscle",
@@ -37,12 +43,21 @@ export default function CrewSheet() {
   const payFuneral = useGameStore((s) => s.payFuneral);
   const promote = useGameStore((s) => s.promote);
   const assignMember = useGameStore((s) => s.assignMember);
+  const lieLow = useGameStore((s) => s.lieLow);
   const assignManager = useGameStore((s) => s.assignManager);
+  const joinCrew = useGameStore((s) => s.joinCrew);
+  const leaveCrew = useGameStore((s) => s.leaveCrew);
   const setPanel = useGameStore((s) => s.setPanel);
   const focusReason = useGameStore((s) => s.focusReason);
+  const selectCrew = useGameStore((s) => s.selectCrew);
   const territories = useGameStore((s) => s.territories);
   const selectedTerritoryId = useGameStore((s) => s.selectedTerritoryId);
   const playerFamily = useGameStore((s) => s.playerFamily);
+  const callInOwn = useGameStore((s) => s.callInOwn);
+  const lastCallInTurn = useGameStore((s) => s.lastCallInTurn);
+  const familyDinner = useGameStore((s) => s.familyDinner);
+  const ratLeakCrewId = useGameStore((s) => s.ratLeakCrewId);
+  const [callInArmedFor, setCallInArmedFor] = useState<string | null>(null);
 
   const member = crew.find((c) => c.id === selectedCrewId);
   if (!member) return null;
@@ -87,7 +102,9 @@ export default function CrewSheet() {
   return (
     <PanelShell
       title={member.name}
-      subtitle={`${titleCase(member.role)} — ${member.family}`}
+      subtitle={`${titleCase(member.role)} — ${member.family}${
+        member.origin && member.origin !== member.family ? ` · came over from the ${member.origin}` : ""
+      }`}
       onClose={() => setPanel("none")}
     >
       <div className="space-y-4">
@@ -137,13 +154,36 @@ export default function CrewSheet() {
           </div>
         )}
 
-        {crewLine && (
+        {crewLine && !(isOwn && canLeadCrew(member)) && (
           <div className="rounded-md border border-panel-border bg-panel/60 px-2 py-1.5 text-[11px] text-muted-foreground">
             {crewLine}
             {ledCrew.length > 0 && (
               <span className="text-foreground"> · {ledCrew.map((m) => m.name.split(" ").pop()).join(", ")}</span>
             )}
           </div>
+        )}
+
+        {isOwn && canLeadCrew(member) && (
+          <CrewManageBlock
+            leader={member}
+            crew={crew}
+            members={ledCrew}
+            onJoin={(id) => {
+              joinCrew(id, member.id);
+              const man = crew.find((c) => c.id === id);
+              toast.success(
+                man
+                  ? `${man.name} joins ${member.role === "boss" ? "your" : `${member.name}'s`} crew`
+                  : "Man added to the crew",
+              );
+            }}
+            onLeave={(id) => {
+              const man = crew.find((c) => c.id === id);
+              leaveCrew(id);
+              toast.message(man ? `${man.name} cut loose` : "Cut loose");
+            }}
+            onSelect={(id) => selectCrew(id)}
+          />
         )}
 
         {isOwn && member.status === "active" && (
@@ -157,6 +197,7 @@ export default function CrewSheet() {
               assignMember(member.id, { type: "garrison", territoryId });
               toast.success(`${member.name} garrisons ${name}`);
             }}
+            onLieLow={(territoryId) => lieLow(member.id, territoryId)}
             onManage={(territoryId, racketId, label) => {
               assignManager(territoryId, racketId, member.id);
               toast.success(`${member.name} takes over ${label}`);
@@ -170,7 +211,7 @@ export default function CrewSheet() {
 
         <div className="grid grid-cols-3 gap-2 text-center text-xs">
           <StatBox label="Loyalty" value={member.loyalty} />
-          <StatBox label="Wanted" value={member.wanted} accent="text-heat" />
+          <WantedBox member={member} />
           <StatBox label="XP" value={member.xp} />
         </div>
 
@@ -271,6 +312,16 @@ export default function CrewSheet() {
           </div>
         )}
 
+        {isOwn && member.status === "active" && member.role !== "boss" && !member.isPlayerBoss && (
+          <CallInBlock
+            member={member}
+            armed={callInArmedFor === member.id}
+            onArm={() => setCallInArmedFor(member.id)}
+            onConfirm={() => callInOwn(member.id)}
+            tick={`${lastCallInTurn ?? ""}:${familyDinner?.startTurn ?? ""}:${ratLeakCrewId ?? ""}`}
+          />
+        )}
+
         {isDead && isOwn && member.putAway && (
           <p className="rounded-md border border-panel-border bg-panel/50 p-3 text-xs text-muted-foreground">
             {member.name} is doing his time upstate. The family has moved on.
@@ -295,11 +346,156 @@ export default function CrewSheet() {
   );
 }
 
+function CallInBlock({
+  member,
+  armed,
+  onArm,
+  onConfirm,
+  tick,
+}: {
+  member: CrewMember;
+  armed: boolean;
+  onArm: () => void;
+  onConfirm: () => void;
+  tick: string;
+}) {
+  void tick;
+  const snap = useGameStore.getState();
+  const gate = canCallIn(snap, member.id);
+  const read = callInRead(snap, member);
+  const costs = callInCosts(read, member.traits.includes("made_man"));
+  const walk = Math.round(costs.walkChance * 100);
+  return (
+    <div className="rounded-md border border-heat/40 bg-heat/10 p-3">
+      <p className="text-xs text-heat">{read.label}.</p>
+      <p className="mt-1 text-[11px] text-muted-foreground">
+        Family loyalty −{costs.loyaltyDrop}. Respect −{costs.respectDrop}. {walk}% chance someone asks to walk.
+      </p>
+      {member.traits.includes("made_man") && (
+        <p className="mt-1 text-[11px] text-amber-300">He&apos;s a made man. His friends will remember.</p>
+      )}
+      {!gate.ok && <p className="mt-1 text-[11px] text-muted-foreground">{gate.reason}</p>}
+      {!armed ? (
+        <Button
+          className="mt-2 w-full bg-heat font-ui font-bold uppercase text-white hover:bg-heat/80"
+          disabled={!gate.ok}
+          onClick={onArm}
+        >
+          Call him in…
+        </Button>
+      ) : (
+        <Button
+          className="mt-2 w-full bg-heat font-ui font-bold uppercase text-white hover:bg-heat/80"
+          onClick={onConfirm}
+        >
+          He doesn&apos;t come back
+        </Button>
+      )}
+    </div>
+  );
+}
+
+function CrewManageBlock({
+  leader,
+  crew,
+  members,
+  onJoin,
+  onLeave,
+  onSelect,
+}: {
+  leader: CrewMember;
+  crew: CrewMember[];
+  members: CrewMember[];
+  onJoin: (id: string) => void;
+  onLeave: (id: string) => void;
+  onSelect: (id: string) => void;
+}) {
+  const slots = crewSlots(leader);
+  const candidates = crew.filter((c) => canJoinCrew(crew, c.id, leader.id).ok);
+  const school =
+    leader.role === "boss"
+      ? "Boss's crew — shooters"
+      : leader.role === "consigliere"
+        ? "Consigliere's crew — thinkers"
+        : "Capo's crew";
+  const teaches = crewCurriculum(leader);
+
+  return (
+    <div className="space-y-1.5 rounded-md border border-panel-border bg-panel/60 px-2 py-1.5">
+      <div className="flex items-center justify-between gap-2 text-[11px]">
+        <span className="text-foreground">
+          {school} · {members.length}/{slots}
+        </span>
+        <span className="text-[10px] text-muted-foreground">
+          Teaches {teaches.map((k) => SKILL_LABELS[k]).join(" & ")}
+        </span>
+      </div>
+      {members.length === 0 && (
+        <p className="text-[10px] text-muted-foreground">
+          Nobody in this crew yet. Add a loose soldier or associate below.
+        </p>
+      )}
+      <div className="flex flex-wrap items-center gap-1">
+        {members.map((m) => (
+          <span
+            key={m.id}
+            className="flex items-center gap-1 rounded border border-panel-border bg-panel/60 px-1.5 py-0.5 text-[10px]"
+          >
+            <button type="button" onClick={() => onSelect(m.id)} className="hover:underline">
+              {m.name.split(" ").pop()}
+            </button>
+            {m.status !== "active" && (
+              <span className="text-muted-foreground">({m.status})</span>
+            )}
+            <button
+              type="button"
+              title="Cut loose"
+              onClick={() => onLeave(m.id)}
+              className="text-muted-foreground hover:text-heat"
+            >
+              ×
+            </button>
+          </span>
+        ))}
+      </div>
+      {leader.status === "active" && members.length < slots && (
+        candidates.length > 0 ? (
+          <select
+            value=""
+            onChange={(e) => {
+              if (e.target.value) onJoin(e.target.value);
+            }}
+            className="h-7 w-full rounded border border-panel-border bg-panel/60 px-1 text-[11px]"
+          >
+            <option value="">Add a man to the crew…</option>
+            {candidates.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+                {c.role === "associate" ? " (associate → soldier)" : ""}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <p className="text-[10px] text-muted-foreground">
+            No loose soldiers or associates free to join. Cut a man loose from another crew first, or recruit.
+          </p>
+        )
+      )}
+      {leader.status === "active" && members.length >= slots && (
+        <p className="text-[10px] text-muted-foreground">
+          Crew is full{leader.level < 5 ? " — level up for another slot" : ""}.
+        </p>
+      )}
+    </div>
+  );
+}
+
 function postLine(member: CrewMember, territories: Territory[], turn: number): string {
   const a = member.assignment;
   const place = (id?: string) => territories.find((t) => t.id === id)?.name ?? "unknown";
   if (member.awayAt && member.awayAt.untilTurn > turn) return "Away this week";
   if (a.type === "garrison" && a.territoryId) return `Garrisoned in ${place(a.territoryId)}`;
+  if (a.type === "safehouse" && a.territoryId) return `Laid low in the ${place(a.territoryId)} safehouse`;
   if (a.type === "racket") {
     const t = territories.find((x) => x.id === a.territoryId);
     const r = t?.rackets.find((x) => x.id === a.racketId);
@@ -331,6 +527,7 @@ function PostBlock({
   turn,
   isBoss,
   onGarrison,
+  onLieLow,
   onManage,
   onIdle,
 }: {
@@ -340,11 +537,15 @@ function PostBlock({
   turn: number;
   isBoss: boolean;
   onGarrison: (territoryId: string, name: string) => void;
+  onLieLow: (territoryId: string) => void;
   onManage: (territoryId: string, racketId: string, label: string) => void;
   onIdle: () => void;
 }) {
   const owned = territories.filter((t) => t.owner === member.family);
   const held = busyReason(member, turn);
+  const hideouts = owned.filter((t) => safehouseCapacity(t, turn) > 0);
+  const laidLowValue =
+    member.assignment.type === "safehouse" ? member.assignment.territoryId ?? "" : "";
   const garrisonValue =
     member.assignment.type === "garrison" ? member.assignment.territoryId ?? "" : "";
   const racketValue =
@@ -352,7 +553,7 @@ function PostBlock({
       ? `${member.assignment.territoryId}:${member.assignment.racketId}`
       : "";
   const rackets: { territory: Territory; racket: Racket }[] = owned.flatMap((t) =>
-    t.rackets.map((r) => ({ territory: t, racket: r })),
+    t.rackets.filter((r) => needsManager(r.type)).map((r) => ({ territory: t, racket: r })),
   );
 
   return (
@@ -384,8 +585,31 @@ function PostBlock({
               ))}
             </select>
           </Tip>
+          {hideouts.length > 0 && (
+            <Tip content="Inside a safehouse he sheds wanted every week and a rival crew has to case the block before they can find him — a higher-level house is harder to hit him in. If the family is hit on that block or next door, he comes out shooting. He's off the street while he's down: no guarding, no rackets, and a boss inside gives up his presence bonuses.">
+              <select
+                value={laidLowValue}
+                onChange={(e) => {
+                  if (e.target.value) onLieLow(e.target.value);
+                }}
+                className="h-7 w-full rounded border border-panel-border bg-panel/60 px-1 text-[11px]"
+              >
+                <option value="">Lie low…</option>
+                {hideouts.map((t) => {
+                  const check = canLieLow({ crew, territories, turn }, member, t.id);
+                  const current = laidLowValue === t.id;
+                  return (
+                    <option key={t.id} value={t.id} disabled={!check.ok && !current}>
+                      Lie low — {t.name}
+                      {current ? " (inside)" : !check.ok && check.reason ? ` (${check.reason.replace(/\.$/, "").toLowerCase()})` : ""}
+                    </option>
+                  );
+                })}
+              </select>
+            </Tip>
+          )}
           {!isBoss && (
-            <Tip content="A manager lifts the unmanaged income penalty. A warehouse with a manager stops losing crates out the back.">
+            <Tip content="A manager lifts the unmanaged income penalty. A warehouse with a manager stops losing crates out the back. A legit front (deli, laundry, etc.) also sheds a little wanted each week — slower than lying low in a safehouse.">
               <select
                 value={racketValue}
                 onChange={(e) => {
@@ -437,5 +661,29 @@ function StatBox({ label, value, accent }: { label: string; value: number; accen
       <div className="text-[10px] text-muted-foreground">{label}</div>
       <div className={`font-semibold ${accent ?? ""}`}>{value}</div>
     </div>
+  );
+}
+
+/** Wanted with the weekly arrest odds in parentheses; green when something is pulling them down. */
+function WantedBox({ member }: { member: CrewMember }) {
+  const risk = useArrestRisk(member);
+  const covered = risk.reducers.length > 0;
+  return (
+    <Tip content={riskTip(risk)}>
+      <div className="rounded bg-panel/50 px-2 py-1.5">
+        <div className="text-[10px] text-muted-foreground">Wanted</div>
+        <div className="font-semibold">
+          <span className="text-heat">{member.wanted}</span>{" "}
+          <span className={covered ? "text-emerald-400" : risk.listed ? "text-heat" : "text-muted-foreground"}>
+            ({pct(risk)})
+          </span>
+        </div>
+        {covered && (
+          <div className="mt-0.5 text-[9px] leading-tight text-emerald-400">
+            {risk.reducers.map((r) => `${r.label} ${r.effect}`).join(" · ")}
+          </div>
+        )}
+      </div>
+    </Tip>
   );
 }

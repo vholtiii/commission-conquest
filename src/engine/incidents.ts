@@ -236,6 +236,7 @@ export function scenePriors(
         drive_by: "Drive-by, loud and sloppy. Somebody with a temper.",
         car_bomb: "A car bomb takes money and patience.",
         ambush: "Planned ambush, professional. An outfit that's used to taking ground.",
+        summons: "One of their own, called in and never seen again.",
       };
       evidence.push(makeEvidence("scene", turn, how[input.approach], sig, undefined, rng));
       suspects = applyShifts(suspects, sig);

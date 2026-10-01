@@ -22,6 +22,7 @@ import {
 } from "@/engine/supplyRoutes";
 import { activeDeal, termsText } from "@/engine/passage";
 import { districtStorage, makeManagerLookup } from "@/engine/liquor";
+import { seizureCover } from "@/engine/safehouse";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import Tip from "@/ui/Tip";
@@ -101,10 +102,16 @@ function strategyChipTip(
 function summarizeOption(
   option: RouteOption,
   all: RouteOption[],
-  state: Pick<GameState, "passageDeals" | "turn" | "playerFamily">,
+  state: Pick<GameState, "passageDeals" | "turn" | "playerFamily" | "territories">,
 ): { pros: string[]; cons: string[] } {
   const pros: string[] = [];
   const cons: string[] = [];
+  const garage = state.playerFamily ? seizureCover(state, state.playerFamily, option.path) : null;
+  if (garage) {
+    pros.push(
+      `Safehouse ${garage.hops === 0 ? "on the road" : "a block off the road"} (Lv ${garage.level}) — ducks ${Math.round(garage.evasion * 100)}% of police checkpoints`,
+    );
+  }
   const hops = option.hops.length;
   const lengths = all.map((o) => o.hops.length);
   const risks = all.map((o) => o.risk);

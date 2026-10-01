@@ -3,7 +3,8 @@ import { useGameStore } from "@/engine/store";
 import { FAMILY_HEX } from "@/types/game";
 import { PassageTable } from "@/ui/panels/SitdownRequestModal";
 import { TermsTable } from "@/ui/panels/TermsTable";
-import { isAgendaTable } from "@/engine/sitdowns";
+import AgendaPicker from "@/ui/panels/AgendaPicker";
+import { isAgendaTable, type AgendaPick } from "@/engine/sitdowns";
 import PortraitAvatar from "@/ui/PortraitAvatar";
 import { Button } from "@/components/ui/button";
 
@@ -17,14 +18,20 @@ export default function SitdownTable() {
   const playerFamily = useGameStore((s) => s.playerFamily);
   const openSitdownTable = useGameStore((s) => s.openSitdownTable);
   const beginSitdownExit = useGameStore((s) => s.beginSitdownExit);
+  const raiseAtTable = useGameStore((s) => s.raiseAtTable);
+  const justTalk = useGameStore((s) => s.justTalk);
   const updateSettings = useGameStore((s) => s.updateSettings);
   const [shown, setShown] = useState(1);
+  const [pick, setPick] = useState<AgendaPick | undefined>(undefined);
+  const [ready, setReady] = useState(false);
 
   // Open tables (passage, agenda) show the negotiation; anything settled plays its lines.
   const script = cinematic?.purpose === "passage" ? [] : (cinematic?.result?.lines ?? []);
 
   useEffect(() => {
     setShown(1);
+    setPick(undefined);
+    setReady(false);
   }, [cinematic?.sitdownId]);
 
   useEffect(() => {
@@ -47,9 +54,15 @@ export default function SitdownTable() {
     : null;
   const rounds = sitdown?.passage?.rounds ?? sitdown?.table?.rounds ?? 0;
   const rivalFrame = rounds >= 2 ? "#6a7c8c" : rounds === 1 ? "#c4b48a" : FAMILY_HEX[cinematic.family];
-  const passage = cinematic.purpose === "passage" && sitdown?.status === "at_table" && sitdown.passage;
-  const agenda = isAgendaTable(cinematic.purpose) && sitdown?.status === "at_table" && sitdown.table;
-  const readyToLeave = passage || agenda ? !!cinematic.result : shown >= script.length;
+  // The subject can change mid-meeting (a general table where one is raised),
+  // so the live sit-down wins over the cinematic's snapshot.
+  const purpose = sitdown?.purpose ?? cinematic.purpose;
+  const passage = purpose === "passage" && sitdown?.status === "at_table" && sitdown.passage;
+  const walkedTruce = purpose === "truce" && sitdown?.status === "held" && !!sitdown.table?.walkedOut;
+  const agenda = (isAgendaTable(purpose) && sitdown?.status === "at_table" && sitdown.table) || walkedTruce;
+  const openTable =
+    sitdown?.status === "at_table" && (!sitdown.purpose || sitdown.purpose === "general");
+  const readyToLeave = passage || agenda || openTable ? !!cinematic.result : shown >= script.length;
 
   return (
     <div className="pointer-events-none absolute inset-0 z-50">
@@ -112,6 +125,35 @@ export default function SitdownTable() {
             ) : agenda && sitdown ? (
               <div className="mt-3">
                 <TermsTable sitdown={sitdown} playerFamily={playerFamily} embedded />
+              </div>
+            ) : openTable && sitdown ? (
+              <div className="mt-3">
+                <AgendaPicker
+                  target={cinematic.family}
+                  atTable
+                  onChange={(next, ok) => {
+                    setPick(next);
+                    setReady(ok);
+                  }}
+                />
+                <div className="mt-2 flex gap-2">
+                  <Button
+                    className="flex-1"
+                    disabled={!ready || !pick}
+                    onClick={() =>
+                      pick &&
+                      raiseAtTable(sitdown.id, pick.agenda, pick.seed, pick.opening, {
+                        routeId: pick.routeId,
+                        opening: pick.passageOpening,
+                      })
+                    }
+                  >
+                    Put it on the table
+                  </Button>
+                  <Button variant="secondary" onClick={() => justTalk(sitdown.id)}>
+                    Just talk
+                  </Button>
+                </div>
               </div>
             ) : (
               <div className="mt-4 min-h-16 space-y-2">

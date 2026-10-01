@@ -77,6 +77,10 @@ export interface AgendaPick {
   seed?: Partial<AgendaTerms>;
   /** The number he walks in with; absent = let them open. */
   opening?: AgendaTerms;
+  /** Which route the passage talk is priced against. */
+  routeId?: string;
+  /** His opening passage number; absent = let them name the price. */
+  passageOpening?: PassageTerms;
 }
 
 /* ------------------------------------------------------------------ */
@@ -298,7 +302,7 @@ export function proposeSitdown(
     return fail(`${other}'s boss is in the Tombs.`);
   }
   const agenda: SitdownAgenda = pick?.agenda ?? "general";
-  if (isAgendaTable(agenda)) {
+  if (agenda === "passage" || isAgendaTable(agenda)) {
     const can = agendaAvailable(state, other, agenda);
     if (!can.ok) return fail(can.reason ?? "Nothing to talk about.");
   }
@@ -340,6 +344,15 @@ export function proposeSitdown(
           playerOpening: pick?.opening,
         }
       : undefined,
+    passage:
+      agenda === "passage"
+        ? {
+            routeId: pick?.routeId,
+            ask: openingAsk(state, other, { crates: passageCrates(state, pick?.routeId) }),
+            rounds: 0,
+            playerOpening: pick?.passageOpening,
+          }
+        : undefined,
   };
   if (!accepted) {
     sitdown.counterVenue = sitdown.venue;
@@ -352,7 +365,7 @@ export function proposeSitdown(
   next = { ...next, sitdowns: [...(next.sitdowns ?? []), sitdown] };
 
   const where = districtName(next, sitdown.venueTerritoryId);
-  const about = isAgendaTable(agenda) ? ` about ${agendaLabelLower(agenda)}` : "";
+  const about = agenda === "passage" || isAgendaTable(agenda) ? ` about ${agendaLabelLower(agenda)}` : "";
   const text = accepted
     ? `Sit-down with ${other}${about} set for the week after next at ${where} (${venueLabel(venue)}).`
     : `${other} won't meet on ${venueLabel(venue)}. They'll come to ${where} (${venueLabel(sitdown.counterVenue!)}) instead.`;
@@ -736,11 +749,22 @@ export function holdSitdowns(state: GameState, rng: Rng): HoldResult {
     // Passage talks: the bosses sit; the rival names a price; the player
     // answers from the modal. Nothing else moves until he does.
     if (s.purpose === "passage") {
-      const route = (next.supplyRoutes ?? []).find((r) => r.id === s.passage?.routeId);
       const ask = openingAsk(next, rival, {
-        crates: route?.cratesPerTurn ?? 10,
+        crates: passageCrates(next, s.passage?.routeId),
         demanded: s.passage?.demanded,
       });
+      if (s.passage?.playerOpening) {
+        const answered = answerPassageOpening(next, s, ask, rng);
+        next = answered.state;
+        logs.push({
+          id: `log_sitdown_open_${s.id}`,
+          turn: state.turn,
+          category: "diplomacy",
+          text: answered.text,
+          family: player,
+        });
+        return answered.sitdown;
+      }
       const where = districtName(next, s.venueTerritoryId);
       logs.push({
         id: `log_sitdown_table_${s.id}`,
@@ -782,34 +806,11 @@ export function holdSitdowns(state: GameState, rng: Rng): HoldResult {
       }
       const ask = openingTerms(next, rival, agenda, s.table.ask);
       const where = districtName(next, s.venueTerritoryId);
-      const opening = s.table.playerOpening;
-      if (opening) {
-        const chance = counterChance(next, rival, agenda, ask, opening, { consigliere: s.bringConsigliere });
-        if (rng.chance(chance) && canAfford(next, opening).ok) {
-          const struck = applyAgendaTerms(next, rival, agenda, opening, rng);
-          next = { ...struck.state, relations: setRelationDelta(struck.state.relations, player, rival, 8) };
-          if (s.proposer === player) next = withCooldown(next, rival, SITDOWN_COOLDOWN);
-          const text = `${rival} takes your terms at ${where}: ${agendaTermsText(next, agenda, opening)}.`;
-          logs.push({ id: `log_sitdown_table_${s.id}`, turn: state.turn, category: "diplomacy", text, family: player });
-          return {
-            ...s,
-            status: "held" as const,
-            success: true,
-            table: { ...s.table, ask, struck: opening, lines: [text, ...struck.lines] },
-          };
-        }
-        const insult = isInsult(next, rival, agenda, ask, opening);
-        if (insult) next = { ...next, relations: setRelationDelta(next.relations, player, rival, INSULT_RELATION) };
-        logs.push({
-          id: `log_sitdown_table_${s.id}`,
-          turn: state.turn,
-          category: "diplomacy",
-          text: insult
-            ? `${rival} hears your number at ${where} and takes it as an insult. Theirs: ${agendaTermsText(next, agenda, ask)}.`
-            : `${rival} won't take your opener at ${where}. Theirs: ${agendaTermsText(next, agenda, ask)}.`,
-          family: player,
-        });
-        return { ...s, status: "at_table" as const, table: { ...s.table, ask, rounds: 0 } };
+      if (s.table.playerOpening) {
+        const answered = answerPlayerOpening(next, s, ask, rng);
+        next = answered.state;
+        logs.push({ id: `log_sitdown_table_${s.id}`, turn: state.turn, category: "diplomacy", text: answered.text, family: player });
+        return answered.sitdown;
       }
       logs.push({
         id: `log_sitdown_table_${s.id}`,
@@ -819,6 +820,19 @@ export function holdSitdowns(state: GameState, rng: Rng): HoldResult {
         family: player,
       });
       return { ...s, status: "at_table" as const, table: { ...s.table, ask, rounds: 0 } };
+    }
+
+    // A general meeting sits open. The player raises one subject, or just talks.
+    if (!s.purpose || s.purpose === "general") {
+      const where = districtName(next, s.venueTerritoryId);
+      logs.push({
+        id: `log_sitdown_table_${s.id}`,
+        turn: state.turn,
+        category: "diplomacy",
+        text: `The bosses sit at ${where}. Nothing on the table yet.`,
+        family: player,
+      });
+      return { ...s, status: "at_table" as const };
     }
 
     const success = rng.chance(sitdownOdds(next, rival, s.playerEntourageIds?.length ?? 0));
@@ -1156,6 +1170,263 @@ function subjectStillStands(
   }
 }
 
+/**
+ * The player walked in with a number. They take it on the spot, or they
+ * don't and their own ask goes on the table. Returns the next state and the
+ * sit-down to record; the caller writes the sit-down back into state.
+ */
+function answerPlayerOpening(
+  state: GameState,
+  s: Sitdown,
+  ask: AgendaTerms,
+  rng: Rng,
+): { state: GameState; sitdown: Sitdown; text: string; settled: boolean } {
+  const player = state.playerFamily!;
+  const rival = s.proposer === player ? s.other : s.proposer;
+  const agenda = s.purpose!;
+  const opening = s.table!.playerOpening!;
+  const where = districtName(state, s.venueTerritoryId);
+  const chance = counterChance(state, rival, agenda, ask, opening, { consigliere: s.bringConsigliere });
+  if (rng.chance(chance) && canAfford(state, opening).ok) {
+    const struck = applyAgendaTerms(state, rival, agenda, opening, rng);
+    let next: GameState = {
+      ...struck.state,
+      relations: setRelationDelta(struck.state.relations, player, rival, 8),
+    };
+    if (s.proposer === player) next = withCooldown(next, rival, SITDOWN_COOLDOWN);
+    const text = `${rival} takes your terms at ${where}: ${agendaTermsText(next, agenda, opening)}.`;
+    return {
+      state: next,
+      settled: true,
+      text,
+      sitdown: {
+        ...s,
+        status: "held",
+        success: true,
+        table: { ...s.table!, ask, struck: opening, lines: [text, ...struck.lines] },
+      },
+    };
+  }
+  const insult = isInsult(state, rival, agenda, ask, opening);
+  const next = insult
+    ? { ...state, relations: setRelationDelta(state.relations, player, rival, INSULT_RELATION) }
+    : state;
+  const text = insult
+    ? `${rival} hears your number at ${where} and takes it as an insult. Theirs: ${agendaTermsText(next, agenda, ask)}.`
+    : `${rival} won't take your opener at ${where}. Theirs: ${agendaTermsText(next, agenda, ask)}.`;
+  return {
+    state: next,
+    settled: false,
+    text,
+    sitdown: { ...s, status: "at_table", table: { ...s.table!, ask, rounds: 0 } },
+  };
+}
+
+/** A subject that needs something named before it can go on the table. */
+function subjectNamed(agenda: SitdownAgenda, seed: Partial<AgendaTerms> | undefined): boolean {
+  switch (agenda) {
+    case "territory":
+    case "racket":
+      return !!seed?.territoryId;
+    case "release":
+      return !!seed?.crewId;
+    case "alliance":
+      return !!seed?.targetFamily;
+    default:
+      return true;
+  }
+}
+
+function passageCrates(state: GameState, routeId: string | undefined): number {
+  const route = (state.supplyRoutes ?? []).find((r) => r.id === routeId);
+  return route?.cratesPerTurn ?? 10;
+}
+
+/** The number he walked in with, answered the moment the bosses sit. */
+function answerPassageOpening(
+  state: GameState,
+  s: Sitdown,
+  ask: PassageTerms,
+  rng: Rng,
+): { state: GameState; sitdown: Sitdown; text: string; settled: boolean } {
+  const player = state.playerFamily!;
+  const family = s.proposer === player ? s.other : s.proposer;
+  const opening = s.passage!.playerOpening!;
+  const crates = passageCrates(state, s.passage?.routeId);
+  const chance = counterAcceptance(state, family, ask, opening, crates);
+  const canPay = opening.gift <= state.dirtyMoney + state.money;
+  if (canPay && rng.chance(chance)) {
+    let next = strikeDeal(state, family, opening, rng);
+    next = { ...next, relations: setRelationDelta(next.relations, player, family, 6) };
+    if (s.proposer === player) next = withCooldown(next, family, SITDOWN_COOLDOWN);
+    const text = `${family} takes your terms: passage at ${termsText(opening)}.`;
+    return {
+      state: next,
+      settled: true,
+      text,
+      sitdown: {
+        ...s,
+        status: "held",
+        success: true,
+        passage: { ...(s.passage ?? { rounds: 0, ask }), ask, playerOpening: opening, struck: opening, lines: [text] },
+      },
+    };
+  }
+  const text = `${family} won't take your opener. Their price: ${termsText(ask)}.`;
+  return {
+    state,
+    settled: false,
+    text,
+    sitdown: {
+      ...s,
+      status: "at_table",
+      passage: { ...(s.passage ?? { rounds: 0, ask }), ask, rounds: 0, playerOpening: opening },
+    },
+  };
+}
+
+/**
+ * The player's one move at an open general table: put a single subject on it.
+ * Refused once a subject is already set. Walking in with a number is answered
+ * on the spot.
+ */
+export function raiseAtTable(
+  state: GameState,
+  id: string,
+  agenda: SitdownAgenda,
+  seed: Partial<AgendaTerms> | undefined,
+  opening: AgendaTerms | undefined,
+  rng: Rng,
+  passage?: { routeId?: string; opening?: PassageTerms },
+): { state: GameState; log: TurnLogEntry; result?: SitdownResult } {
+  const player = state.playerFamily;
+  const sitdown = (state.sitdowns ?? []).find((s) => s.id === id);
+  const log = (text: string): TurnLogEntry => ({
+    id: `log_raise_${id}_${state.turn}_${rng.int(10, 99)}`,
+    turn: state.turn,
+    category: "diplomacy",
+    text,
+    family: player ?? undefined,
+  });
+  if (!sitdown || sitdown.status !== "at_table" || (sitdown.purpose && sitdown.purpose !== "general") || !player) {
+    return { state, log: log("That table isn't open.") };
+  }
+  const rival = sitdown.proposer === player ? sitdown.other : sitdown.proposer;
+  if (agenda === "passage") {
+    const can = agendaAvailable(state, rival, "passage");
+    if (!can.ok) return { state, log: log(can.reason ?? "Nothing to talk about.") };
+    const ask = openingAsk(state, rival, { crates: passageCrates(state, passage?.routeId) });
+    const seated: Sitdown = {
+      ...sitdown,
+      purpose: "passage",
+      passage: { routeId: passage?.routeId, ask, rounds: 0, playerOpening: passage?.opening },
+    };
+    if (passage?.opening) {
+      const answered = answerPassageOpening(state, seated, ask, rng);
+      const next: GameState = {
+        ...answered.state,
+        sitdowns: answered.state.sitdowns.map((s) => (s.id === id ? answered.sitdown : s)),
+      };
+      return {
+        state: next,
+        log: log(answered.text),
+        result: answered.settled
+          ? passageResult(
+              next,
+              answered.sitdown,
+              rival,
+              true,
+              answered.sitdown.passage?.lines ?? [answered.text],
+              answered.sitdown.passage?.struck,
+            )
+          : undefined,
+      };
+    }
+    const where = districtName(state, sitdown.venueTerritoryId);
+    const text = `You put passage on the table at ${where}. ${rival} names a price: ${termsText(ask)}.`;
+    const next: GameState = { ...state, sitdowns: state.sitdowns.map((s) => (s.id === id ? seated : s)) };
+    return { state: next, log: log(text) };
+  }
+  if (!isAgendaTable(agenda)) return { state, log: log("Pick a subject first.") };
+  if (!subjectNamed(agenda, seed)) return { state, log: log("Name what it's about first.") };
+  const can = agendaAvailable(state, rival, agenda);
+  if (!can.ok) return { state, log: log(can.reason ?? "Nothing to talk about.") };
+  const ask = openingTerms(state, rival, agenda, seed);
+  if (!subjectStillStands(state, rival, agenda, ask)) return { state, log: log("That subject doesn't hold.") };
+
+  const seated: Sitdown = {
+    ...sitdown,
+    purpose: agenda,
+    table: { ask, rounds: 0, opener: player, playerOpening: opening },
+  };
+  if (opening) {
+    const answered = answerPlayerOpening(state, seated, ask, rng);
+    const next: GameState = {
+      ...answered.state,
+      sitdowns: answered.state.sitdowns.map((s) => (s.id === id ? answered.sitdown : s)),
+    };
+    return {
+      state: next,
+      log: log(answered.text),
+      result: answered.settled ? agendaResult(next, answered.sitdown, rival) : undefined,
+    };
+  }
+  const where = districtName(state, sitdown.venueTerritoryId);
+  const text = `You put ${agendaLabelLower(agenda)} on the table at ${where}. ${rival} names terms: ${agendaTermsText(state, agenda, ask)}.`;
+  const next: GameState = { ...state, sitdowns: state.sitdowns.map((s) => (s.id === id ? seated : s)) };
+  return { state: next, log: log(text) };
+}
+
+/**
+ * Leave a general table with no subject. The old roll: odds on the meeting,
+ * a bump in relations, and they go their way.
+ */
+export function justTalk(
+  state: GameState,
+  id: string,
+  rng: Rng,
+): { state: GameState; log: TurnLogEntry; result?: SitdownResult } {
+  const player = state.playerFamily;
+  const sitdown = (state.sitdowns ?? []).find((s) => s.id === id);
+  const log = (text: string): TurnLogEntry => ({
+    id: `log_talk_${id}_${state.turn}_${rng.int(10, 99)}`,
+    turn: state.turn,
+    category: "diplomacy",
+    text,
+    family: player ?? undefined,
+  });
+  if (!sitdown || sitdown.status !== "at_table" || (sitdown.purpose && sitdown.purpose !== "general") || !player) {
+    return { state, log: log("That table isn't open.") };
+  }
+  const rival = sitdown.proposer === player ? sitdown.other : sitdown.proposer;
+  const success = rng.chance(sitdownOdds(state, rival, sitdown.playerEntourageIds?.length ?? 0));
+  const playerProposed = sitdown.proposer === player;
+  const relationGain = success ? (playerProposed ? 15 : 10) : 3;
+  let next: GameState = {
+    ...state,
+    relations: setRelationDelta(state.relations, player, rival, relationGain),
+    reputation: { ...state.reputation, respect: Math.min(100, state.reputation.respect + (success ? 2 : 0)) },
+  };
+  if (playerProposed) next = withCooldown(next, rival, SITDOWN_COOLDOWN);
+  const where = districtName(next, sitdown.venueTerritoryId);
+  const text = success
+    ? `Sit-down with ${rival} at ${where} went well. They agree to ease off.`
+    : `Sit-down with ${rival} at ${where} went nowhere.`;
+  const settled: Sitdown = { ...sitdown, status: "held", success };
+  next = { ...next, sitdowns: next.sitdowns.map((s) => (s.id === id ? settled : s)) };
+  const result: SitdownResult = {
+    sitdownId: id,
+    family: rival,
+    venueTerritoryId: sitdown.venueTerritoryId,
+    purpose: "general",
+    success,
+    lines: tableScript(next, settled, success ? "handshake" : "walk"),
+    deltas: { relation: relationGain, respect: success ? 2 : 0 },
+    follow: "open_commission",
+  };
+  return { state: next, log: log(text), result };
+}
+
 export type TableAnswer = "accept" | "counter" | "walk";
 
 /**
@@ -1433,6 +1704,16 @@ export function resultForMeeting(state: GameState, s: Sitdown): SitdownResult {
   // An agenda table that settled on arrival (or was moot) carries its own lines.
   if (isAgendaTable(s.purpose) && s.status === "held" && outcome !== "betrayed" && outcome !== "trap") {
     return agendaResult(state, s, family);
+  }
+  if (s.purpose === "passage" && s.status === "held" && outcome !== "betrayed" && outcome !== "trap") {
+    return passageResult(
+      state,
+      s,
+      family,
+      !!s.success,
+      s.passage?.lines ?? [`Passage with ${family} is settled.`],
+      s.passage?.struck,
+    );
   }
   const success = outcome === "handshake";
   const relation =

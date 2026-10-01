@@ -408,6 +408,7 @@ function favoredApproach(mark: CrewMember, territory: Territory, rng: Rng): HitA
     drive_by: 1,
     car_bomb: 1,
     sitdown_betrayal: 1,
+    summons: 0,
   };
   if (mark.role === "boss" || mark.role === "underboss") {
     weights.car_bomb += 2; // convoys and routines
@@ -479,6 +480,7 @@ function routineText(mark: CrewMember, approach: HitApproach, territory: Territo
       `${name} likes to be seen making peace. He'll come to the table.`,
       `${name} has been asking around about a truce. He wants to talk.`,
     ],
+    summons: [`${name} comes when he's called. He doesn't ask why.`],
   };
   return rng.pick(lines[approach]);
 }

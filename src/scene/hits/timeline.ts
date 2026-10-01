@@ -57,6 +57,14 @@ function fullTimeline(approach: HitApproach, result: HitResult): PhaseDef[] {
       { name: "getaway", duration: police(result) ? 2.2 : 1.8, caption: "getaway", label: police(result) ? "The law" : "Getaway" },
     ];
   }
+  if (approach === "summons") {
+    return [
+      { name: "call", duration: 1.6, caption: "approach", label: "The call" },
+      { name: "drive", duration: 2.4, caption: "complication", label: "The drive" },
+      { name: "back_room", duration: 1.6, caption: "execution", label: "The back room" },
+      { name: "drive_off", duration: 1.8, caption: "getaway", label: "Gone" },
+    ];
+  }
   if (approach === "sitdown_betrayal") {
     return [
       { name: "arrive", duration: 2.0, caption: "approach", label: "Arrival" },

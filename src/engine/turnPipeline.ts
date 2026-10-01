@@ -16,7 +16,8 @@ import {
   tipOffChance,
 } from "./hitOps";
 import { runAllAiTurns } from "./rivalAI";
-import { findDeliveryPath, processDeliveries, processAllEconomy, isLegitBusiness, pruneLaunderPlan, safehouseLevel } from "./economy";
+import { findDeliveryPath, processDeliveries, processAllEconomy, isLegitBusiness, pruneLaunderPlan, tickLegitCover } from "./economy";
+import { tickSafehouses } from "./safehouse";
 import {
   emptyLiquorLedger,
   liquorLedgerLog,
@@ -35,7 +36,7 @@ import {
 import { drawEvent } from "./events";
 import { decayRelations } from "./relations";
 import { activePactKeys, expirePacts } from "./diplomacy";
-import { pruneManagers, tickAssignmentXp, grantXpToCrew } from "./crew";
+import { pruneManagers, tickAssignmentXp, grantXpToCrew, bumpLoyalty } from "./crew";
 import { emptyIntel, pruneIntel } from "./intel";
 import { pruneGrudges, releaseHeldCrew } from "./casing";
 import { generateCrewRequests, tickCrewMentoring } from "./crews";
@@ -44,7 +45,9 @@ import { familyHeadless, tickJails } from "./jail";
 import { checkVictory, influenceTick, rivalStandingDrivers } from "./victory";
 import { generateRumors } from "./rumors";
 import { tickIncidents } from "./incidents";
+import { hitLogEntry } from "./attribution";
 import { holdSitdowns, proposePassageSitdown, stageSitdowns } from "./sitdowns";
+import { aiCallCommission, castVotes, expireCommission } from "./commission";
 import { resolveCrewTerritoryId } from "./crewLocation";
 import { openIncidentFromHijack } from "./incidents";
 import { processSupplyRoutes } from "./supplyRoutes";
@@ -52,7 +55,9 @@ import { tickPassageDeals } from "./passage";
 import { settleDealsAfterHits, tickDeals } from "./deals";
 import { callInFavors } from "./favors";
 import { walkIns } from "./recruiting";
+import { expireFreeAgents } from "./defection";
 import { applyWeeklyStreet } from "./standing";
+import { expireDinner } from "./dinner";
 
 export interface PlayerHit {
   op: Operation;
@@ -236,6 +241,9 @@ export function endTurn(state: GameState, rng?: Rng): GameState {
       c.awayAt && c.awayAt.untilTurn <= current.turn ? { ...c, awayAt: undefined } : c,
     ),
   };
+  const dinnerEnd = expireDinner(current);
+  current = dinnerEnd.state;
+  if (dinnerEnd.log) logs.push(dinnerEnd.log);
   current = stageSitdowns(current);
 
   // The player's own hits already went (resolvePlayerHits, with a reel);
@@ -246,13 +254,7 @@ export function endTurn(state: GameState, rng?: Rng): GameState {
   const reel: HitCinematic[] = [];
   for (const hit of ops.results) {
     const op = current.operations.find((o) => o.id === hit.operationId);
-    logs.push({
-      id: `log_hit_${hit.operationId}`,
-      turn: current.turn,
-      category: "hit",
-      text: hit.headline,
-      family: op && op.family !== current.playerFamily ? op.family : undefined,
-    });
+    if (op) logs.push(hitLogEntry(current, op, hit, `log_hit_${hit.operationId}`));
   }
   reel.push(...incomingHits(current, ops.results));
   // A contract fulfilled, or a truce broken by whoever pulled the trigger.
@@ -264,17 +266,26 @@ export function endTurn(state: GameState, rng?: Rng): GameState {
   current = ai.state;
   logs.push(...ai.logs);
 
+  // A rival being ground down may call the Commission; the player lobbies
+  // during the week and the vote is counted here, at the end of it.
+  for (const family of ALL_FAMILY_NAMES) {
+    if (family === current.playerFamily) continue;
+    const called = aiCallCommission(current, family, random);
+    current = called.state;
+    logs.push(...called.logs);
+  }
+  const voted = castVotes(current, random);
+  current = voted.state;
+  logs.push(...voted.logs);
+  const commission = expireCommission(current);
+  current = commission.state;
+  logs.push(...commission.logs);
+
   const aiOps = resolvePendingOperations(current, random, rivalsOnly);
   current = applyLookoutReports(aiOps.state, aiOps.reports);
   for (const hit of aiOps.results) {
     const op = current.operations.find((o) => o.id === hit.operationId);
-    logs.push({
-      id: `log_ai_hit_${hit.operationId}`,
-      turn: current.turn,
-      category: "hit",
-      text: hit.headline,
-      family: op && op.family !== current.playerFamily ? op.family : undefined,
-    });
+    if (op) logs.push(hitLogEntry(current, op, hit, `log_ai_hit_${hit.operationId}`));
   }
   reel.push(...incomingHits(current, aiOps.results));
   current = { ...current, incomingHitReel: reel };
@@ -370,7 +381,7 @@ export function endTurn(state: GameState, rng?: Rng): GameState {
   for (const route of deliveries.routes) {
     if (route.status === "complete") {
       const xp = grantXpToCrew(current.crew, route.driverId, 5);
-      current.crew = xp.crew;
+      current.crew = bumpLoyalty(xp.crew, [route.driverId], 1).crew;
       if (xp.leveled && xp.name && current.playerFamily) {
         const driver = current.crew.find((c) => c.id === route.driverId);
         if (driver?.family === current.playerFamily) {
@@ -383,6 +394,8 @@ export function endTurn(state: GameState, rng?: Rng): GameState {
           });
         }
       }
+    } else if (route.status === "hijacked" || route.status === "seized") {
+      current.crew = bumpLoyalty(current.crew, [route.driverId], 1).crew;
     }
   }
 
@@ -417,34 +430,15 @@ export function endTurn(state: GameState, rng?: Rng): GameState {
   current = applyHeatToState(current, economy.heatDelta, "rackets");
   logs.push(...economy.logs);
 
-  const laidLow: string[] = [];
-  current.crew = current.crew.map((member) => {
-    if (member.status !== "active" || member.wanted <= 0) return member;
-    const home = current.territories.find(
-      (t) => t.owner === member.family && t.garrisonIds.includes(member.id),
-    );
-    if (!home) return member;
-    const cover = safehouseLevel(home, current.turn);
-    if (cover <= 0) return member;
-    const wanted = Math.max(0, member.wanted - cover);
-    if (
-      wanted < member.wanted &&
-      current.playerFamily &&
-      member.family === current.playerFamily
-    ) {
-      laidLow.push(member.name);
-    }
-    return { ...member, wanted };
-  });
-  if (laidLow.length > 0 && current.playerFamily) {
-    logs.push({
-      id: `log_safehouse_${current.turn}`,
-      turn: current.turn,
-      category: "system",
-      text: `${laidLow.join(", ")} laid low — wanted dropped at the safehouse.`,
-      family: current.playerFamily,
-    });
-  }
+  // Men inside a safehouse shed wanted; rivals move their own in and out.
+  const hideouts = tickSafehouses(current);
+  current = hideouts.state;
+  logs.push(...hideouts.logs);
+
+  // Managers of legit fronts shed a little wanted (slower than a safehouse).
+  const cover = tickLegitCover(current);
+  current = cover.state;
+  logs.push(...cover.logs);
 
   // Discoverability nudge: dirty cash with nothing routed
   if (
@@ -555,6 +549,11 @@ export function endTurn(state: GameState, rng?: Rng): GameState {
     rivalInfluence[family] = Math.max(0, Math.min(300, grown));
   }
   current.rivalInfluence = rivalInfluence;
+
+  // Scattered men you never hired stop waiting.
+  const gaveUp = expireFreeAgents(current, random);
+  current = gaveUp.state;
+  logs.push(...gaveUp.logs);
 
   // Respect decides who comes looking for work this week.
   const arrivals = walkIns(current, random);

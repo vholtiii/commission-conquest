@@ -10,12 +10,15 @@ import {
   crewSlots,
   isFreelanceSoldier,
 } from "@/engine/crews";
-import { recruitPrice, recruitTier, recruitTierLine } from "@/engine/recruiting";
+import { isFreeAgent, recruitPrice, recruitTier, recruitTierLine } from "@/engine/recruiting";
+import { FAMILY_HEX } from "@/types/game";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import PortraitAvatar from "@/ui/PortraitAvatar";
 import PanelShell from "./PanelShell";
 import { formatMoney } from "../formatters";
+import { canCallDinner, dinnerActive, dinnerWeek } from "@/engine/dinner";
+import Tip from "@/ui/Tip";
 
 const SKILL_SHORT: Record<keyof CrewSkills, string> = {
   muscle: "Muscle",
@@ -42,11 +45,16 @@ export default function CrewPanel() {
   const crew = useGameStore((s) => s.crew);
   const recruitmentPool = useGameStore((s) => s.recruitmentPool);
   const money = useGameStore((s) => s.money);
+  const turn = useGameStore((s) => s.turn);
   const respect = useGameStore((s) => s.reputation.respect);
   const recruitFromPool = useGameStore((s) => s.recruitFromPool);
   const selectCrew = useGameStore((s) => s.selectCrew);
   const joinCrew = useGameStore((s) => s.joinCrew);
   const leaveCrew = useGameStore((s) => s.leaveCrew);
+  const callFamilyDinner = useGameStore((s) => s.callFamilyDinner);
+  const familyDinner = useGameStore((s) => s.familyDinner);
+  const lastDinnerTurn = useGameStore((s) => s.lastDinnerTurn);
+  const territories = useGameStore((s) => s.territories);
 
   if (!playerFamily) return null;
   const tier = recruitTier(respect);
@@ -63,6 +71,11 @@ export default function CrewPanel() {
   return (
     <PanelShell title="Crew" subtitle={`${playerCrew.filter((c) => c.status === "active").length} active`}>
       <div className="space-y-5">
+        <DinnerBlock
+          blockName={territories.find((t) => t.id === familyDinner?.territoryId)?.name ?? "the safehouse"}
+          stamp={`${lastDinnerTurn ?? ""}:${familyDinner?.startTurn ?? ""}:${turn}`}
+          onCall={callFamilyDinner}
+        />
         <div>
           <h3 className="mb-1.5 flex items-center gap-1.5 text-xs uppercase tracking-wide text-muted-foreground">
             <UserPlus className="h-3.5 w-3.5" /> Recruitment Pool
@@ -74,14 +87,32 @@ export default function CrewPanel() {
             )}
             {recruitmentPool.map((c, i) => {
               const price = recruitPrice(c, playerFamily);
+              const scattered = isFreeAgent(c);
+              const weeksLeft = scattered ? Math.max(0, (c.freeUntilTurn ?? turn) - turn) : 0;
               return (
               <div
                 key={c.id}
-                className="flex items-center gap-2 rounded-md border border-panel-border bg-panel/50 px-2 py-1.5"
+                className={`flex items-center gap-2 rounded-md border px-2 py-1.5 ${
+                  scattered ? "border-amber-500/40 bg-amber-500/5" : "border-panel-border bg-panel/50"
+                }`}
               >
-                <PortraitAvatar seed={c.portraitSeed} size={26} ringColor="#5c7a99" role={c.role} family={c.family} alt={c.name} />
+                <PortraitAvatar
+                  seed={c.portraitSeed}
+                  size={26}
+                  ringColor={scattered && c.origin ? FAMILY_HEX[c.origin] : "#5c7a99"}
+                  role={c.role}
+                  family={c.family}
+                  alt={c.name}
+                />
                 <div className="flex min-w-0 flex-1 flex-col leading-tight">
-                  <span className="truncate text-xs font-medium">{c.name}</span>
+                  <span className="flex items-center gap-1.5 truncate text-xs font-medium">
+                    {c.name}
+                    {scattered && (
+                      <Badge variant="outline" className="border-amber-500/40 px-1 text-[8px] text-amber-300">
+                        {c.origin ?? "Rival"} {c.role} · {weeksLeft <= 0 ? "leaving" : `${weeksLeft} wk${weeksLeft === 1 ? "" : "s"} left`}
+                      </Badge>
+                    )}
+                  </span>
                   <span className="text-[10px] text-muted-foreground">
                     {(Object.keys(SKILL_ABBR) as (keyof CrewSkills)[]).map((k, n) => (
                       <span key={k}>
@@ -99,7 +130,7 @@ export default function CrewPanel() {
                   onClick={() => recruitFromPool(i)}
                   className="h-7 px-2 text-[11px]"
                 >
-                  {formatMoney(price)}
+                  {price === 0 ? "Take him on" : formatMoney(price)}
                 </Button>
               </div>
               );
@@ -199,5 +230,51 @@ export default function CrewPanel() {
         </p>
       </div>
     </PanelShell>
+  );
+}
+
+function DinnerBlock({
+  blockName,
+  stamp,
+  onCall,
+}: {
+  blockName: string;
+  stamp: string;
+  onCall: () => void;
+}) {
+  void stamp;
+  const snap = useGameStore.getState();
+  const active = dinnerActive(snap);
+  const gate = canCallDinner(snap);
+  const week = dinnerWeek(snap);
+  if (active) {
+    return (
+      <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-[11px] text-amber-200">
+        Family dinner — week {week} of 2 · everyone is at {blockName}
+      </div>
+    );
+  }
+  return (
+    <div>
+      <Tip
+        wrapDisabled
+        content={
+          gate.ok
+            ? "+10 loyalty for every man. The rackets run thin and the streets are open for two weeks."
+            : gate.reason
+        }
+      >
+        <Button
+          size="sm"
+          variant="secondary"
+          className="h-7 w-full text-[11px]"
+          disabled={!gate.ok}
+          onClick={onCall}
+        >
+          Call a family dinner
+        </Button>
+      </Tip>
+      {!gate.ok && <p className="mt-1 text-[10px] text-muted-foreground">{gate.reason}</p>}
+    </div>
   );
 }

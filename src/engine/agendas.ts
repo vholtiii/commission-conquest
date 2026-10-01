@@ -17,6 +17,7 @@ import type {
   GameState,
   SitdownAgenda,
   Territory,
+  SupplyRoute,
 } from "@/types/game";
 import { ALL_FAMILY_NAMES, getFamilyDef } from "@/data/families";
 import type { Rng } from "./rng";
@@ -26,7 +27,7 @@ import { familyHq } from "./crewLocation";
 import { familiesPressingSuddenDeath } from "./victory";
 import { hasConsigliere, hasPact } from "./diplomacy";
 import { activeDeals, atPeace, inTruce, makeDeal } from "./deals";
-import { CRATE_STREET_VALUE } from "./passage";
+import { CRATE_STREET_VALUE, activeDeal, familiesOnPath } from "./passage";
 
 /** Counters the player gets before the other side leaves the table. */
 export const TABLE_ROUNDS = 3;
@@ -65,6 +66,7 @@ export const CUT_BUY_DISCOUNT = 0.8;
 export const PLAYER_AGENDAS: SitdownAgenda[] = [
   "general",
   "truce",
+  "passage",
   "territory",
   "racket",
   "release",
@@ -191,6 +193,15 @@ export function cutOn(state: GameState, territoryId: string): boolean {
   return activeDeals(state).some((d) => d.kind === "cut" && d.terms.territoryId === territoryId);
 }
 
+/** The player's routes that cross this family's blocks. */
+export function routesThroughFamily(state: GameState, family: FamilyName): SupplyRoute[] {
+  const player = state.playerFamily;
+  if (!player) return [];
+  return (state.supplyRoutes ?? []).filter(
+    (r) => r.family === player && familiesOnPath(state, r.path, player).includes(family),
+  );
+}
+
 export function playerWarehouseStock(state: GameState): number {
   const player = state.playerFamily;
   if (!player) return 0;
@@ -239,6 +250,26 @@ export function agendaAvailable(
         return { ok: false, reason: "You've seen nothing of theirs worth a cut." };
       }
       return { ok: true };
+    case "passage": {
+      if (turfOf(state, family).length === 0) return { ok: false, reason: "They hold no turf to cross." };
+      const deal = activeDeal(state, family);
+      if (deal) {
+        if (deal.untilTurn == null) return { ok: false, reason: "A passage deal already holds — open-ended." };
+        const left = Math.max(0, deal.untilTurn - state.turn);
+        return { ok: false, reason: `A passage deal already holds — ${left} week${left === 1 ? "" : "s"} left.` };
+      }
+      const talking = (state.sitdowns ?? []).some(
+        (s) =>
+          s.purpose === "passage" &&
+          (s.status === "proposed" || s.status === "scheduled" || s.status === "at_table") &&
+          ((s.proposer === player && s.other === family) || (s.proposer === family && s.other === player)),
+      );
+      if (talking) return { ok: false, reason: "Passage talks are already set." };
+      if (statusFromScore(getRelation(state.relations, player, family)) === "war") {
+        return { ok: false, reason: "They won't talk passage while you're at war." };
+      }
+      return { ok: true };
+    }
     default:
       return { ok: true };
   }

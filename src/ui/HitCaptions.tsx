@@ -1,6 +1,8 @@
 import { useMemo } from "react";
 import { useHitCinematicPhase } from "@/scene/hits/HitCinematic";
+import { useReelHold } from "@/scene/hits/reelHold";
 import { useGameStore } from "@/engine/store";
+import { attributeCinematic, attributionLabel } from "@/engine/attribution";
 import { Button } from "@/components/ui/button";
 import type { HitBeat } from "@/types/game";
 
@@ -11,6 +13,7 @@ function captionForPhase(caption: HitBeat["phase"] | "hold", beats: HitBeat[]): 
 
 export default function HitCaptions() {
   const { label, caption, cinematic } = useHitCinematicPhase();
+  const held = useReelHold((s) => s.held);
   const finishCinematic = useGameStore((s) => s.finishCinematic);
   const updateSettings = useGameStore((s) => s.updateSettings);
   const territories = useGameStore((s) => s.territories);
@@ -23,9 +26,10 @@ export default function HitCaptions() {
   if (!cinematic) return null;
   const witnessed = cinematic.perspective === "witnessed";
   const block = territories.find((t) => t.id === cinematic.targetTerritoryId)?.name;
-  // Somebody else's war: say whose, so the reel reads as news and not a job of yours.
+  // Somebody else's war: say whose, so the reel reads as news and not a job of
+  // yours. The shooters are named only when the street would know them.
   const header = witnessed
-    ? `${cinematic.attackerFamily} on ${cinematic.targetFamily}${block ? ` · ${block}` : ""}`
+    ? `${attributionLabel(attributeCinematic(useGameStore.getState(), cinematic))} on ${cinematic.targetFamily}${block ? ` · ${block}` : ""}`
     : label;
 
   return (
@@ -40,14 +44,24 @@ export default function HitCaptions() {
           <p className="font-display text-base text-white/95">{text}</p>
         </div>
         <div className="pointer-events-auto flex gap-2">
-          <Button
-            size="sm"
-            variant="secondary"
-            className="h-8 bg-black/60 text-xs uppercase tracking-wide text-white hover:bg-black/80"
-            onClick={() => finishCinematic()}
-          >
-            Skip
-          </Button>
+          {held ? (
+            <Button
+              size="sm"
+              className="h-8 animate-digest-in bg-heat px-4 text-xs uppercase tracking-wide text-white hover:bg-heat/80"
+              onClick={() => finishCinematic()}
+            >
+              {witnessed ? "Continue" : "See the result"}
+            </Button>
+          ) : (
+            <Button
+              size="sm"
+              variant="secondary"
+              className="h-8 bg-black/60 text-xs uppercase tracking-wide text-white hover:bg-black/80"
+              onClick={() => finishCinematic()}
+            >
+              Skip
+            </Button>
+          )}
           {witnessed ? (
             <Button
               size="sm"

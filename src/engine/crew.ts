@@ -352,9 +352,9 @@ export function gainXp(
   if (amount <= 0 || member.status === "dead") {
     return { member, leveled: false, levelsGained: 0 };
   }
-  let xp = member.xp + amount;
+  const xp = member.xp + amount;
   let level = member.level;
-  let skills = { ...member.skills };
+  const skills = { ...member.skills };
   let levelsGained = 0;
   while (level < 10 && xp >= xpForLevel(level + 1)) {
     level += 1;
@@ -415,6 +415,23 @@ export function clearAssignmentType(
     }
     return m;
   });
+}
+
+/** Men who went out and came back a little more the family's. Dead and jailed don't count. */
+export function bumpLoyalty(
+  crew: CrewMember[],
+  ids: string[],
+  amount: number,
+): { crew: CrewMember[]; gained: string[] } {
+  if (amount <= 0 || ids.length === 0) return { crew, gained: [] };
+  const set = new Set(ids.filter((id): id is string => !!id));
+  const gained: string[] = [];
+  const next = crew.map((c) => {
+    if (!set.has(c.id) || c.status === "dead" || c.status === "jailed" || c.loyalty >= 100) return c;
+    gained.push(c.name.split(" ").slice(-1)[0] ?? c.name);
+    return { ...c, loyalty: Math.min(100, c.loyalty + amount) };
+  });
+  return { crew: next, gained };
 }
 
 /** Loyalty penalty when a crew member is buried; scales with dead member's rank */

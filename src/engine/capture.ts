@@ -1,10 +1,12 @@
 import type { CaptureTally, CrewMember, FamilyName, GameState, Territory } from "@/types/game";
 import { CAPTURE_LIMIT_BASE, CAPTURE_LIMIT_MAX } from "@/types/game";
 import { getFamilyDef } from "@/data/families";
-import { assignCrew } from "./crew";
+import { assignCrew, bumpLoyalty } from "./crew";
+import { captureParty } from "./crews";
 import type { Rng } from "./rng";
 import { BOSS_PRESENCE, bossAdjacentTo, bossPresentIn, hqIsSoft } from "./bossPresence";
 import { familyHq, type LocationState } from "./crewLocation";
+import { safehouseCaptureDefence } from "./safehouse";
 
 /* ------------------------------------------------------------------ */
 /* Per-turn capture limit                                              */
@@ -164,13 +166,19 @@ export function captureStrength(
     attackers.reduce((n, c) => n + c.skills.muscle, 0) *
     (1 + (getFamilyDef(state.playerFamily).bonuses.combatBonus || 0)) *
     mods.atkMult;
+  const fortified = safehouseCaptureDefence(t, state.turn ?? 0);
+  const notes = [...mods.notes];
+  if (fortified > 1) {
+    notes.push(`Safehouse on the block — defence +${Math.round((fortified - 1) * 100)}%`);
+  }
   const def =
     (defenders.reduce((n, c) => n + c.skills.muscle, 0) + 40) *
     (1 + t.defenseBonus) *
     (t.leadershipVacuum > 0 ? 0.7 : 1) *
+    fortified *
     mods.defMult;
 
-  return { atk, def, defenders, notes: mods.notes };
+  return { atk, def, defenders, notes };
 }
 
 /**
@@ -198,6 +206,23 @@ export function captureOdds(atk: number, def: number): number {
   return wins / total;
 }
 
+const CAPTURE_MUSCLE = 1;
+
+/** Taking a block by force hardens the men who did it. */
+function hardenFromCapture(
+  crew: CrewMember[],
+  ids: string[],
+): { crew: CrewMember[]; gained: string[] } {
+  const set = new Set(ids);
+  const gained: string[] = [];
+  const next = crew.map((c) => {
+    if (!set.has(c.id) || c.status === "dead" || c.skills.muscle >= 100) return c;
+    gained.push(c.name.split(" ").slice(-1)[0] ?? c.name);
+    return { ...c, skills: { ...c.skills, muscle: c.skills.muscle + CAPTURE_MUSCLE } };
+  });
+  return { crew: next, gained };
+}
+
 export function resolveCapture(
   state: GameState,
   territoryId: string,
@@ -218,16 +243,24 @@ export function resolveCapture(
   }
 
   const eligible = new Set(eligibleCaptureCrew(state, territoryId).map((c) => c.id));
-  const validIds = attackerIds.filter((id) => eligible.has(id));
-  if (validIds.length === 0) return { state, success: false };
+  const chosen = attackerIds.filter((id) => eligible.has(id));
+  if (chosen.length === 0) return { state, success: false };
+  // A boss, capo, or consigliere brings his free crew. Their muscle is in the roll.
+  const validIds = captureParty(state.crew, chosen).filter((id) => {
+    const c = state.crew.find((m) => m.id === id);
+    return !!c && c.family === state.playerFamily && c.status === "active";
+  });
 
   const { atk, def } = captureStrength(state, territoryId, validIds);
   const success = atk * (0.8 + rng.next() * 0.4) > def * (0.8 + rng.next() * 0.4);
 
   if (!success) {
+    const paid = bumpLoyalty(state.crew, validIds, 1);
+    const names = paid.gained.length > 0 ? ` Loyalty +1 for ${paid.gained.join(", ")}.` : "";
     return {
       state: {
         ...state,
+        crew: paid.crew,
         heat: { ...state.heat, level: Math.min(100, state.heat.level + 4) },
         turnLog: [
           ...state.turnLog,
@@ -235,7 +268,7 @@ export function resolveCapture(
             id: `log_atkfail_${Date.now()}`,
             turn: state.turn,
             category: "combat",
-            text: `Attack on ${t.name} failed.`,
+            text: `Attack on ${t.name} failed.${names}`,
             family: state.playerFamily,
           },
         ],
@@ -244,30 +277,37 @@ export function resolveCapture(
     };
   }
 
-  const leadId = validIds[0]!;
+  const party = new Set(validIds);
+  let taken = state.crew.map((c) =>
+    t.garrisonIds.includes(c.id) && !party.has(c.id)
+      ? { ...c, status: "wounded" as const, assignment: { type: "idle" as const } }
+      : c,
+  );
+  for (const id of validIds) {
+    taken = assignCrew(taken, id, { type: "garrison", territoryId });
+  }
+  const hardened = hardenFromCapture(taken, validIds);
+  const paid = bumpLoyalty(hardened.crew, validIds, 3);
+  const muscleLine =
+    hardened.gained.length > 0 ? ` Muscle +${CAPTURE_MUSCLE} for ${hardened.gained.join(", ")}.` : "";
+  const loyalLine = paid.gained.length > 0 ? ` Loyalty +3 for ${paid.gained.join(", ")}.` : "";
   return {
     state: recordCapture({
       ...state,
-      territories: state.territories.map((x) =>
-        x.id === territoryId
-          ? {
-              ...x,
-              owner: state.playerFamily,
-              garrisonIds: [leadId],
-              leadershipVacuum: 0,
-              discovered: true,
-            }
-          : x,
-      ),
-      crew: assignCrew(
-        state.crew.map((c) =>
-          t.garrisonIds.includes(c.id)
-            ? { ...c, status: "wounded" as const, assignment: { type: "idle" as const } }
-            : c,
+      territories: state.territories.map((x) => ({
+        ...x,
+        garrisonIds:
+          x.id === territoryId
+            ? validIds
+            : x.garrisonIds.filter((id) => !party.has(id)),
+        rackets: x.rackets.map((r) =>
+          r.managerId && party.has(r.managerId) ? { ...r, managerId: null } : r,
         ),
-        leadId,
-        { type: "garrison", territoryId },
-      ),
+        ...(x.id === territoryId
+          ? { owner: state.playerFamily, leadershipVacuum: 0, discovered: true }
+          : {}),
+      })),
+      crew: paid.crew,
       heat: { ...state.heat, level: Math.min(100, state.heat.level + 8) },
       reputation: {
         ...state.reputation,
@@ -280,7 +320,7 @@ export function resolveCapture(
           id: `log_atk_${Date.now()}`,
           turn: state.turn,
           category: "combat",
-          text: `Took ${t.name} by force.`,
+          text: `Took ${t.name} by force.${muscleLine}${loyalLine}`,
           family: state.playerFamily,
         },
       ],

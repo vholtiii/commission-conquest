@@ -44,7 +44,7 @@ export default function LeftToolbar() {
   const nudge = dirtyMoney >= 1000 && planned <= 0;
 
   return (
-    <nav className="panel-surface flex w-16 shrink-0 flex-col items-center gap-1 border-r py-3">
+    <nav className="panel-surface scrollbar-thin flex h-full min-h-0 w-16 shrink-0 flex-col items-center gap-1 overflow-y-auto overscroll-contain border-r py-3">
       {ITEMS.map((item) => {
         const Icon = item.icon;
         const active = activePanel === item.id;

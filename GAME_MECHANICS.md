@@ -67,19 +67,28 @@ A capo runs a crew of soldiers (`CrewMember.capoId`). Slots: 2, or 3 once the ca
 | Boss | **muscle + stealth** — the hitman school | driving (wheel time) | no |
 | Consigliere | **smarts + stealth** — thinkers | charm | no |
 
-The boss and consigliere teach through their school, not their own hands: their curriculum is taught as if the teacher had at least 60 in it (`SCHOOL_TEACHER_FLOOR`), so a boss with 30 muscle still turns out shooters. A soldier who makes hitman graduates out of the crew. The boss never files a crew request (he *is* the player) — fill his crew from the Crew panel; the consigliere asks like a capo does. Rival bosses and consiglieri fill their crews in the AI pass, taking the loose men strongest in the skill their crew teaches.
+The boss and consigliere teach through their school, not their own hands: their curriculum is taught as if the teacher had at least 60 in it (`SCHOOL_TEACHER_FLOOR`), so a boss with 30 muscle still turns out shooters. A soldier who makes hitman graduates out of the crew. The boss never files a crew request (he *is* the player) — fill his crew from the Crew panel or from his Crew sheet ("Add a man to the crew…"); the consigliere asks like a capo does. Rival bosses and consiglieri fill their crews in the AI pass, taking the loose men strongest in the skill their crew teaches.
+
+**The family dinner** (`src/engine/dinner.ts`). Once every 8 weeks the boss can call the family to the best safehouse that seats them — 4 seats per safehouse level, so a level-5 house holds 20. The button stays on the Crew panel and says why it can't happen: no safehouse, not enough seats, the boss jailed or wounded, a hit already in the works, or a sit-down inside the two weeks. Casing and supply routes keep running. Every active man gains 10 loyalty, family morale rises 5, and anyone who had asked to walk sits back down. For two weeks every car is at that house: racket income runs at 60%, and the player can't order a capture or a new hit. The streets are empty for every rival — garrisons don't count while the family is at the table. A rival hears about it 35% of the time, 60% if they're hostile or at war, and automatically if they have fresh casing on a player block; only those who heard prefer the player's blocks that week, and only they know the boss left his HQ. Everyone else still aims at the chair and finds it empty. The HQ reads as soft for those two weeks. An armed car bomb on the boss goes off on the drive over. When the dinner ends the log names who knew. For 4 weeks after, the two rat events don't draw.
 
 **How men get in**
 
 - **The capo asks.** Each turn every active player capo with an open slot rolls `0.15 + charm/400` to ask for a specific man — favoring loose soldiers/associates whose top skill matches his own or who share his block. The ask is a turn-start pop-up: **Approve / No / Later**. "Later" holds it one more turn, then it expires. Turning the same capo down twice running costs him 3 loyalty.
-- **Assign directly** from the Crew panel ("Add a man…" per capo; "Cut loose" per soldier). The Family Roster nests each crew under its leader (boss, consigliere, capo) and keeps the Soldiers group for loose men only; each row carries a promote arrow (lit when a promotion is affordable now) and a man's info sheet is where you garrison him, set him to manage a racket, or promote him. The Crew panel itself is recruitment and crews only.
+- **Assign directly** from the Crew panel ("Add a man…" per capo; "Cut loose" per soldier) or from a leader's Crew sheet (boss, consigliere, or capo — same controls when you open them from the Family Roster). The Family Roster nests each crew under its leader (boss, consigliere, capo) and keeps the Soldiers group for loose men only; each row carries a promote arrow (lit when a promotion is affordable now) and a man's info sheet is where you garrison him, set him to manage a racket, or promote him. The Crew panel itself is recruitment and crews only.
 - Rival capos fill their slots quietly each AI turn from the family's loose soldiers.
+
+**A leader brings his crew.** A boss, capo, or consigliere does not go to a block alone. His free men — active, idle or garrisoned, and not already on a hit, a casing, a route, lying low, or running a racket — come with him. A soldier, a loose soldier, the hitman, and anyone with an empty crew go alone. The underboss has no crew.
+
+- **Manage or garrison.** Assigning him to run a racket, or moving him onto a block, garrisons those free men there. A man already running a racket stays on it. They do not become managers themselves.
+- **A hit.** He cannot be sent until each of those men has a role on the job (shooter, wheelman, lookout, or the bomb seats). The order button stays dark until they do, and says who is still standing around. Rivals fill the empty seats themselves and anyone left rides as a shooter.
+- **Capture.** Picking him adds those men to the squad. Their muscle is in the win chance. If the block falls, they garrison it with him.
 
 **What a crew soldier gets, per turn** (`tickCrewMentoring`, paused while the capo is not active)
 
 - **Mentoring**: for each of the capo's two best skills *by value*, chance `0.15 + max(0, capo − soldier)/250` of +1 (cap 0.6). Uncapped — a student can pass his teacher; growth just slows to the 15% floor. Half rate for the first 6 turns after joining.
 - **Management drip**: +1 XP, and every 4th turn +1 smarts or charm (alternating).
 - **Loyalty drift**: 1/turn toward the capo's loyalty. A rotten capo rots his crew.
+- **Work**: the men who go out come home tighter. A hit that lands is +4 loyalty for each shooter who makes it back; a miss, a dry block, or a botch is +2. A clean casing is +3, a spotted one +2, and a lookout who crawls or is held home still gets +1. Taking a block is +3 for the squad (+1 if the attack fails). A truck that actually rolls — a one-off delivery or a standing liquor run, even if it's taxed, seized, or hijacked — is +1 for the driver and anyone riding shotgun. Dead and jailed men don't collect it.
 
 **Loose soldiers** (no capo): +8 stealth / +5 smarts when casing (`casingSkills`), +1 stealth after every clean casing, and none of the management drip. Level-ups keep the soldier muscle/stealth bias.
 
@@ -87,7 +96,7 @@ The boss and consigliere teach through their school, not their own hands: their 
 
 ### Boss presence (`src/engine/bossPresence.ts`)
 
-Wherever the boss holds court — his standing block, a sit-down trip notwithstanding (`bossPresenceDistrict` ignores `awayAt`) — the family leans in. Every family gets the economic effects; the intel and log lines are the player's. All numbers live in `BOSS_PRESENCE`.
+Wherever the boss holds court — his standing block, a sit-down trip notwithstanding (`bossPresenceDistrict` ignores `awayAt`, except a family dinner, which does move the desk) — the family leans in. Every family gets the economic effects; the intel and log lines are the player's. All numbers live in `BOSS_PRESENCE`.
 
 **On his block**
 
@@ -116,7 +125,19 @@ Not done: warehouse storage cap is unchanged by presence (only pilferage and the
 
 When a boss dies, a ready underboss (active, loyalty≥60, Lv≥5, held rank ≥2 turns) takes the chair. Player succession: respect −10, family loyalty −5. No ready heir: player loses; rival turf gets `leadershipVacuum: 2`. Rival families start with an underboss; AI may promote a capo into the empty seat (~30%/turn).
 
-A headless rival family doesn't stay frozen: each turn (50%) an interim boss seizes the chair — underboss, else senior capo, else consigliere, else the best soldier — and the vacuum on their turf clears. Until then the family takes no AI actions and its districts are soft.
+A headless rival family doesn't stay frozen: each turn (50%) an interim boss seizes the chair — underboss, else senior capo, else consigliere — and the vacuum on their turf clears. Until then the family takes no AI actions and its districts are soft. Soldiers never inherit.
+
+**Finished families** (`src/engine/defection.ts`). A rival with no living boss and nobody left who could take the chair is finished: it's added to `defunctFamilies`, skipped by the AI forever, and the Commission seat is greyed out — the table line and the family row — with the diplomacy buttons gone and a "Finished" badge. Its turf keeps the family tag and its vacuum (a land-grab, per the capture rules). Every surviving soldier, hitman and associate picks a new family that turn — you included — by a weighted roll: standing is the biggest pull (influence relative to the top family, up to +3), nearby turf helps (+2 within one hop, +1 at two), the two families' relation adds −1…+1.5, and a family his old one was at war with is weighted at a quarter. Men who pick a rival garrison its nearest block at loyalty 45. Men who pick you land in the recruitment pool at **$0** for 3 weeks (they don't count against the walk-in cap); hire them and they keep their name, record and `origin`; pass on them and they go to a rival instead. Wounded men skip the pool and go straight to a rival. Jailed or held men stay on the dead roster.
+
+### Safehouses (`src/engine/safehouse.ts`)
+
+A safehouse is a racket with no income and **no manager** (`needsManager(type)` is false; the manager row and "Manage a racket" entries skip it); its **level** sets everything it does. It also **fortifies the block**: capture defence ×`1 + 0.08 × level` (`safehouseCaptureDefence`), applied in `captureStrength` for your attacks and folded into the rival AI's expansion roll and target softness for theirs. A man on your turf can **lie low** inside (District panel or Crew sheet → "Lie low"; assignment type `safehouse`). One bed per level. Inside he sheds `level + 1` wanted a week, doesn't count toward the garrison, runs nothing, and a boss inside gives up his presence bonuses. A rival crew can't find him unless they've cased the block within two weeks (`markHidden` → "gone to ground"), and even found he costs the hit **−12% per level, capped at −40%**. Rivals use theirs too: in at wanted ≥ 3, out at 0.
+
+**Legit cover** (`tickLegitCover` in `economy.ts`): managing an unfrozen legit front (laundromat, deli, barber, restaurant, trucking) sheds `1 + ⌊level/2⌋` wanted a week (Lv1–2 → 1, Lv3–4 → 2, Lv5 → 3). Always slower than a safehouse of the same level; does not stack with lying low.
+
+- **Return fire**: men inside a safehouse on the hit block or one block over come out shooting when their family is hit (`coverFire`). They don't affect the odds of the shot — they're behind a door — but they join the firefight after, each counting as `0.5 + 0.25 × level` defenders (Lv1 0.75, Lv2 1.0, Lv3 1.25). Shows in the planner as "N men in the X safehouse will return fire". Only men actually inside count.
+- **Getaway door**: the attacking family's nearest safehouse within two blocks of the job shaves getaway risk by `level × 0.04 / 0.025 / 0.01` for same block / next door / two over, capped at 0.12 (`getawayCover`). Lower getaway risk means fewer arrests on a botch and a small odds bump. Doesn't need anyone inside.
+- **Checkpoints**: a supply truck whose road passes a safehouse (or a block next to one) ducks `level × 20% / 10%` of police seizures, capped at 60% (`seizureCover`). The route card lists it as a pro; a ducked checkpoint shows in the run's notes.
 
 **Recruitment** (`src/engine/recruiting.ts`). The top bar shows Respect (0–100) with the current tier and how many men it brings. Each week that many associates walk in, up to a pool of 6; a full pool takes nobody new until someone is hired. A $200 refresh replaces the pool with 5 at the current tier.
 
@@ -304,9 +325,9 @@ The rival answers a proposed venue immediately: `theirs` always, `neutral` ~80%,
 
 AI families invite the player (~8%/turn while relations are cold or hostile; 50% when they have a live package on the player boss, always at their place). The player accepts, counters, or declines (−5 relation).
 
-The meeting is held two turns after scheduling (`SITDOWN_LAG`), so a lookout sent the week it is booked reports back before anyone sits down. If either boss is dead, wounded, jailed or held, it is aborted. Otherwise it rolls the old sit-down odds: relation +15 (+10 if they invited you) on success, +3 on failure, respect +2.
+The meeting is held two turns after scheduling (`SITDOWN_LAG`), so a lookout sent the week it is booked reports back before anyone sits down. If either boss is dead, wounded, jailed or held, it is aborted. Otherwise the bosses sit down with nothing on the table yet (see *Open tables*).
 
-Before the turn's other business, both bosses' cars drive to the venue (skipped when cinematics are off, but the table is never skipped). A general meeting plays a short scripted exchange; a passage meeting is the terms negotiation. Leaving the table opens a result card. Sit-down lines lead that week's digest.
+Before the turn's other business, both bosses' cars drive to the venue (skipped when cinematics are off, but the table is never skipped). A general meeting waits on the player to raise one subject or to just talk; a passage meeting is the terms negotiation. Leaving the table opens a result card. Sit-down lines lead that week's digest.
 
 **Who you bring.** Up to two soldiers or capos, plus the consigliere if you toggle him. They travel when your boss does, so they count as defenders and can be caught in a betrayal. Each man past the first makes `ours` / `neutral` 15% less likely to be accepted and costs 4% off the sit-down odds. Each man adds 5% to the other side's tip-off if they try a betrayal. The consigliere keeps the +10% odds and, if you have one, reads an armed car bomb as "awfully eager to host" without naming it.
 
@@ -314,7 +335,16 @@ Before the turn's other business, both bosses' cars drive to the venue (skipped 
 
 **Neutral host.** When the neutral block belongs to a third family, they host. Both sides pay $75 clean; the host's treasury takes the $150. If the table turns violent, the betrayer's standing with the host drops 20, the victim's rises 5, and that host refuses the betrayer for 8 turns.
 
-**Passage sit-downs** (`purpose: "passage"`) skip the odds roll: the bosses sit, the rival names a price, and the sit-down stays `at_table` until the player answers terms at the table (see *Supply routes & passage*). They cost nothing to call, ignore the diplomacy cooldown, and are always held on the rival's turf.
+**Passage sit-downs** (`purpose: "passage"`) skip the odds roll: the bosses sit, the rival names a price, and the sit-down stays `at_table` until the player answers terms at the table (see *Supply routes & passage*). A route that needs a right of way still calls one for free, on their turf, outside the diplomacy cooldown. The player can also raise passage himself — from the sit-down proposal or at an open table — and that one costs the usual fee and travels to the venue he picks. Same haggle: toll, crate cut, gift, duration, two counters then their last word. Walking in with a number is answered the moment the bosses sit, or the moment he puts it down.
+
+### Open tables
+
+A general sit-down — "Ease off", or a rival who invited you with nothing particular in mind — no longer resolves on a dice roll before anyone sits. The bosses take their seats (`status: "at_table"`, no subject) and the table stays open. The player does one of two things, and only one:
+
+- **Put it on the table.** Pick exactly one subject (a truce, passage, a district, a man held, and the rest of the agenda list). It has to be a subject that's actually available, and it becomes the meeting's purpose on the spot. Passage opens their price and the toll / cut / gift / duration table. The other subjects run as a normal agenda table: their ask, the player's counter, three rounds. A number walked in with is answered the moment it's raised.
+- **Just talk.** The old roll. Relation +15 on success (+10 if they invited you), +3 if it goes nowhere, respect +2, and the meeting closes. The scripted lines play and the player leaves the table.
+
+Raising a subject is refused once the meeting already has one, so a meeting carries one topic and no more.
 
 ### Agenda tables (`src/engine/agendas.ts`, `src/engine/deals.ts`)
 
@@ -344,13 +374,33 @@ The Sit-down button asks what the meeting is **about** before where. "Ease off" 
 
 **Deals.** Truces, contracts, liquor orders, cuts and favors are recorded (`GameState.deals`) and listed in the Commission panel with weeks left. A truce makes rival AI skip you for hits, vendetta hits, message hits and captures, and your own hit planner and capture button refuse ("You gave your word") until you **Break it** from the deal card. Breaking any deal, by anyone: −20 standing, −25 relation with the wronged family, −10 with every other family. A hit that lands on a truce partner (even one planned before the handshake) is a breach by the shooter. Rivals tear up a truce at 1–5%/turn by temperament (volatile highest, doubled while in a vendetta). A job owed and not done by the deadline is a breach by whoever owed it.
 
+### The Commission's ruling (`src/engine/commission.ts`)
+
+The player can **Call the Commission** on any rival — too much fighting in the city, a family everyone hates, or a war he wants the seats behind him on. It costs 25 standing, needs the boss free, and can't be done while a call is already open, within 8 weeks of the last one, or while sanctioned. Every other family with a living boss takes a seat. Calling without a case (no hit from them in 6 weeks, no vendetta, relation warmer than −30) shifts every seat 0.3 toward the accused, and a ruling that goes against the player then costs 3 respect.
+
+**How a seat leans.** Mostly the gap between its relation with the caller and with the accused. A family that has been hitting the other lately is penalized, a seat the accused has been hitting leans against him, a seat whose supply routes cross someone's turf wants that someone leaned on, the standing gap counts for a little, and the player's Commission health shifts every seat up to ±0.2.
+
+**Commission health.** One number, 0–100, shown on the Commission panel. Standing against the strongest family is worth 30, fear 20, the average relation with the living rivals 30 (all-neutral is 15), and wealth against the richest family 20. Below 25 the player is nobody at the table; below 50 a voice; below 75 respected; otherwise the table listens. That weight moves the opening leans, scales what a lobby buys (about +0.25 when he's nobody, +0.46 when they listen), cuts the chance a refusal draws a message by up to 20%, makes a rival more willing to swallow a ruling that went the player's way, and makes the AI a little less likely to drag him in front of the table (10% down to 6%). It does not invent a case.
+
+**Lobbying.** During the week the call is open, each seat can be spoken to once: $400 or 5 standing. It leans the caller's way (about +0.35, more when his Commission health is high) and relations with that seat rise 5. The vote is counted at the end of the week. A seat votes for the caller above 0.2, for the accused below −0.2, and abstains between, with a small nudge either way. Majority rules. A tie is a **deadlock**: both sides lose 2 respect and nothing else is settled.
+
+**The ruling** is a truce (6 weeks, guns down) with cash from the loser — $200 plus $150 for each hit he landed on the winner in the last six weeks. It is advisory: both sides accept or refuse it, and the truce is struck only when both accept. The rival accepts a ruling that went against him when he's on decent terms with the seats that carried it and isn't volatile, or when he's lost two or more men to the player.
+
+**Calling the table to war.** A rival who ignored a ruling in the last 12 weeks wears an *Ignored the table* badge on the Commission panel. If the player's Commission health is 50 or better ("Respected") and his standing part is at least 15 of 30, he can call the table again — same 25 standing, same 8-week rhythm — to ask for war. The seats vote at the end of the week from their usual leans, plus 0.15 for every ruling the target ignored and another 0.15 for a seat whose own ruling was spat on; the player can lobby them as normal. If the yes votes carry, every seat that said yes drops to war relations (−70) with the target, alongside the player, and the target's defiance is wiped clean. A deadlock or a no costs 3 respect and 5 relation with the target. Below the health bar, the option isn't there — an ignored ruling only raises the odds of a message hit, never a guaranteed war.
+
+**Refusing.** A family that refuses loses 10 relation with every seat that voted for the ruling. The player's second refusal **sanctions** him for 4 weeks: those seats won't sit down with him, one fewer man walks in looking for work each week, and the table won't hear another call from him until it lifts.
+
+**The message.** Every refusal rolls the chance the table answers it with a hit — a warning, not a war. The chance starts at 35%, rises 15% for each ruling the refuser has ignored before (the player's own refusals count for him; a rival's ignored rulings in the last 12 weeks count for him), and falls 10% for each seat the player lobbied that voted for the ruling. The seat leaning hardest sends it: an ambush or a drive-by on one of the refuser's men, never the boss, arriving the next week. When the player is the one refusing, it plays as an incoming reel.
+
+A rival the player has bled hard (three or more of its men down in six weeks, with the standing to spend and a temperament that isn't volatile) can call the Commission on the player, about 8% a turn. That vote is cast immediately and the player gets the card.
+
 ### Rumors (`src/engine/rumors.ts`)
 
 Each turn, after the AI has planned, the street may whisper about a pending rival hit on the player (30–80% depending on intel, garrison smarts and the rival's personality) at a fidelity from "vague" up to "who ordered it". Some whispers are false, and open cases draw gossip that nudges the suspect board — wrong names fade after two turns (`tickIncidents`). Rumor lines lead the turn digest. An armed car bomb keeps generating them while it waits.
 
 **Moving the boss.** Any owned district's panel has **Move the boss here** (a garrison assignment on the boss). A hit resolves against where the mark *is*, so a boss moved after a rumor leaves the crew an empty chair (`target_escaped`, "he'd already moved on") — unless the rumor says car bomb: the package rides his car and goes off on the drive, so the counter there is to sit still and let it be found. The district panel flags the boss's district in red while a pending-hit rumor names him or it.
 
-**Moving anyone else.** The same panel has **Send a man here…**, a list of your active men who are free to travel (idle, garrisoned or running a racket elsewhere, and not on a job or a trip). Picking one garrisons him here at once. Every made man's car sits on the west kerb of the avenue nearest his district, queued behind the boss's by rank, and when he changes district the car drives there — down the avenue, along a street, up the next avenue, lamps on — then parks (`CrewSedans.tsx`). Paint is rank: boss black with the family colour and a halo (a shade larger than the rest), underboss and consigliere black with a muted family stripe, capo silver, soldier brown, hitman blacked out with no chrome, no whitewalls and no lamps. Associates have no car. Six cars fit a kerb; the rest are round the corner. Rival cars stay boss-only and follow the visibility rules below.
+**Moving anyone else.** The same panel has **Send a man here…**, a list of your active men who are free to travel (idle, garrisoned or running a racket elsewhere, and not on a job or a trip). Picking one garrisons him here at once. Every made man's car sits on the west kerb of the avenue nearest his district, queued behind the boss's by rank, and when he changes district the car drives there — down the avenue, along a street, up the next avenue, lamps on — then parks (`CrewSedans.tsx`). Paint is rank: boss black with the family colour and a halo (a shade larger than the rest), underboss and consigliere black with a muted family stripe, capo silver, soldier brown, hitman blacked out with no chrome, no whitewalls and no lamps. Associates have no car. Six cars fit a kerb — the boss's at the middle, the rest alternating south and north of it — and if a neighbouring district's row already parked on that stretch, a car walks further along the avenue rather than sit on top of another; the rest are round the corner. Ambient street dressing parks on the east kerb only, so it never ends up under a crew car. Rival cars stay boss-only and follow the visibility rules below.
 
 **Underground.** A boss holding court anywhere but his HQ (and not on a public trip) is underground (`isBossUnderground`). A rival planning a hit on him only has his real address if the job was cased (`surveilled`) or the street leaks it (`BOSS_UNDERGROUND_LEAK`, 40%); otherwise they plan on the HQ everyone knows and find nobody. A crew sent to the wrong kerb has no car to wire, so a car bomb picked for a guessed address becomes an ambush there. The cost is the HQ losing his presence as a defender.
 
@@ -406,7 +456,7 @@ Personalities:
 - **smuggler** (Salvati) — deliveries and warehouses
 - **volatile** (Rinaldi) — aggression and vendettas
 
-AI budget scales with difficulty / `aiAggression`. Rivals fight each other; vendettas escalate retaliation.
+A new game sets `aiAggression` from the difficulty button (`aggressionForDifficulty` in `initialState.ts`): easy 0.45, normal 1, hard 1.5. Each rival then attempts `floor(aggression × personality × 2)` actions a week (at least one; volatile ×1.4, covert ×0.8) and each attempt fires with chance `0.5 + aggression × 0.15`. Easy is one action about half the time. Normal is two (one for a covert family). Hard is three, or four for a volatile family. A save keeps the aggression it started with. Rivals fight each other; vendettas escalate retaliation.
 
 Bosses travel. Each turn an AI boss has a ~25% chance (expansionist/volatile +10, covert −10, only 5% if a tipped-off car bomb is aimed at his family) to spend the week in another district he owns, weighted toward racket-heavy and leaderless blocks, and drives home the week after. Both legs can spring a car bomb. A headless family stays frozen until an interim boss takes the chair.
 
@@ -428,7 +478,7 @@ Clean cash pays bribes, property, and promotions; upkeep prefers clean first.
 
 ## Territory capture (`src/engine/capture.ts`)
 
-Capture opens a squad picker (idle crew + any garrison already on that block). First pick leads and garrisons on success; others keep their prior assignments. Odds ≈ P(atk×U(0.8,1.2) > def×U(0.8,1.2)) where atk = squad muscle × combat bonus and def = (defender muscle + 40) × (1 + defenseBonus) × 0.7 under leadership vacuum. Fail: +4 heat. Success: flip owner, wound old garrison, +8 heat, +3 fear, +2 street influence.
+Capture opens a squad picker (idle crew + any garrison already on that block). First pick leads and garrisons on success; others keep their prior assignments. Odds ≈ P(atk×U(0.8,1.2) > def×U(0.8,1.2)) where atk = squad muscle × combat bonus and def = (defender muscle + 40) × (1 + defenseBonus) × 0.7 under leadership vacuum. Fail: +4 heat and +1 loyalty for the squad. Success: flip owner, wound old garrison, +8 heat, +3 fear, +2 street influence, +1 muscle and +3 loyalty for every man in the squad.
 
 **One district a week.** Every family (player and AI) can take at most one district per turn (`captureAllowance`, tracked in `GameState.captureTally`). A second grab is allowed only when: the family is expansionist (Valenti, always 2 moves), the target is in leadership vacuum, or the target belongs to a family you're in a vendetta with. Never more than two. The check runs before any pact is broken, and the Capture panel shows "Moves this week: n/limit".
 
@@ -445,11 +495,22 @@ Thresholds:
 - 60 — warrants (jailed risk for high-wanted crew)
 - 80 — federal investigation
 
+**Arrest odds (`WARRANT`, `arrestRisk`).** At the end of the week, once family heat is at 60 or more, every active man of yours wanted above 5 is on the list and has an 8% chance of being picked up; below either line the chance is 0. The UI prints that chance in parentheses after his wanted on his crew sheet (when you select him), the top bar (boss), and district garrison and safehouse rows — red when he's on the list. The family roster shows names only. It turns **green** when something is working his odds down, with the tooltip spelling out what: cops / captains / mayor bribes paid (their heat cooling per week), lying low in a safehouse (wanted shed per week), or running a legit front (wanted shed per week). Those don't change the 8% roll itself; they pull the heat or his wanted back under the lines.
+
 Bribe tiers: cops / captains / chiefs / mayor (cost, duration, success rate modified by respect/fear/heat).
 
 ## Events (`src/engine/events.ts`)
 
 ~20 authored templates (informant, judge, Commission summons, union strike, truce offer, family loan, etc.). Drawn from heat, war state, and turn count. Choices apply money/heat/reputation/relation/crew status deltas.
+
+### Rats in the family
+
+Two events — a rumor of an informant, and the federals leaning on one — name a man. The suspect is drawn from the player's active men, weighted toward low loyalty, high wanted, men who didn't come up in the family, and men lately out of jail. When the event is dealt, the game rolls whether he really is the rat (65%) and keeps it hidden.
+
+- **Call him in.** He doesn't come back: he's marked dead and pulled off any garrison or racket he was running. Heat +5, fear +8, and the men under his capo lose 6 loyalty. If he was the rat, heat drops 15 and the log says so. If he wasn't, the whole family loses 10 loyalty, and 40% of the time one of his crewmates asks to walk — let him go and he turns up with a rival, talk him down and it costs that man 15 loyalty. Either way a summons reel plays: the call to come by the house, the drive over, one shot in the back room, and his car driven off. It plays with no result card.
+- **Relocate** or **watch** him and, if he really is the rat, he keeps talking. For the next four weeks the arrest line drops by 2 and the pickup chance rises to 14%, and on the first of those weeks every active man's wanted climbs by one. The game remembers which man (`ratLeakCrewId`).
+
+**Calling in your own** (`src/engine/callIn.ts`). From a man's crew sheet the boss can **Call him in** — not himself, not during a dinner, and not again for 6 weeks. The same summons reel plays. How badly the family takes it is graded: cleanness runs from 0 at loyalty 30 or below to 1 at 80 or above, and drops if he's wanted at 5 or more or carries `rat_risk`. Family loyalty falls by 5 + 9× that number, respect by about 3× it, and the chance a crewmate asks to walk is 20% plus 30% of it. A made man costs 5 more respect, 4 more loyalty, and another 25% on the walk. Heat +5 and fear +8 either way. Calling in the rat you already spared stops the leak (heat −10, and the log says so). Whoever is taken out also comes off pending jobs — a hit with no shooter left is cancelled — and off any route he was driving. If he led a crew, his soldiers go loose and lose 12 loyalty. The rat events use the same removal.
 
 ## 3D city (`src/engine/cityLayout.ts`, `src/scene/`)
 

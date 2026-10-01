@@ -6,6 +6,10 @@ import { calculateHitOddsBreakdown, defendersFor, estimateFirefightRisk, getaway
 import { resolveCrewTerritoryId } from "@/engine/crewLocation";
 import { emptyIntel, hasFreshCasing, visibleCrewIn } from "@/engine/intel";
 import { isMessageTargetRole, routeDisputeWith } from "@/engine/passage";
+import { attributeCinematic, attributionLabel } from "@/engine/attribution";
+import { coverFire, getawayCover, isLaidLow, laidLowHouse, safehouseHitPenalty } from "@/engine/safehouse";
+import { dinnerActive } from "@/engine/dinner";
+import { canLeadCrew, freeCrewOf, unseatedCrew } from "@/engine/crews";
 import {
   approachSpec,
   exposedCrewIds,
@@ -18,6 +22,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import PortraitAvatar from "@/ui/PortraitAvatar";
+import Tip from "@/ui/Tip";
 import PanelShell from "./PanelShell";
 import { titleCase } from "../formatters";
 
@@ -133,6 +138,35 @@ export default function HitPlanner() {
     return s;
   }, [shooterIds, wheelmanId, lookoutId, bombMakerId, planterId, negotiatorId]);
 
+  const crewGap = useMemo(() => unseatedCrew(crew, [...usedIds]), [crew, usedIds]);
+  const roster = useMemo(() => {
+    const byId = new Map(availableCrew.map((c) => [c.id, c]));
+    for (const id of usedIds) {
+      const leader = crew.find((c) => c.id === id);
+      if (!leader || !canLeadCrew(leader)) continue;
+      for (const man of freeCrewOf(crew, leader.id)) byId.set(man.id, man);
+    }
+    return [...byId.values()];
+  }, [availableCrew, crew, usedIds]);
+
+  const rideAlong = useMemo(() => {
+    const singles = new Set(
+      [wheelmanId, lookoutId, bombMakerId, planterId, negotiatorId].filter(Boolean),
+    );
+    const men: typeof crew = [];
+    const seen = new Set<string>();
+    for (const id of usedIds) {
+      const leader = crew.find((c) => c.id === id);
+      if (!leader || !canLeadCrew(leader)) continue;
+      for (const man of freeCrewOf(crew, leader.id)) {
+        if (singles.has(man.id) || seen.has(man.id)) continue;
+        seen.add(man.id);
+        men.push(man);
+      }
+    }
+    return men;
+  }, [crew, usedIds, wheelmanId, lookoutId, bombMakerId, planterId, negotiatorId]);
+
   const draftOp: Operation | null = useMemo(() => {
     if (!playerFamily || !territory || !rivalFamily) return null;
     const assignedIds = [
@@ -209,14 +243,20 @@ export default function HitPlanner() {
     ? territoryHops(state, draftOp.originTerritoryId, draftOp.targetTerritoryId)
     : 0;
   const gRisk = draftOp ? getawayRisk(state, draftOp) : 0;
+  const door = draftOp && playerFamily ? getawayCover(state, playerFamily, draftOp.targetTerritoryId) : null;
+  const cover = draftOp ? coverFire(state, draftOp.targetFamily, draftOp.targetTerritoryId) : null;
   const missing = missingRequiredRoles(approach, picks);
   const selectedTarget = rivalTargets.find((c) => c.id === targetCrewId);
   const dispute = rivalFamily ? routeDisputeWith(state, rivalFamily) : null;
   const messageEligible =
     !blind && !!selectedTarget && isMessageTargetRole(selectedTarget) && !!dispute;
   const message = sendMessage && messageEligible;
+  const atTable = dinnerActive(state);
   const canOrder =
-    missing.length === 0 && (blind || (!!targetCrewId && rivalTargets.length > 0));
+    !atTable &&
+    missing.length === 0 &&
+    crewGap.length === 0 &&
+    (blind || (!!targetCrewId && rivalTargets.length > 0));
   const spec = approachSpec(approach);
 
   function clearRoles() {
@@ -246,8 +286,13 @@ export default function HitPlanner() {
   }
 
   function candidatesFor(slot: HitRoleSlot, excludeSelf?: string): typeof availableCrew {
-    return availableCrew.filter((c) => {
+    return roster.filter((c) => {
       if (excludeSelf && c.id === excludeSelf) return true;
+      if (slot.multi) {
+        if (usedIds.has(c.id) && !shooterIds.includes(c.id)) return false;
+        if (c.role === "boss" && !slot.allowBoss) return false;
+        return true;
+      }
       if (usedIds.has(c.id) && c.id !== excludeSelf) return false;
       if (c.role === "boss" && !slot.allowBoss) return false;
       return true;
@@ -354,6 +399,15 @@ export default function HitPlanner() {
                   alt={c.name}
                 />
                 <span className="text-xs">{c.name}</span>
+                {isLaidLow(c) && (() => {
+                  const house = laidLowHouse(state, c);
+                  const lv = house?.level ?? 1;
+                  return (
+                    <Tip content={`He's inside a level ${lv} safehouse. Your men know where — the casing holds two weeks — but a hit on a man behind that door fights at −${Math.round(safehouseHitPenalty(lv) * 100)}%.`}>
+                      <span className="rounded bg-heat/15 px-1 text-[9px] uppercase tracking-wide text-heat">laid low · Lv {lv}</span>
+                    </Tip>
+                  );
+                })()}
                 <span className="ml-auto text-[10px] text-muted-foreground">{titleCase(c.role)}</span>
               </button>
             ))}
@@ -485,6 +539,31 @@ export default function HitPlanner() {
               </div>
             );
           })}
+          {!spec.roles.some((r) => r.multi) && rideAlong.length > 0 && (
+            <div>
+              <div className="mb-1 text-[11px] font-medium">
+                Ride along<span className="text-heat"> *</span>
+              </div>
+              <p className="mb-1 text-[10px] text-muted-foreground">
+                No gunner seat on this approach. Check them to come as shooters — the job gets louder.
+              </p>
+              <div className="max-h-28 space-y-1 overflow-y-auto scrollbar-thin">
+                {rideAlong.map((c) => (
+                  <label
+                    key={c.id}
+                    className="flex items-center gap-2 rounded-md px-1.5 py-1 hover:bg-panel-elevated"
+                  >
+                    <Checkbox
+                      checked={shooterIds.includes(c.id)}
+                      onCheckedChange={() => toggleShooter(c.id)}
+                    />
+                    <span className="text-xs">{c.name}</span>
+                    <span className="ml-auto text-[10px] text-muted-foreground">{c.role}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         <label className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -558,6 +637,13 @@ export default function HitPlanner() {
                 <span className="text-heat"> (~{Math.round(firefightEst * 100)}% fire)</span>
               )}
             </span>
+            {cover && cover.men > 0 && (
+              <span className="col-span-2 text-heat">
+                {cover.men} {cover.men === 1 ? "man" : "men"} in the {cover.from[0]!.territory.name} safehouse
+                {cover.from[0]!.hops === 0 ? "" : " next door"} (Lv {cover.from[0]!.level}) will return fire
+                {cover.from.length > 1 ? ` — and more from ${cover.from.length - 1} other house${cover.from.length > 2 ? "s" : ""}` : ""}.
+              </span>
+            )}
             <span className="col-span-2">
               Getaway: {hops} district{hops === 1 ? "" : "s"}
               {gRisk > 0.05 ? (
@@ -567,13 +653,22 @@ export default function HitPlanner() {
               ) : (
                 <span> — routine</span>
               )}
+              {door && (
+                <Tip content={`Your level ${door.level} safehouse in ${door.territory.name} is ${door.hops === 0 ? "on the block" : door.hops === 1 ? "one block over" : "two blocks over"}. The crew can duck through that door — getaway risk −${Math.round(door.bonus * 100)}%.`}>
+                  <span className="text-money"> · safehouse {door.hops === 0 ? "on the block" : `${door.hops} block${door.hops === 1 ? "" : "s"} off`}</span>
+                </Tip>
+              )}
             </span>
           </div>
         </div>
 
         {!canOrder && (
           <p className="text-[11px] text-heat">
-            {missing.length > 0
+            {atTable
+              ? "The family is at the table"
+              : crewGap.length > 0
+                ? `His crew comes along — give a role to ${crewGap.flatMap((g) => g.men.map((m) => m.name)).join(", ")}`
+              : missing.length > 0
               ? `Still need: ${missing.join(", ")}`
               : !blind && rivalTargets.length === 0
                 ? "No known target — case the district or strike blind."
@@ -624,6 +719,8 @@ export function HitResultModal() {
   if (!pendingHitResult) return null;
   const r = pendingHitResult;
   const incoming = pendingHitCinematic?.perspective === "incoming" ? pendingHitCinematic : null;
+  // The card says only what the case file says; the shooters' family is the investigation.
+  const who = incoming ? attributionLabel(attributeCinematic(useGameStore.getState(), incoming)) : null;
   const markFate = !incoming
     ? null
     : r.targetDead
@@ -684,7 +781,7 @@ export function HitResultModal() {
           <h2 className="font-display text-lg text-heat">{r.headline}</h2>
           <div className="flex shrink-0 flex-col items-end gap-1">
             {incoming && (
-              <Badge className="bg-heat/25 text-heat">Incoming — {incoming.attackerFamily}</Badge>
+              <Badge className="bg-heat/25 text-heat">Incoming — {who}</Badge>
             )}
             {r.blind && (
               <Badge className="bg-heat/25 text-heat">Blind</Badge>
@@ -762,6 +859,12 @@ export function HitResultModal() {
               </span>
             </div>
           </div>
+        )}
+        {r.loyaltyDelta !== undefined && r.loyaltyDelta > 0 && (
+          <p className="mt-2 text-center text-[11px] text-money">
+            Loyalty +{r.loyaltyDelta}
+            {r.loyaltyNames && r.loyaltyNames.length > 0 ? ` for ${r.loyaltyNames.join(", ")}` : ""}
+          </p>
         )}
         {detail.length === 0 && r.casualties.length > 0 && (
           <div className="mt-3 flex items-center gap-2">

@@ -24,6 +24,7 @@ import {
   launderCap,
 } from "./economy";
 import { computeTerritorySlots, maxRacketsFor, allowedRacketTypes } from "./territoryValue";
+import { nextRacketSiteIndex } from "./cityLayout";
 import { emptyVictory, finalTurnFor } from "./victory";
 
 interface TerritoryRaw {
@@ -116,6 +117,8 @@ function loadTerritories(rng: ReturnType<typeof createRng>): Territory[] {
           raw.id,
           racketType,
           raw.businessType === "mixed" ? 2 : 1,
+          0,
+          0,
         ),
       );
     }
@@ -209,18 +212,41 @@ function garrisonFamilyCrew(
 const DEFAULT_SETTINGS: GameSettings = {
   difficulty: "normal",
   gameLength: "medium",
-  aiAggression: 0.5,
+  aiAggression: 1,
   seed: 42,
   skipCinematics: false,
   rivalCinematics: "brief",
   sfxVolume: 0.7,
 };
 
+/**
+ * How busy each rival is. `runAiTurn` attempts `floor(aggression × 2)` actions
+ * (at least one) and fires each with chance `0.5 + aggression × 0.15`.
+ * Below 1.0 every personality still gets a single action, so the steps sit
+ * where the count actually changes.
+ */
+export const DIFFICULTY_AGGRESSION: Record<GameSettings["difficulty"], number> = {
+  easy: 0.45,
+  normal: 1,
+  hard: 1.5,
+};
+
+export function aggressionForDifficulty(difficulty: GameSettings["difficulty"]): number {
+  return DIFFICULTY_AGGRESSION[difficulty];
+}
+
 export function buildInitialState(
   seed = DEFAULT_SETTINGS.seed,
   settings: Partial<GameSettings> = {},
 ): GameState {
-  const mergedSettings: GameSettings = { ...DEFAULT_SETTINGS, ...settings, seed };
+  const difficulty = settings.difficulty ?? DEFAULT_SETTINGS.difficulty;
+  const mergedSettings: GameSettings = {
+    ...DEFAULT_SETTINGS,
+    ...settings,
+    seed,
+    difficulty,
+    aiAggression: aggressionForDifficulty(difficulty),
+  };
   const rng = createRng(seed);
 
   let territories = computeTerritorySlots(loadTerritories(rng), seed);
@@ -280,6 +306,7 @@ export function buildInitialState(
     grudges: [],
     captureTally: { turn: 1, byFamily: {} },
     crewRequests: [],
+    defunctFamilies: [],
     incidents: [],
     rumors: [],
     sitdowns: [],
@@ -292,6 +319,10 @@ export function buildInitialState(
     passageDeals: [],
     passageLeverage: {},
     messageHitTurns: {},
+    commissionCall: null,
+    familyDinner: null,
+    commissionHistory: [],
+    pendingRulings: [],
     victory: emptyVictory(finalTurnFor(mergedSettings.gameLength)),
     liquorStock: 20,
     pendingShipments: [],
@@ -335,7 +366,14 @@ export function startGame(state: GameState, family: FamilyName): GameState {
           ? t.rackets
           : [
               ...t.rackets,
-              createRacket(`racket_${t.id}_player`, t.id, racketType, 2),
+              createRacket(
+                `racket_${t.id}_player`,
+                t.id,
+                racketType,
+                2,
+                0,
+                nextRacketSiteIndex(t.rackets),
+              ),
             ];
       return {
         ...t,
@@ -434,7 +472,16 @@ export function startGame(state: GameState, family: FamilyName): GameState {
   const launderPlan: Record<string, number> = {};
   const laundryId = `racket_${startTerritoryId}_laundry`;
   const laundry = {
-    ...createRacket(laundryId, startTerritoryId, "laundromat", 1, state.turn),
+    ...createRacket(
+      laundryId,
+      startTerritoryId,
+      "laundromat",
+      1,
+      state.turn,
+      nextRacketSiteIndex(
+        territories.find((t) => t.id === startTerritoryId)?.rackets ?? [],
+      ),
+    ),
     launderReadyTurn: 0,
   };
   territories = territories.map((t) => {
@@ -454,7 +501,14 @@ export function startGame(state: GameState, family: FamilyName): GameState {
   if (secondDistrict && allowedRacketTypes(secondDistrict).includes("deli")) {
     const deliId = `racket_${secondDistrict.id}_deli`;
     const deli = {
-      ...createRacket(deliId, secondDistrict.id, "deli", 1, state.turn),
+      ...createRacket(
+        deliId,
+        secondDistrict.id,
+        "deli",
+        1,
+        state.turn,
+        nextRacketSiteIndex(secondDistrict.rackets),
+      ),
       launderReadyTurn: 0,
     };
     territories = territories.map((t) =>

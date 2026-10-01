@@ -56,6 +56,12 @@ function activeBoss(state: Pick<GameState, "crew">, family: FamilyName): CrewMem
 export function bossPresenceDistrict(state: PresenceState, family: FamilyName): string | null {
   const boss = activeBoss(state, family);
   if (!boss) return null;
+  // Laid low, he holds court nowhere: the family goes quiet while he's inside.
+  if (boss.assignment.type === "safehouse") return null;
+  // A dinner moves the desk: the HQ is empty while the family is at the table.
+  if (boss.awayAt?.reason === "dinner" && boss.awayAt.untilTurn > (state.turn ?? 0)) {
+    return boss.awayAt.territoryId;
+  }
   const grounded = boss.awayAt ? { ...state, crew: state.crew.map((c) => (c.id === boss.id ? { ...c, awayAt: undefined } : c)) } : state;
   return resolveCrewTerritoryId(grounded, boss.id);
 }

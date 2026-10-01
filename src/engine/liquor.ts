@@ -555,10 +555,6 @@ export function sellSpeakeasies(
     return { ...r, stock: r.stock - amount };
   });
 
-  if (territory.owner === family) {
-    revenue += Math.floor(territory.baseIncome * (1 + incomeBonus) * 0.1);
-  }
-
   return {
     territory: { ...territory, rackets },
     revenue,

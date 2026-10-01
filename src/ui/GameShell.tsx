@@ -22,12 +22,14 @@ import EventModal from "./panels/EventModal";
 import CrewRequestModal from "./panels/CrewRequestModal";
 import SitdownRequestModal from "./panels/SitdownRequestModal";
 import SitdownResultModal from "./panels/SitdownResultModal";
+import CommissionRulingModal from "./panels/CommissionRulingModal";
 import DealSettlementModal from "./panels/DealSettlementModal";
 import PanelShell from "./panels/PanelShell";
 import HitCaptions from "./HitCaptions";
 import SitdownTable from "./SitdownTable";
 import MapLegend from "./MapLegend";
 import TurnDigest from "./TurnDigest";
+import TurnCurtain from "./TurnCurtain";
 import { useMapView } from "@/engine/mapView";
 import { RACKET_LABELS } from "@/types/game";
 import { isLegitBusiness, launderSiteStatus } from "@/engine/economy";
@@ -279,6 +281,7 @@ export default function GameShell() {
 
         <div className="relative z-0 flex-1">
           <CityScene />
+          <TurnCurtain />
 
           {overview && (
             <div className="pointer-events-none absolute left-1/2 top-3 z-40 -translate-x-1/2">
@@ -290,12 +293,12 @@ export default function GameShell() {
 
           <TurnDigest />
 
-          <div className="pointer-events-none absolute inset-0 z-40 flex items-start p-4">
+          <div className="pointer-events-none absolute inset-0 z-40 flex p-4">
             <div
               className={
                 cinematicPlaying
-                  ? "pointer-events-none opacity-40"
-                  : "pointer-events-auto relative z-40"
+                  ? "pointer-events-none flex h-full min-h-0 max-h-full flex-col opacity-40"
+                  : "pointer-events-auto relative z-40 flex h-full min-h-0 max-h-full flex-col"
               }
             >
               <ActivePanel />
@@ -312,6 +315,7 @@ export default function GameShell() {
           <SitdownRequestModal />
           <HitResultModal />
           <SitdownResultModal />
+          <CommissionRulingModal />
           <DealSettlementModal />
           <LookoutReportModal />
           <VictoryOverlay />

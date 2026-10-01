@@ -172,6 +172,15 @@ export const HIT_APPROACH_SPECS: Record<HitApproach, HitApproachSpec> = {
       GETAWAY_DRIVER,
     ],
   },
+  summons: {
+    approach: "summons",
+    label: "The Call",
+    description: "Call one of your own in and have it done in the back room.",
+    heatHint: 5,
+    skillsHint: "Stealth",
+    garrisonExposure: 0,
+    roles: [],
+  },
 };
 
 export function approachSpec(approach: HitApproach): HitApproachSpec {

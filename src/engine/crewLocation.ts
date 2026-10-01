@@ -26,6 +26,7 @@ export function familyHq(state: HqState, family: FamilyName): string | null {
 
 export type CrewLocationReason =
   | "garrisoned"
+  | "laid_low"
   | "running_racket"
   | "on_delivery"
   | "casing_target"
@@ -42,6 +43,7 @@ export interface CrewLocation {
 
 export const LOCATION_REASON_LABEL: Record<CrewLocationReason, string> = {
   garrisoned: "Garrisoned here",
+  laid_low: "Laid low in the safehouse here",
   running_racket: "Running a racket here",
   on_delivery: "Out on a delivery",
   casing_target: "Casing the mark",
@@ -98,6 +100,10 @@ export function resolveCrewLocation(state: LocationState, crewId: string): CrewL
 
   if (a.type === "garrison" && a.territoryId) {
     return { territoryId: a.territoryId, reason: "garrisoned" };
+  }
+
+  if (a.type === "safehouse" && a.territoryId) {
+    return { territoryId: a.territoryId, reason: "laid_low" };
   }
 
   if (a.territoryId) return { territoryId: a.territoryId, reason: "garrisoned" };

@@ -48,7 +48,7 @@ const RACKET_BLURB: Record<RacketType, string> = {
   barber: `Washes up to $${LAUNDER_RULES.barber.capPerLevel}/lvl at a ${LAUNDER_RULES.barber.cut * 100}% cut.`,
   restaurant: `Washes up to $${LAUNDER_RULES.restaurant.capPerLevel}/lvl at a ${LAUNDER_RULES.restaurant.cut * 100}% cut.`,
   trucking: `Washes up to $${LAUNDER_RULES.trucking.capPerLevel}/lvl at a ${LAUNDER_RULES.trucking.cut * 100}% cut.`,
-  safehouse: "Garrisoned crew shed wanted status; raids and shakedowns falter here. No income.",
+  safehouse: "Every level adds a bed, makes men inside harder to hit, sharpens their return fire on hits nearby, gives your own crews a better door to run through, helps trucks passing the house duck police checkpoints, and fortifies the block against capture (+8%/level). Runs itself — no manager. Raids and shakedowns falter here. No income.",
 };
 
 function fundingBadgeClass(funding: ReturnType<typeof racketFunding>): string {

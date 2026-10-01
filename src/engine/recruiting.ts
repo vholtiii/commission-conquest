@@ -56,6 +56,11 @@ export function rollRecruit(rng: Rng, family: FamilyName, tier: RecruitTier): Cr
   });
 }
 
+/** In the pool because his family is finished, not because he walked in. */
+export function isFreeAgent(member: Pick<CrewMember, "freeUntilTurn">): boolean {
+  return member.freeUntilTurn != null;
+}
+
 function round50(n: number): number {
   return Math.round(n / 50) * 50;
 }
@@ -65,6 +70,8 @@ function round50(n: number): number {
  * then the family's recruitment discount.
  */
 export function recruitPrice(member: CrewMember, family: FamilyName): number {
+  // A man from a finished family asks for nothing while he waits.
+  if (isFreeAgent(member)) return 0;
   const sum =
     member.skills.muscle +
     member.skills.stealth +
@@ -88,7 +95,10 @@ export function walkIns(
   if (!family) return { state };
   const tier = recruitTier(state.reputation.respect);
   const pool = state.recruitmentPool ?? [];
-  const arriving = Math.min(tier.walkIns, Math.max(0, POOL_CAP - pool.length));
+  // Scattered men waiting on you don't crowd out the week's walk-ins.
+  const walkedIn = pool.filter((c) => !isFreeAgent(c)).length;
+  const sanctioned = (state.diplomacy?.sanctionUntil ?? 0) > state.turn;
+  const arriving = Math.max(0, Math.min(tier.walkIns, Math.max(0, POOL_CAP - walkedIn)) - (sanctioned ? 1 : 0));
   if (arriving <= 0) return { state };
   const men = Array.from({ length: arriving }, () => rollRecruit(rng, family, tier));
   return {

@@ -52,6 +52,17 @@ export function isCrewVisible(state: VisibilityState, crew: CrewMember): boolean
 
   const intel = state.intel ?? emptyIntel();
   const known = intel.known[crew.id];
+
+  // A man laid low in a safehouse is only placed by a crew that cased the block recently.
+  if (crew.assignment.type === "safehouse") {
+    return (
+      !!known &&
+      known.territoryId === territoryId &&
+      known.source === "surveillance" &&
+      known.turn >= state.turn - 2
+    );
+  }
+
   if (known && known.territoryId === territoryId && known.source !== "sighting") return true;
 
   if ((intel.districtReveal[territoryId] ?? 0) > state.turn) return true;

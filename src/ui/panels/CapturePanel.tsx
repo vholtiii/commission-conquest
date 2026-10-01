@@ -7,11 +7,13 @@ import {
   captureStrength,
   eligibleCaptureCrew,
 } from "@/engine/capture";
+import { captureParty } from "@/engine/crews";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import PortraitAvatar from "@/ui/PortraitAvatar";
 import PanelShell from "./PanelShell";
+import { dinnerActive } from "@/engine/dinner";
 
 export default function CapturePanel() {
   const selectedTerritoryId = useGameStore((s) => s.selectedTerritoryId);
@@ -42,7 +44,9 @@ export default function CapturePanel() {
     );
   }
 
-  const strength = captureStrength(state, territory.id, picked);
+  const party = captureParty(crew, picked);
+  const along = party.filter((id) => !picked.includes(id));
+  const strength = captureStrength(state, territory.id, party);
   const odds = captureOdds(strength.atk, strength.def);
   const oddsPct = Math.round(odds * 100);
   const allowance = captureAllowance(state, playerFamily, territory);
@@ -88,6 +92,9 @@ export default function CapturePanel() {
           Moves this week: {allowance.used}/{allowance.limit}
           {bonusNote ? ` · ${bonusNote}` : ""}
         </div>
+        {dinnerActive(state) && (
+          <div className="text-heat">The family is at the table</div>
+        )}
         {!allowance.ok && allowance.blocked && (
           <div className="text-heat">{allowance.blocked}</div>
         )}
@@ -97,7 +104,7 @@ export default function CapturePanel() {
         Squad ({picked.length} selected)
       </h3>
       <p className="mb-2 text-[10px] text-muted-foreground">
-        First pick leads and garrisons the district if you win.
+        First pick leads. A boss, capo, or consigliere brings his free crew, and they garrison the block if you take it.
       </p>
 
       {eligible.length === 0 ? (
@@ -152,6 +159,16 @@ export default function CapturePanel() {
         </div>
       )}
 
+      {along.length > 0 && (
+        <p className="mt-2 text-[10px] text-amber-300">
+          Comes along:{" "}
+          {along
+            .map((id) => crew.find((c) => c.id === id)?.name ?? "a soldier")
+            .join(", ")}
+          . Their muscle is in the odds.
+        </p>
+      )}
+
       <div className="mt-3 rounded border border-panel-border bg-panel/50 px-3 py-2">
         <div className="flex items-center justify-between text-xs">
           <span className="text-muted-foreground">Win chance</span>
@@ -181,7 +198,7 @@ export default function CapturePanel() {
         </Button>
         <Button
           className="flex-1 bg-emerald-700 font-ui font-bold uppercase hover:bg-emerald-600"
-          disabled={picked.length < 1 || !allowance.ok}
+          disabled={picked.length < 1 || !allowance.ok || dinnerActive(state)}
           onClick={() => captureTerritory(territory.id, picked)}
         >
           Attack
