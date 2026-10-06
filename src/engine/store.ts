@@ -6,7 +6,9 @@ import { announce, holdAnnouncements } from "./announce";
 import { screenHeld } from "./screen";
 import { canLieLow } from "./safehouse";
 import type {
+  CommissionCallKind,
   CrewMember,
+  CrewSkills,
   FamilyName,
   GameSettings,
   GameState,
@@ -18,7 +20,7 @@ import type {
 import { RACKET_LABELS } from "@/types/game";
 import { buildInitialState, startGame } from "./initialState";
 import { endTurn, resolvePlayerHits } from "./turnPipeline";
-import { familyHeadless } from "./jail";
+import { familyHeadless, releaseMember } from "./jail";
 import { emptyVictory, finalTurnFor, seedRivalInfluence } from "./victory";
 import { buildCityLayout, ensureRacketSites, nextRacketSiteIndex, racketBlockFor } from "./cityLayout";
 import { buildHitCinematic, commitHitCrew, planHit } from "./hitOps";
@@ -29,6 +31,7 @@ import {
   generateRecruitmentPool,
   promoteCrew,
   funeralLoyaltyHit,
+  migrateMade,
 } from "./crew";
 import { isFreeAgent, recruitPrice, recruitTier } from "./recruiting";
 import {
@@ -36,14 +39,24 @@ import {
   upgradeRacket,
   findDeliveryPath,
   racketIncome,
+  canManageRacket,
   incomeFlavor,
   racketPayment,
+  associateBuildPayment,
+  associateCanBuild,
   formatPaymentParts,
   RACKET_BUILD_COST,
   isLegitBusiness,
   isRacketFrozen,
   isLaunderSiteSetUp,
   launderCap,
+  lawyerBlockReason,
+  lawyerOffer,
+  LAWYER_COOLDOWN_TURNS,
+  LAWYER_HEAT,
+  STREET_LAWYER_BAIL_HEAT,
+  STREET_LAWYER_COST,
+  STREET_LAWYER_WEEKS,
   normalizeTerritoryRackets,
   pruneLaunderPlan,
   migrateLaunderSites,
@@ -60,8 +73,11 @@ import {
 } from "./liquor";
 import { ensureTerritorySlots, maxRacketsFor, allowedRacketTypes, lotTier, lotTierHint } from "./territoryValue";
 import { attemptBribe } from "./bribes";
+import { aggregateBribeEffects, applyHeat } from "./heat";
 import { applyEventChoice } from "./events";
+import { beginMaking, commitBooks, sittingOut } from "./making";
 import { callInOwn as orderCallIn } from "./callIn";
+import { sheetAffairOpen, sheetRatAction } from "./ratAffair";
 import { callFamilyDinner as orderDinner, dinnerActive } from "./dinner";
 import {
   breakPact,
@@ -99,7 +115,7 @@ import {
   type TableAnswer,
 } from "./sitdowns";
 import { breakDeal, fulfilLiquorDeal, inTruce } from "./deals";
-import { answerRuling as settleRuling, lobbySeat as buySeat, openCall, openWarCall } from "./commission";
+import { answerRuling as settleRuling, lobbySeat as buySeat, openCommissionCall, openWarCall } from "./commission";
 import {
   cancelSupplyRoute,
   establishSupplyRoute,
@@ -201,6 +217,12 @@ function focusOnRacket(
   return focusOnTerritory(state, territoryId);
 }
 
+function refuseSitting(state: GameState, crewId: string | null | undefined): boolean {
+  if (!crewId || !sittingOut(state, crewId)) return false;
+  toast.error("He's sitting for the books", { description: "He isn't on the street this week." });
+  return true;
+}
+
 function flyTo(
   state: GameState,
   territoryId: string | null,
@@ -230,6 +252,8 @@ interface GameStore extends GameState {
   recruitFromPool: (poolIndex: number) => void;
   refreshRecruitment: () => void;
   promote: (crewId: string, toRole: CrewRole) => void;
+  /** Place the ceremony's skill points. Illegal splits are refused. */
+  openBooks: (alloc: CrewSkills) => void;
   assignMember: (
     crewId: string,
     assignment: GameState["crew"][0]["assignment"]
@@ -242,6 +266,7 @@ interface GameStore extends GameState {
     crewId: string | null
   ) => void;
   buildRacket: (territoryId: string, type: RacketType) => void;
+  buildRacketForAssociate: (crewId: string, territoryId: string, type: RacketType) => void;
   upgradeRacketAt: (territoryId: string, racketId: string) => void;
   startDelivery: (
     driverId: string,
@@ -255,6 +280,9 @@ interface GameStore extends GameState {
   suggestSafeSpread: () => void;
   setupLaunderSite: (territoryId: string, racketId: string) => void;
   stopLaunderSite: (territoryId: string, racketId: string) => void;
+  callLawyer: () => void;
+  hireStreetLawyer: () => void;
+  streetLawyerBail: (crewId: string) => void;
   planPlayerHit: (args: {
     targetCrewId?: string;
     targetTerritoryId: string;
@@ -299,6 +327,8 @@ interface GameStore extends GameState {
   chooseEvent: (choiceId: string) => void;
   /** Order a hit on one of your own men. */
   callInOwn: (crewId: string) => void;
+  /** Put a watched man on a train. */
+  moveRatOut: (crewId: string) => void;
   /** Gather the family at a safehouse for two weeks. */
   callFamilyDinner: () => void;
   answerCrewRequest: (requestId: string, answer: CrewRequestAnswer) => void;
@@ -318,8 +348,8 @@ interface GameStore extends GameState {
   ) => void;
   /** Leave an open general table with no subject. */
   justTalk: (id: string) => void;
-  /** Ask the Commission to rule on the war with a rival. */
-  callCommission: (target: FamilyName) => void;
+  /** Ask the Commission for a truce, a war, or a tax. */
+  callCommission: (target: FamilyName, kind?: CommissionCallKind) => void;
   /** Ask the table to go to war with a family that ignored its ruling. */
   callCommissionWar: (target: FamilyName) => void;
   /** Buy one seat's ear while a call is open. */
@@ -544,6 +574,18 @@ export const useGameStore = create<GameStore>()(
           });
           return;
         }
+        if (toRole === "soldier") {
+          const result = beginMaking(s, crewId);
+          if (!result.ok) {
+            toast.error("Cannot open the books", { description: result.reason });
+            return;
+          }
+          set(result.state);
+          toast.success(`${member.name} sits the week out`, {
+            description: `−$${check.cost}. The books open next week.`,
+          });
+          return;
+        }
         set({
           money: s.money - check.cost,
           crew: promoteCrew(s.crew, crewId, toRole, s.turn),
@@ -553,8 +595,19 @@ export const useGameStore = create<GameStore>()(
         });
       },
 
+      openBooks: (alloc) => {
+        const s = get();
+        const next = commitBooks(s, alloc);
+        if (next === s) {
+          toast.error("Those points don't fit");
+          return;
+        }
+        set(next);
+      },
+
       assignMember: (crewId, assignment) => {
         const s = get();
+        if (refuseSitting(s, crewId)) return;
         let crew = assignCrew(s.crew, crewId, assignment);
         let territories = s.territories.map((t) => {
           let garrisonIds = t.garrisonIds.filter((id) => id !== crewId);
@@ -586,6 +639,7 @@ export const useGameStore = create<GameStore>()(
 
       lieLow: (crewId, territoryId) => {
         const s = get();
+        if (refuseSitting(s, crewId)) return;
         const member = s.crew.find((c) => c.id === crewId);
         if (!member || member.family !== s.playerFamily) return;
         const check = canLieLow(s, member, territoryId);
@@ -606,9 +660,20 @@ export const useGameStore = create<GameStore>()(
       assignManager: (territoryId, racketId, crewId) => {
         const s = get();
         if (!s.playerFamily) return;
+        if (crewId && refuseSitting(s, crewId)) return;
         const t = s.territories.find((x) => x.id === territoryId);
         const racket = t?.rackets.find((r) => r.id === racketId);
         if (!t || !racket || t.owner !== s.playerFamily) return;
+
+        if (crewId) {
+          const candidate = s.crew.find((c) => c.id === crewId);
+          if (
+            !candidate ||
+            (!canManageRacket(candidate, s.playerFamily) && racket.managerId !== candidate.id)
+          ) {
+            return;
+          }
+        }
 
         let crew = s.crew;
         // Free previous manager
@@ -620,17 +685,6 @@ export const useGameStore = create<GameStore>()(
         }
 
         if (crewId) {
-          const member = crew.find((c) => c.id === crewId);
-          if (
-            !member ||
-            member.family !== s.playerFamily ||
-            member.status !== "active" ||
-            member.role === "boss" ||
-            member.assignment.type === "operation" ||
-            member.assignment.type === "surveillance"
-          ) {
-            return;
-          }
           crew = assignCrew(crew, crewId, {
             type: "racket",
             territoryId,
@@ -713,6 +767,74 @@ export const useGameStore = create<GameStore>()(
         });
       },
 
+      buildRacketForAssociate: (crewId, territoryId, type) => {
+        const s = get();
+        if (!s.playerFamily) return;
+        if (refuseSitting(s, crewId)) return;
+        const member = s.crew.find((c) => c.id === crewId);
+        if (
+          !member ||
+          member.family !== s.playerFamily ||
+          member.role !== "associate" ||
+          member.status !== "active"
+        ) {
+          return;
+        }
+        const t = s.territories.find((x) => x.id === territoryId);
+        if (!t || t.owner !== s.playerFamily) return;
+        const slots = maxRacketsFor(t);
+        if (t.rackets.length >= slots) {
+          toast.error(`No room — ${slots}/${slots} rackets`);
+          return;
+        }
+        if (!allowedRacketTypes(t).includes(type)) {
+          toast.error(lotTierHint(lotTier(t)) || "This lot cannot hold that racket");
+          return;
+        }
+        if (!associateCanBuild(type)) {
+          toast.error("He pays in clean cash", { description: "That racket takes dirty money." });
+          return;
+        }
+        const bossHere = bossPresentIn(s, s.playerFamily, territoryId);
+        const cost = presenceBuildCost(RACKET_BUILD_COST[type] ?? 2000, bossHere);
+        const pay = associateBuildPayment(type, cost, s.money);
+        if (!pay) {
+          toast.error("Not enough clean cash");
+          return;
+        }
+        const racket = createRacket(
+          `rkt_${Date.now()}`,
+          territoryId,
+          type,
+          1,
+          s.turn,
+          nextRacketSiteIndex(t.rackets),
+        );
+        const income = racketIncome(racket, 0, null, undefined, bossHere);
+        const flavor = incomeFlavor(type);
+        set({
+          money: s.money - pay.clean,
+          territories: s.territories.map((x) =>
+            x.id === territoryId ? { ...x, rackets: [...x.rackets, racket] } : x,
+          ),
+          buildFx: {
+            territoryId,
+            racketId: racket.id,
+            nonce: Date.now(),
+            kind: "build",
+            type,
+            level: 1,
+          },
+          ...flyTo(s, territoryId),
+        });
+        const legitHint = isLegitBusiness(type)
+          ? " · Set it up as a laundering site from the district panel"
+          : "";
+        toast.success(`${member.name} opened a ${RACKET_LABELS[type]} in ${t.name}`, {
+          description: `Paid $${pay.clean} clean · +$${income}/turn ${flavor} income (${bossHere ? "boss on the block" : "unmanaged"})${legitHint}`,
+        });
+      },
+
       upgradeRacketAt: (territoryId, racketId) => {
         const s = get();
         const t = s.territories.find((x) => x.id === territoryId);
@@ -760,6 +882,7 @@ export const useGameStore = create<GameStore>()(
       startDelivery: (driverId, sourceId, destId, cargo) => {
         const s = get();
         if (!s.playerFamily) return;
+        if (refuseSitting(s, driverId)) return;
         if (cargo <= 0) {
           toast.error("Need at least 1 crate");
           return;
@@ -999,9 +1122,131 @@ export const useGameStore = create<GameStore>()(
         });
       },
 
+      callLawyer: () => {
+        const s = get();
+        const offer = lawyerOffer(s);
+        if (!offer.available) {
+          const reason = lawyerBlockReason(offer);
+          if (reason) toast.error(reason);
+          return;
+        }
+        const bribeFx = aggregateBribeEffects(s.bribes);
+        const landed = s.money + offer.cleanReturn;
+        set({
+          money: landed,
+          dirtyMoney: s.dirtyMoney - offer.dirtySpent,
+          heat: applyHeat(s.heat, LAWYER_HEAT, "lawyer", bribeFx.heatGenerationReduction),
+          lawyerReadyTurn: s.turn + LAWYER_COOLDOWN_TURNS,
+          turnLog: [
+            ...s.turnLog,
+            {
+              id: `log_lawyer_${s.turn}`,
+              turn: s.turn,
+              category: "economy",
+              text:
+                landed === 0
+                  ? `House counsel took $${offer.dirtySpent.toLocaleString()} dirty and sent back $${offer.cleanReturn.toLocaleString()}. The clean books are square.`
+                  : `House counsel took $${offer.dirtySpent.toLocaleString()} dirty and sent back $${offer.cleanReturn.toLocaleString()}. Clean cash is still short $${Math.abs(landed).toLocaleString()}.`,
+              family: s.playerFamily ?? undefined,
+            },
+          ].slice(-200),
+        });
+        toast.success("The lawyer sent a check", {
+          description:
+            landed === 0
+              ? `$${offer.dirtySpent.toLocaleString()} dirty in, clean books at zero. He won't answer again for ${LAWYER_COOLDOWN_TURNS} weeks.`
+              : `$${offer.cleanReturn.toLocaleString()} back. The debt is still $${Math.abs(landed).toLocaleString()}.`,
+        });
+      },
+
+      hireStreetLawyer: () => {
+        const s = get();
+        const until = s.streetLawyerUntil ?? 0;
+        if (s.turn < until) {
+          toast.error(`He's already on the books until week ${until}.`);
+          return;
+        }
+        if (s.dirtyMoney < STREET_LAWYER_COST) {
+          toast.error("Not enough dirty cash.");
+          return;
+        }
+        const ready = s.turn + STREET_LAWYER_WEEKS;
+        set({
+          dirtyMoney: s.dirtyMoney - STREET_LAWYER_COST,
+          streetLawyerUntil: ready,
+          streetLawyerBailUsed: false,
+          turnLog: [
+            ...s.turnLog,
+            {
+              id: `log_street_lawyer_${s.turn}`,
+              turn: s.turn,
+              category: "economy",
+              text: `The street lawyer is on the books through week ${ready - 1}. $${STREET_LAWYER_COST.toLocaleString()} dirty. He can walk one man.`,
+              family: s.playerFamily ?? undefined,
+            },
+          ].slice(-200),
+        });
+        toast.success("The street lawyer is on the books", {
+          description: `$${STREET_LAWYER_COST.toLocaleString()} dirty. Heat falls an extra point a week through week ${ready - 1}. He can walk one man out.`,
+        });
+      },
+
+      streetLawyerBail: (crewId: string) => {
+        const s = get();
+        const until = s.streetLawyerUntil ?? 0;
+        if (s.turn >= until) {
+          toast.error("The street lawyer is off the books.");
+          return;
+        }
+        if (s.streetLawyerBailUsed) {
+          toast.error("He already walked someone this retainer.");
+          return;
+        }
+        const man = s.crew.find((c) => c.id === crewId);
+        if (!man || man.family !== s.playerFamily || man.status !== "jailed") {
+          toast.error("He has nobody of yours to walk out.");
+          return;
+        }
+        if (man.role === "boss") {
+          toast.error("That's above his pay grade.");
+          return;
+        }
+        const bribeFx = aggregateBribeEffects(s.bribes);
+        set({
+          crew: releaseMember(s.crew, crewId),
+          streetLawyerBailUsed: true,
+          heat: applyHeat(s.heat, STREET_LAWYER_BAIL_HEAT, "street lawyer", bribeFx.heatGenerationReduction),
+          turnLog: [
+            ...s.turnLog,
+            {
+              id: `log_street_bail_${s.turn}_${crewId}`,
+              turn: s.turn,
+              category: "heat",
+              text: `${man.name} walks out. The street lawyer posted bail. Wanted stays on him.`,
+              family: s.playerFamily ?? undefined,
+            },
+          ].slice(-200),
+        });
+        toast.success(`${man.name} walks`, {
+          description: "The street lawyer posted bail. Wanted stays on him. Heat +3.",
+        });
+      },
+
       planPlayerHit: (args) => {
         const s = get();
         if (!s.playerFamily) return;
+        const seated = [
+          ...args.shooterIds,
+          args.wheelmanId,
+          args.lookoutId,
+          args.bombMakerId,
+          args.planterId,
+          args.negotiatorId,
+        ];
+        if (seated.some((id) => id && sittingOut(s, id))) {
+          toast.error("He's sitting for the books", { description: "He isn't on the street this week." });
+          return;
+        }
         if (dinnerActive(s)) {
           toast.error("The family is at the table", {
             description: "Nobody's free to take a job until the dinner's over.",
@@ -1150,6 +1395,7 @@ export const useGameStore = create<GameStore>()(
       establishSupplyRoute: (args) => {
         const s = get();
         if (!s.playerFamily) return;
+        if (refuseSitting(s, args.driverId) || (args.escortId && refuseSitting(s, args.escortId))) return;
         const rng = createRng(hashString(`${s.seed}:supply:${s.turn}:${args.path.join(">")}`));
         const result = establishSupplyRoute(s, args, rng);
         if (result.error || !result.route) {
@@ -1243,6 +1489,7 @@ export const useGameStore = create<GameStore>()(
       caseDistrict: (territoryId, crewId) => {
         const s = get();
         if (!s.playerFamily) return;
+        if (refuseSitting(s, crewId)) return;
         const territory = s.territories.find((t) => t.id === territoryId);
         if (!territory?.owner || territory.owner === s.playerFamily) return;
         const lookout = s.crew.find(
@@ -1327,6 +1574,19 @@ export const useGameStore = create<GameStore>()(
         const s = get();
         const man = s.crew.find((c) => c.id === crewId);
         const rng = createRng(hashString(`${s.seed}:callin:${crewId}:${s.turn}`));
+        if (sheetAffairOpen(s, crewId)) {
+          const next = sheetRatAction(s, crewId, "call", rng);
+          if (!next) return;
+          const summons = next.pendingSummons ?? null;
+          set({
+            ...next,
+            pendingSummons: null,
+            selectedCrewId: null,
+            cinematicQueue: summons ? [...next.cinematicQueue, summons] : next.cinematicQueue,
+          });
+          announce.warning(`${man?.name ?? "He"} was called in.`);
+          return;
+        }
         const result = orderCallIn(s, crewId, rng);
         if (result.logs.length === 0) return;
         const summons = result.state.pendingSummons ?? null;
@@ -1340,6 +1600,16 @@ export const useGameStore = create<GameStore>()(
           turnLog: [...s.turnLog, ...result.logs],
         });
         announce.warning(`${man?.name ?? "He"} was called in.`);
+      },
+
+      moveRatOut: (crewId) => {
+        const s = get();
+        const rng = createRng(hashString(`${s.seed}:exile:${crewId}:${s.turn}`));
+        const next = sheetRatAction(s, crewId, "exile", rng);
+        if (!next) return;
+        set({ ...next, selectedCrewId: null });
+        const man = s.crew.find((c) => c.id === crewId);
+        toast.message("Out of the city", { description: `${man?.name ?? "He"} is on a train.` });
       },
 
       callFamilyDinner: () => {
@@ -1531,9 +1801,9 @@ export const useGameStore = create<GameStore>()(
         toast.message(result.log.text);
       },
 
-      callCommission: (target) => {
+      callCommission: (target, kind: CommissionCallKind = "ruling") => {
         const s = get();
-        const result = openCall(s, target);
+        const result = openCommissionCall(s, kind, target);
         set({ ...result.state, turnLog: [...result.state.turnLog, result.log].slice(-200) });
         if (result.state.commissionCall) toast.message(result.log.text);
         else toast.error(result.log.text);
@@ -1859,6 +2129,10 @@ export const useGameStore = create<GameStore>()(
       captureTerritory: (territoryId, attackerIds) => {
         const s = get();
         if (!s.playerFamily || attackerIds.length < 1) return;
+        if (attackerIds.some((id) => sittingOut(s, id))) {
+          toast.error("He's sitting for the books", { description: "He isn't on the street this week." });
+          return;
+        }
         if (dinnerActive(s)) {
           toast.error("The family is at the table", {
             description: "Nobody's free to take a block until the dinner's over.",
@@ -1926,6 +2200,8 @@ export const useGameStore = create<GameStore>()(
           );
           set({
             ...loaded,
+            crew: (loaded.crew ?? []).map(migrateMade),
+            making: loaded.making ?? null,
             territories,
             launderPlan: pruneLaunderPlan(
               plan,
@@ -1933,6 +2209,9 @@ export const useGameStore = create<GameStore>()(
               loaded.playerFamily ?? null,
             ),
             launderNudgeShown: loaded.launderNudgeShown ?? false,
+            lawyerReadyTurn: loaded.lawyerReadyTurn ?? 0,
+            streetLawyerUntil: loaded.streetLawyerUntil ?? 0,
+            streetLawyerBailUsed: loaded.streetLawyerBailUsed ?? false,
             pendingShipments: loaded.pendingShipments ?? [],
             liquorLedger: loaded.liquorLedger
               ? { ...emptyLiquorLedger(), ...loaded.liquorLedger }
@@ -2009,6 +2288,7 @@ export const useGameStore = create<GameStore>()(
             commissionHistory: loaded.commissionHistory ?? [],
             pendingRulings: loaded.pendingRulings ?? [],
             familyDinner: loaded.familyDinner ?? null,
+            ratAffair: loaded.ratAffair ?? null,
           });
           return true;
         } catch {
@@ -2035,10 +2315,12 @@ export const useGameStore = create<GameStore>()(
           "recruitFromPool",
           "refreshRecruitment",
           "promote",
+          "openBooks",
           "assignMember",
           "lieLow",
           "assignManager",
           "buildRacket",
+          "buildRacketForAssociate",
           "upgradeRacketAt",
           "startDelivery",
           "buyWhisky",
@@ -2047,6 +2329,9 @@ export const useGameStore = create<GameStore>()(
           "suggestSafeSpread",
           "setupLaunderSite",
           "stopLaunderSite",
+          "callLawyer",
+          "hireStreetLawyer",
+          "streetLawyerBail",
           "planPlayerHit",
           "establishSupplyRoute",
           "cancelSupplyRoute",
@@ -2064,6 +2349,7 @@ export const useGameStore = create<GameStore>()(
           "tryBribe",
           "chooseEvent",
           "callInOwn",
+          "moveRatOut",
           "callFamilyDinner",
           "answerCrewRequest",
           "joinCrew",
@@ -2102,6 +2388,8 @@ export const useGameStore = create<GameStore>()(
         return {
           ...current,
           ...p,
+          crew: (p.crew ?? current.crew ?? []).map(migrateMade),
+          making: p.making ?? null,
           territories,
           launderPlan: pruneLaunderPlan(
             plan,
@@ -2109,6 +2397,9 @@ export const useGameStore = create<GameStore>()(
             p.playerFamily ?? current.playerFamily ?? null,
           ),
           launderNudgeShown: p.launderNudgeShown ?? current.launderNudgeShown ?? false,
+          lawyerReadyTurn: p.lawyerReadyTurn ?? 0,
+          streetLawyerUntil: p.streetLawyerUntil ?? 0,
+          streetLawyerBailUsed: p.streetLawyerBailUsed ?? false,
           pendingShipments: p.pendingShipments ?? current.pendingShipments ?? [],
           liquorLedger: p.liquorLedger
             ? { ...emptyLiquorLedger(), ...p.liquorLedger }
@@ -2147,6 +2438,7 @@ export const useGameStore = create<GameStore>()(
             refusals: p.diplomacy?.refusals ?? current.diplomacy?.refusals ?? 0,
           },
           commissionCall: p.commissionCall ?? null,
+          ratAffair: p.ratAffair ?? null,
           commissionHistory: p.commissionHistory ?? current.commissionHistory ?? [],
           pendingRulings: p.pendingRulings ?? [],
           familyDinner: p.familyDinner ?? null,

@@ -157,6 +157,8 @@ export interface CrewMember {
   actingBoss?: boolean;
   /** Alive behind bars for good. Counted as gone; no funeral to hold. */
   putAway?: boolean;
+  /** Put on a train. Gone from the roster, and there is no funeral. */
+  leftCity?: boolean;
   /** Family holding him while status is "held". */
   heldBy?: FamilyName;
   /** Soldiers only: the capo whose crew he runs with. Undefined = freelance. */
@@ -764,6 +766,35 @@ export interface GameEventChoice {
   }>;
 }
 
+/** One open question about a man who might be talking. */
+export interface RatAffair {
+  crewId: string;
+  /** Hidden until a result card says so. */
+  isRat: boolean;
+  kind: "watch" | "investigation" | "lie";
+  startTurn: number;
+  /** The turn the follow-up card is dealt. */
+  resolveTurn: number;
+  /** The Bureau card. The miss and the weekly wanted climb run hotter. */
+  federal: boolean;
+  /** Points actually taken off his skills, added back when the eye comes off. */
+  skillDebt: CrewSkills;
+  /** Last week's movement, for his sheet. */
+  lastDrift?: { loyalty: number; wanted: number; heat: number };
+  /** `revealed` once a follow-up card is on the table. */
+  phase: "open" | "revealed";
+  /** What the consigliere said, once he has spoken. */
+  readSaysRat?: boolean;
+}
+
+/** One associate sitting the week out before the books open. */
+export interface MakingCeremony {
+  crewId: string;
+  /** The turn the skill card is dealt. */
+  resolveTurn: number;
+  name: string;
+}
+
 export interface GameEvent {
   id: string;
   templateId: string;
@@ -826,8 +857,8 @@ export interface SeatVote {
   line?: string;
 }
 
-/** What the table is being asked: a ruling on the trouble, or war on a family that ignored one. */
-export type CommissionCallKind = "ruling" | "war";
+/** What the table is being asked: a truce, a war, or a tax. */
+export type CommissionCallKind = "ruling" | "war" | "tax";
 
 export interface CommissionRuling {
   id: string;
@@ -1238,6 +1269,12 @@ export interface GameState {
   launderPlan: Record<string, number>;
   /** One-time nudge when sitting on dirty cash with nothing routed. */
   launderNudgeShown: boolean;
+  /** First turn house counsel will take another retainer. 0 means he will answer. */
+  lawyerReadyTurn: number;
+  /** First turn the street lawyer is off the books. 0 means he was never hired. */
+  streetLawyerUntil: number;
+  /** The one bail on the current retainer has been used. */
+  streetLawyerBailUsed: boolean;
   /** Rival AI cash pools (player uses money/dirtyMoney). */
   rivalTreasury: Partial<Record<FamilyName, number>>;
   territories: Territory[];
@@ -1307,6 +1344,14 @@ export interface GameState {
   ratLeakTurn?: number;
   /** Which man is still talking, when a real rat was spared. */
   ratLeakCrewId?: string;
+  /** How many weeks that leak runs. Defaults to 4. */
+  ratLeakWeeks?: number;
+  /** The leak's opening week does not add another wanted point (a vouched rat already took his). */
+  ratLeakSilent?: boolean;
+  /** The open rat rumor, if the boss has not settled it. */
+  ratAffair: RatAffair | null;
+  /** The associate sitting out a week to be made. One at a time. */
+  making: MakingCeremony | null;
   /** Last turn the player called one of his own in. */
   lastCallInTurn?: number;
   /** The family is at a safehouse for two weeks. */

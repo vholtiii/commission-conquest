@@ -58,6 +58,15 @@ export function jailMember(state: GameState, crewId: string): GameState {
   return { ...state, crew: jailInCrew(state.crew, crewId, state.turn) };
 }
 
+/** The street lawyer posted bail. A non-boss walks, wanted unchanged, back to idle. */
+export function releaseMember(crew: CrewMember[], crewId: string): CrewMember[] {
+  return crew.map((c) =>
+    c.id === crewId && c.status === "jailed" && c.role !== "boss"
+      ? { ...c, status: "active" as const, assignment: { type: "idle" as const } }
+      : c,
+  );
+}
+
 /** The judge came through. The boss walks out and the stand-in steps back. */
 export function releaseBoss(state: GameState, family: FamilyName): GameState {
   const crew = state.crew.map((c) => {

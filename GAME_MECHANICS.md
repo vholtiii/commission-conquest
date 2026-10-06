@@ -40,13 +40,13 @@ Assignments: idle | garrison | racket | delivery | operation | surveillance.
 
 `xpForLevel(l) = (l − 1) × 120`, max level 10. Level-ups bump the two top role-biased skills +2.
 
-Sources: hit (+10 / +15 on kill), delivery complete (+5), per-turn assignment (garrison +2, racket manager +3, surveillance +3).
+Sources: hit (+10 / +15 on kill), delivery complete (+5), per-turn assignment (garrison +2, racket manager +3, casing +2, delivery +2).
 
 ### Promotions (paid clean cash)
 
 | From | To | Cost | Gates |
 |------|-----|------|-------|
-| associate | soldier | $300 | Lv≥2, loyalty≥40 |
+| associate | soldier | $300 | Lv≥2, loyalty≥40 — a week off the street, then 4 skill points |
 | soldier | capo | $1,200 | Lv≥3, loyalty≥55 |
 | soldier | hitman | $1,000 | hits≥3, muscle≥45 |
 | hitman | capo | $1,500 | Lv≥4, hits≥6, loyalty≥55 |
@@ -55,9 +55,19 @@ Sources: hit (+10 / +15 on kill), delivery complete (+5), per-turn assignment (g
 
 Underboss → boss is succession only (not a button).
 
+### Making a man (`src/engine/making.ts`)
+
+An associate is unmade until the books open. He can still shoot, garrison, deliver, case, and manage. While he is unmade his combat score and his capture muscle (attack and defence) are ×0.75, and a racket he manages pays ×0.85 of the managed rate, which is still above an empty racket at 0.70. He cannot join a crew (`He isn't made.`). A capo only asks for men who are already made. The street casing edge (+8 stealth, +5 smarts) applies to an unmade associate and to a loose unmade soldier, and it ends once he is made. Upkeep stays $25 until the books open; a made soldier is $50.
+
+Opening the books is the associate → soldier promotion. It costs $300, needs level ≥ 2 and loyalty ≥ 40, and only one ceremony runs at a time. He sits that week out: off garrison, off any racket, off a delivery, and off a pending hit. A player hit left with no shooter is cancelled. Next week, before a random event, a card places 4 skill points — at most 2 in any skill, and none past 100. Points that cannot fit are dropped, so a man already at 100 can still close the card. **Open the books** enables once every point that fits is placed. Confirm grants `made_man` (the trait adds no extra hit bonus), loyalty +8, and makes him a soldier (level +1). If another card is already up, the ceremony waits a week. If he dies or is jailed during the week, the $300 stays spent and a card says the ceremony is off. Cut loose later, he stays made: the points and the loyalty stay, mentoring stops, and the street edge does not come back.
+
+The boss, underboss, consigliere, capo, hitman, and the three starting soldiers begin made. Walk-ins and the recruitment pool arrive unmade. `made_man` is not rolled onto new men. An old save stamps anyone whose rank is above associate, or who already has a capo, so a crewed man does not turn back into an associate. The Family Roster adds `(associate)` only on an unmade man whose rank is still soldier.
+
+Rivals do not see the card. When their AI puts a man in a crew, he is stamped made with a random legal split of the same 4 points.
+
 ### Crews (`src/engine/crews.ts`)
 
-A capo runs a crew of soldiers (`CrewMember.capoId`). Slots: 2, or 3 once the capo is level 5. Only soldiers and associates can join; an associate is made a soldier on the way in (no $300 fee). A man already in another crew is spoken for — `canJoinCrew` refuses him ("cut him loose first"), so no capo poaches from another crew, and a pending capo request for a man who has since joined someone else expires at turn start. A leader who dies or loses the rank (capo → underboss), or a soldier who is promoted out of the rank, leaves the crew automatically; a capo made consigliere keeps his men.
+A capo runs a crew of soldiers (`CrewMember.capoId`). Slots: 2, or 3 once the capo is level 5. Only made soldiers and made associates can join; an associate who is already made is promoted to soldier on the way in. A man already in another crew is spoken for — `canJoinCrew` refuses him ("cut him loose first"), so no capo poaches from another crew, and a pending capo request for a man who has since joined someone else expires at turn start. A leader who dies or loses the rank (capo → underboss), or a soldier who is promoted out of the rank, leaves the crew automatically; a capo made consigliere keeps his men.
 
 **The brass run crews too**, each with a fixed school (`crewCurriculum`) instead of the capo's own top skills:
 
@@ -73,9 +83,9 @@ The boss and consigliere teach through their school, not their own hands: their 
 
 **How men get in**
 
-- **The capo asks.** Each turn every active player capo with an open slot rolls `0.15 + charm/400` to ask for a specific man — favoring loose soldiers/associates whose top skill matches his own or who share his block. The ask is a turn-start pop-up: **Approve / No / Later**. "Later" holds it one more turn, then it expires. Turning the same capo down twice running costs him 3 loyalty.
+- **The capo asks.** Each turn every active player capo with an open slot rolls `0.15 + charm/400` to ask for a specific man who is already made — favoring loose soldiers whose top skill matches his own or who share his block. The ask is a turn-start pop-up: **Approve / No / Later**. "Later" holds it one more turn, then it expires. Turning the same capo down twice running costs him 3 loyalty. Approving does not make an unmade man on the spot.
 - **Assign directly** from the Crew panel ("Add a man…" per capo; "Cut loose" per soldier) or from a leader's Crew sheet (boss, consigliere, or capo — same controls when you open them from the Family Roster). The Family Roster nests each crew under its leader (boss, consigliere, capo) and keeps the Soldiers group for loose men only; each row carries a promote arrow (lit when a promotion is affordable now) and a man's info sheet is where you garrison him, set him to manage a racket, or promote him. The Crew panel itself is recruitment and crews only.
-- Rival capos fill their slots quietly each AI turn from the family's loose soldiers.
+- Rival capos fill their slots quietly each AI turn from the family's loose soldiers and associates. An unmade man is stamped made, with a random legal split of 4 skill points, on the way in.
 
 **A leader brings his crew.** A boss, capo, or consigliere does not go to a block alone. His free men — active, idle or garrisoned, and not already on a hit, a casing, a route, lying low, or running a racket — come with him. A soldier, a loose soldier, the hitman, and anyone with an empty crew go alone. The underboss has no crew.
 
@@ -478,7 +488,7 @@ Clean cash pays bribes, property, and promotions; upkeep prefers clean first.
 
 ## Territory capture (`src/engine/capture.ts`)
 
-Capture opens a squad picker (idle crew + any garrison already on that block). First pick leads and garrisons on success; others keep their prior assignments. Odds ≈ P(atk×U(0.8,1.2) > def×U(0.8,1.2)) where atk = squad muscle × combat bonus and def = (defender muscle + 40) × (1 + defenseBonus) × 0.7 under leadership vacuum. Fail: +4 heat and +1 loyalty for the squad. Success: flip owner, wound old garrison, +8 heat, +3 fear, +2 street influence, +1 muscle and +3 loyalty for every man in the squad.
+Capture opens a squad picker (idle crew, plus anyone garrisoned on your blocks). A man posted elsewhere is pulled off that block if the grab succeeds. First pick leads and garrisons on success; others keep their prior assignments. Odds ≈ P(atk×U(0.8,1.2) > def×U(0.8,1.2)) where atk = squad muscle × combat bonus and def = (defender muscle + 40) × (1 + defenseBonus) × 0.7 under leadership vacuum. Fail: +4 heat and +1 loyalty for the squad. Success: flip owner, wound old garrison, +8 heat, +3 fear, +2 street influence, +1 muscle and +3 loyalty for every man in the squad.
 
 **One district a week.** Every family (player and AI) can take at most one district per turn (`captureAllowance`, tracked in `GameState.captureTally`). A second grab is allowed only when: the family is expansionist (Valenti, always 2 moves), the target is in leadership vacuum, or the target belongs to a family you're in a vendetta with. Never more than two. The check runs before any pact is broken, and the Capture panel shows "Moves this week: n/limit".
 
@@ -505,12 +515,17 @@ Bribe tiers: cops / captains / chiefs / mayor (cost, duration, success rate modi
 
 ### Rats in the family
 
-Two events — a rumor of an informant, and the federals leaning on one — name a man. The suspect is drawn from the player's active men, weighted toward low loyalty, high wanted, men who didn't come up in the family, and men lately out of jail. When the event is dealt, the game rolls whether he really is the rat (65%) and keeps it hidden.
+Two events — a rumor of an informant, and the federals leaning on one — name a man. The suspect is drawn from the player's active men, weighted toward low loyalty, high wanted, men who didn't come up in the family, and men lately out of jail. When the event is dealt, the game rolls whether he really is the rat (65%) and keeps it hidden. One affair at a time (`ratAffair`); another rumor will not deal while it is open. Every path ends on a card. A second decision appears only when he is still in the family and the question is still open, and that second choice gets its own result card.
 
-- **Call him in.** He doesn't come back: he's marked dead and pulled off any garrison or racket he was running. Heat +5, fear +8, and the men under his capo lose 6 loyalty. If he was the rat, heat drops 15 and the log says so. If he wasn't, the whole family loses 10 loyalty, and 40% of the time one of his crewmates asks to walk — let him go and he turns up with a rival, talk him down and it costs that man 15 loyalty. Either way a summons reel plays: the call to come by the house, the drive over, one shot in the back room, and his car driven off. It plays with no result card.
-- **Relocate** or **watch** him and, if he really is the rat, he keeps talking. For the next four weeks the arrest line drops by 2 and the pickup chance rises to 14%, and on the first of those weeks every active man's wanted climbs by one. The game remembers which man (`ratLeakCrewId`).
+Watch and wait is the small swing. The other choices pay more when they are right and cost more when they are wrong.
 
-**Calling in your own** (`src/engine/callIn.ts`). From a man's crew sheet the boss can **Call him in** — not himself, not during a dinner, and not again for 6 weeks. The same summons reel plays. How badly the family takes it is graded: cleanness runs from 0 at loyalty 30 or below to 1 at 80 or above, and drops if he's wanted at 5 or more or carries `rat_risk`. Family loyalty falls by 5 + 9× that number, respect by about 3× it, and the chance a crewmate asks to walk is 20% plus 30% of it. A made man costs 5 more respect, 4 more loyalty, and another 25% on the walk. Heat +5 and fear +8 either way. Calling in the rat you already spared stops the leak (heat −10, and the log says so). Whoever is taken out also comes off pending jobs — a hit with no shooter left is cancelled — and off any route he was driving. If he led a crew, his soldiers go loose and lose 12 loyalty. The rat events use the same removal.
+- **Call him in.** He dies either way. Fear +14, and the summons reel plays, then a result card. If he was the rat: heat −25, respect +12, family loyalty +8. If he was clean: heat +25, respect −22, family loyalty −20, and a 70% chance someone asks to walk.
+- **Move him out of the city.** $300, and he leaves the roster (`leftCity`, no funeral). If he was the rat: heat −18, respect +8, fear +4, and no leak. If he was clean: respect −20, family loyalty −16.
+- **Open an investigation.** $200, fear −6, his loyalty −8, and the eye for one week (skills drop: stealth −8, charm −6, smarts −6, driving −4, muscle −2). If he is the rat, only his wanted climbs by 1 that week. Next week the consigliere's read arrives. He is right 60% of the time at smarts 20 and 85% at smarts 80. If he says rat, the card offers call him in or move him out. If he says clean, it offers clear him, move him out, or call him in anyway. Calling in a real rat from that card: heat −22, respect +10, fear +10, family loyalty −2. Calling in a clean man is the harsh bill above. Exile uses the exile bills above. Clearing a clean man restores his skills, then charm +8, his loyalty +14, respect +10. Clearing a real rat: respect −20, heat +30, wanted +3 across the family, and an eight-week leak (the leak's own opening week does not add a further wanted point).
+- **Feed him a lie.** Next week, if he was the rat, heat +22 and a card to call him in (heat −35, respect +16, fear +14, family loyalty +8) or move him out (heat −28, respect +12). If he was clean, heat +8, his loyalty −10, and a result card with nothing left to decide.
+- **Watch and wait.** His loyalty +10, family loyalty +3, the eye, and the same skill drop, for three weeks. Each week before the third, a rat's loyalty falls 4, his wanted rises 2 (3 on the Bureau card), and family heat rises 3, labeled on his sheet. A clean man's loyalty rises 2 and the other two hold. His sheet shows those arrows. The Family Roster puts an eye beside his name. From that sheet, before the third week, call him in or move him out: a real rat is the small reward (heat −10, family loyalty −4, no walk); a clean man pays the harsh call-in bill, or the exile bill. At the third week, a rat is revealed (respect −15, heat +20, or +25 on the Bureau card) and the card offers the small reward either way. A clean man is cleared: skills return, charm +4 past that, his loyalty +6, respect +4.
+
+**Calling in your own** (`src/engine/callIn.ts`). From a man's crew sheet the boss can **Call him in** — not himself, not during a dinner, and not again for 6 weeks. The same summons reel plays. How badly the family takes it is graded: cleanness runs from 0 at loyalty 30 or below to 1 at 80 or above, and drops if he's wanted at 5 or more or carries `rat_risk`. Family loyalty falls by 5 + 9× that number, respect by about 3× it, and the chance a crewmate asks to walk is 20% plus 30% of it. A made man costs 5 more respect, 4 more loyalty, and another 25% on the walk. Heat +5 and fear +8 either way. Calling in the rat you already spared stops the leak (heat −10, and the log says so). Whoever is taken out also comes off pending jobs — a hit with no shooter left is cancelled — and off any route he was driving. If he led a crew, his soldiers go loose and lose 12 loyalty. A call-in from an open rat watch uses the rat bills above instead of this graded one, and it ignores the six-week cooldown. The printed preview on his sheet stays the graded read, so the button does not give away whether he is the rat. A quiet removal (exile, or a rat-affair call-in) does not also dock the dead man's crew.
 
 ## 3D city (`src/engine/cityLayout.ts`, `src/scene/`)
 

@@ -104,11 +104,11 @@ export default function CapturePanel() {
         Squad ({picked.length} selected)
       </h3>
       <p className="mb-2 text-[10px] text-muted-foreground">
-        First pick leads. A boss, capo, or consigliere brings his free crew, and they garrison the block if you take it.
+        Idle men and anyone garrisoned can go. First pick leads. A boss, capo, or consigliere brings his free crew, and they garrison the block if you take it.
       </p>
 
       {eligible.length === 0 ? (
-        <p className="text-xs text-heat">No idle or local garrison crew available.</p>
+        <p className="text-xs text-heat">No idle or garrisoned crew available.</p>
       ) : (
         <div className="max-h-56 space-y-1 overflow-y-auto">
           {eligible.map((c) => {
@@ -143,6 +143,11 @@ export default function CapturePanel() {
                   <div className="truncate text-xs font-medium">{c.name}</div>
                   <div className="text-[10px] text-muted-foreground">
                     {c.role} · muscle {c.skills.muscle}
+                    {c.assignment.type === "garrison" &&
+                    c.assignment.territoryId &&
+                    c.assignment.territoryId !== territory.id
+                      ? ` · posted in ${territories.find((t) => t.id === c.assignment.territoryId)?.name ?? "another block"}`
+                      : ""}
                   </div>
                 </div>
                 <div className="flex shrink-0 flex-col items-end gap-0.5">

@@ -95,6 +95,42 @@ export function visibleCrewIn(state: VisibilityState, territoryId: string): Crew
   return crewPresentIn(state, territoryId).filter((c) => isCrewVisible(state, c));
 }
 
+/**
+ * Faces named on this block's lookout report this turn. The report is the
+ * list for the rest of the week, even after the card is closed and even if
+ * the man has stepped off the block.
+ */
+export function spottedThisTurn(state: VisibilityState, territoryId: string): CrewMember[] {
+  const report = (state.intel ?? emptyIntel()).reports?.[territoryId];
+  if (!report || report.turn !== state.turn) return [];
+  const out: CrewMember[] = [];
+  const seen = new Set<string>();
+  for (const id of report.spottedIds ?? []) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const member = state.crew.find((c) => c.id === id);
+    if (!member || member.status === "dead" || member.status === "jailed") continue;
+    out.push(member);
+  }
+  return out;
+}
+
+/** Named hit targets: faces still confirmed on the block, plus this turn's casing. */
+export function namedHitTargets(
+  state: VisibilityState,
+  territoryId: string,
+  rivalFamily: FamilyName,
+): CrewMember[] {
+  const byId = new Map<string, CrewMember>();
+  for (const member of visibleCrewIn(state, territoryId)) {
+    if (member.family === rivalFamily) byId.set(member.id, member);
+  }
+  for (const member of spottedThisTurn(state, territoryId)) {
+    if (member.family === rivalFamily) byId.set(member.id, member);
+  }
+  return [...byId.values()];
+}
+
 export function hiddenCountIn(state: VisibilityState, territoryId: string): number {
   const present = crewPresentIn(state, territoryId);
   return present.filter((c) => !isCrewVisible(state, c)).length;

@@ -4,7 +4,7 @@ import { FAMILY_HEX, MAP_STATUS } from "@/types/game";
 import { useGameStore } from "@/engine/store";
 import { calculateHitOddsBreakdown, defendersFor, estimateFirefightRisk, getawayRisk, territoryHops } from "@/engine/hitOps";
 import { resolveCrewTerritoryId } from "@/engine/crewLocation";
-import { emptyIntel, hasFreshCasing, visibleCrewIn } from "@/engine/intel";
+import { emptyIntel, hasFreshCasing, namedHitTargets } from "@/engine/intel";
 import { isMessageTargetRole, routeDisputeWith } from "@/engine/passage";
 import { attributeCinematic, attributionLabel } from "@/engine/attribution";
 import { coverFire, getawayCover, isLaidLow, laidLowHouse, safehouseHitPenalty } from "@/engine/safehouse";
@@ -45,8 +45,7 @@ export default function HitPlanner() {
 
   const rivalTargets = useMemo(() => {
     if (!territory || !rivalFamily) return [];
-    // Only show faces the player has intel on
-    return visibleCrewIn(
+    return namedHitTargets(
       {
         crew,
         territories,
@@ -57,7 +56,8 @@ export default function HitPlanner() {
         turn: state.turn,
       },
       territory.id,
-    ).filter((c) => c.family === rivalFamily);
+      rivalFamily,
+    );
   }, [
     crew,
     territories,

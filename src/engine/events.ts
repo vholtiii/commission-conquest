@@ -13,6 +13,7 @@ import {
   totalCrates,
 } from "./liquor";
 import { jailInCrew } from "./jail";
+import { applyRatEventChoice, ratRumorChoices } from "./ratAffair";
 
 export interface EventTemplate {
   id: string;
@@ -167,13 +168,7 @@ export const EVENT_TEMPLATES: EventTemplate[] = [
     minHeat: 10,
     subject: pickSuspect,
     blurb: (name) => `Whispers say ${name} is feeding tips to the bulls.`,
-    buildChoices: (state, _rng, subject) => [
-      choice("call_in", `Call him in — ${suspectName(state, subject)} doesn't come back`, {
-        takeOut: { crewId: subject?.crewId ?? "" },
-      }),
-      choice("relocate", `Move ${suspectName(state, subject)} out of the city`, { money: -300, heat: -5 }),
-      choice("watch", "Watch and wait", { heat: 5, loyalty: -5 }),
-    ],
+    buildChoices: (state, _rng, subject) => ratRumorChoices(suspectName(state, subject)),
   },
   {
     id: "charity_gala",
@@ -458,13 +453,7 @@ export const EVENT_TEMPLATES: EventTemplate[] = [
     minHeat: 50,
     subject: pickSuspect,
     blurb: (name) => `Word is ${name} is wearing a wire for the Bureau.`,
-    buildChoices: (state, _rng, subject) => [
-      choice("call_in", `Call him in — ${suspectName(state, subject)} doesn't come back`, {
-        takeOut: { crewId: subject?.crewId ?? "" },
-      }),
-      choice("relocate", `Move ${suspectName(state, subject)} out of the city`, { money: -300, heat: -5 }),
-      choice("watch", "Watch and wait", { heat: 5, loyalty: -5 }),
-    ],
+    buildChoices: (state, _rng, subject) => ratRumorChoices(suspectName(state, subject)),
   },
   {
     id: "lucky_heist",
@@ -533,8 +522,8 @@ function templateEligible(t: EventTemplate, state: GameState): boolean {
   }
   if (
     (t.id === "informant_rumor" || t.id === "federal_informant") &&
-    state.lastDinnerTurn != null &&
-    state.turn < state.lastDinnerTurn + DINNER_RAT_GRACE
+    (state.ratAffair ||
+      (state.lastDinnerTurn != null && state.turn < state.lastDinnerTurn + DINNER_RAT_GRACE))
   ) {
     return false;
   }
@@ -591,6 +580,14 @@ export function applyEventChoice(
 ): GameState {
   const selected = event.choices.find((c) => c.id === choiceId);
   if (!selected) return state;
+
+  const rat = applyRatEventChoice(
+    state,
+    event,
+    choiceId,
+    createRng(hashString(`${state.seed}:rat:${event.id}:${choiceId}:${state.turn}`)),
+  );
+  if (rat) return rat;
 
   const fx = selected.effects;
   let relations = state.relations;

@@ -26,8 +26,14 @@ export function canCallIn(state: GameState, crewId: string): { ok: boolean; reas
   if (man.status !== "active") return { ok: false, reason: "He isn't on the street." };
   if (man.role === "boss" || man.isPlayerBoss) return { ok: false, reason: "You don't call yourself in." };
   if (dinnerActive(state)) return { ok: false, reason: "The family is at the table." };
+  const affair = state.ratAffair;
+  const onWatch =
+    !!affair &&
+    affair.crewId === crewId &&
+    affair.phase === "open" &&
+    (affair.kind === "watch" || affair.kind === "investigation");
   const last = state.lastCallInTurn;
-  if (last != null && state.turn < last + CALL_IN_COOLDOWN) {
+  if (!onWatch && last != null && state.turn < last + CALL_IN_COOLDOWN) {
     const ago = state.turn - last;
     return {
       ok: false,
@@ -79,6 +85,7 @@ function idle(c: CrewMember): CrewMember {
 export function removeMan(
   state: GameState,
   victimId: string,
+  opts?: { quiet?: boolean },
 ): {
   crew: CrewMember[];
   territories: Territory[];
@@ -148,15 +155,10 @@ export function removeMan(
       return idle({ ...c, status: "dead" as const, capoId: undefined });
     }
     let next = c;
-    if (
-      victim.capoId &&
-      c.family === victim.family &&
-      c.capoId === victim.capoId &&
-      c.status !== "dead"
-    ) {
+    if (!opts?.quiet && victim.capoId && c.family === victim.family && c.capoId === victim.capoId && c.status !== "dead") {
       next = { ...next, loyalty: Math.max(0, next.loyalty - 6) };
     }
-    if (soldiers.some((s) => s.id === c.id)) {
+    if (!opts?.quiet && soldiers.some((s) => s.id === c.id)) {
       next = { ...next, loyalty: Math.max(0, next.loyalty - 12) };
     }
     if (next.assignment.operationId && cancelled.has(next.assignment.operationId)) return idle(next);

@@ -12,6 +12,7 @@ import {
   createCrewMember,
   generateRecruitmentPool,
   assignCrew,
+  stampMade,
 } from "./crew";
 import { recruitTier } from "./recruiting";
 import { initialRelations } from "./relations";
@@ -179,7 +180,7 @@ function createFamilyRoster(
     id: `hitman_${family}_0`,
   });
 
-  return [boss, underboss, consigliere, capo, ...soldiers, hitman];
+  return [boss, underboss, consigliere, capo, ...soldiers, hitman].map(stampMade);
 }
 
 function garrisonFamilyCrew(
@@ -321,6 +322,8 @@ export function buildInitialState(
     messageHitTurns: {},
     commissionCall: null,
     familyDinner: null,
+    ratAffair: null,
+    making: null,
     commissionHistory: [],
     pendingRulings: [],
     victory: emptyVictory(finalTurnFor(mergedSettings.gameLength)),
@@ -329,6 +332,9 @@ export function buildInitialState(
     liquorLedger: null,
     launderPlan: {},
     launderNudgeShown: false,
+    lawyerReadyTurn: 0,
+    streetLawyerUntil: 0,
+    streetLawyerBailUsed: false,
     selectedTerritoryId: null,
     flyToTerritoryId: null,
     flyToFocus: null,
@@ -409,7 +415,7 @@ export function startGame(state: GameState, family: FamilyName): GameState {
     createCrewMember(rng, family, "soldier", { id: `player_soldier_0` }),
     createCrewMember(rng, family, "soldier", { id: `player_soldier_1` }),
     createCrewMember(rng, family, "capo", { id: `player_capo_0` }),
-  ];
+  ].map(stampMade);
 
   crew = [...crew, ...startingCrew];
 

@@ -1,7 +1,7 @@
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
-import { ArrowUpCircle } from "lucide-react";
+import { ArrowUpCircle, Eye } from "lucide-react";
 import { useGameStore } from "@/engine/store";
 import { canLeadCrew, crewOf, crewSlots, isSettling } from "@/engine/crews";
 import { canPromote, pathsFromRole } from "@/engine/crew";
@@ -55,6 +55,7 @@ function CrewRow({
   compact = false,
   settling = false,
   slots,
+  watched = false,
 }: {
   member: CrewMember;
   crew: CrewMember[];
@@ -63,6 +64,7 @@ function CrewRow({
   compact?: boolean;
   settling?: boolean;
   slots?: string;
+  watched?: boolean;
 }) {
   const promo = promotionState(member, crew, money);
   return (
@@ -80,8 +82,16 @@ function CrewRow({
           isPlayerBoss={member.isPlayerBoss}
           alt={member.name}
         />
-        <div className="flex min-w-0 flex-1 flex-col leading-tight">
-          <span className={`truncate font-medium ${compact ? "text-[11px]" : "text-xs"}`}>{member.name}</span>
+        <div className="flex min-w-0 flex-1 items-center gap-1 leading-tight">
+          <span className={`truncate font-medium ${compact ? "text-[11px]" : "text-xs"}`}>
+            {member.name}
+            {member.role === "soldier" && !member.traits.includes("made_man") ? " (associate)" : ""}
+          </span>
+          {watched && (
+            <Tip content="Being watched" side="left">
+              <Eye className="h-3.5 w-3.5 shrink-0 text-sky-300" aria-label="Being watched" />
+            </Tip>
+          )}
         </div>
         {slots && (
           <span className="text-[9px] text-muted-foreground" title="Crew filled">
@@ -146,6 +156,9 @@ export default function RightRoster() {
   const selectTerritory = useGameStore((s) => s.selectTerritory);
   const setPanel = useGameStore((s) => s.setPanel);
   const showLiquorRoutes = useGameStore((s) => s.showLiquorRoutes);
+  const ratAffair = useGameStore((s) => s.ratAffair);
+  const watchedId =
+    ratAffair && ratAffair.kind !== "lie" ? ratAffair.crewId : null;
 
   if (!playerFamily) return null;
 
@@ -195,6 +208,7 @@ export default function RightRoster() {
                             crew={crew}
                             money={money}
                             slots={canLeadCrew(c) ? `${led.length}/${crewSlots(c)}` : undefined}
+                            watched={c.id === watchedId}
                             onSelect={() => selectCrew(c.id)}
                           />
                           {led.length > 0 && (
@@ -207,6 +221,7 @@ export default function RightRoster() {
                                   money={money}
                                   compact
                                   settling={isSettling(m, turn)}
+                                  watched={m.id === watchedId}
                                   onSelect={() => selectCrew(m.id)}
                                 />
                               ))}

@@ -11,7 +11,12 @@ export function useArrestRisk(member: CrewMember): ArrestRisk {
   const turn = useGameStore((s) => s.turn);
   const playerFamily = useGameStore((s) => s.playerFamily);
   const ratLeakTurn = useGameStore((s) => s.ratLeakTurn);
-  return arrestRisk({ heat, bribes, territories, turn, playerFamily, ratLeakTurn }, member);
+  const ratLeakWeeks = useGameStore((s) => s.ratLeakWeeks);
+  const streetLawyerUntil = useGameStore((s) => s.streetLawyerUntil ?? 0);
+  return arrestRisk(
+    { heat, bribes, territories, turn, playerFamily, ratLeakTurn, ratLeakWeeks, streetLawyerUntil },
+    member,
+  );
 }
 
 /** "8%" — the weekly pickup chance as the UI prints it. */

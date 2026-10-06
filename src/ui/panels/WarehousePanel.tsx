@@ -14,6 +14,7 @@ import {
   hijackRisk,
   isRacketFrozen,
   racketPayment,
+  canManageRacket,
 } from "@/engine/economy";
 import {
   districtStorage,
@@ -165,15 +166,7 @@ export default function WarehousePanel() {
       c.assignment.type === "idle",
   );
 
-  const managerCandidates = crew.filter(
-    (c) =>
-      c.family === playerFamily &&
-      c.status === "active" &&
-      c.role !== "boss" &&
-      c.assignment.type !== "operation" &&
-      c.assignment.type !== "surveillance" &&
-      c.assignment.type !== "delivery",
-  );
+  const managerCandidates = crew.filter((c) => canManageRacket(c, playerFamily));
 
   if (!playerFamily) return null;
 
@@ -497,9 +490,7 @@ export default function WarehousePanel() {
                             className="mt-1 w-full rounded-md border border-panel-border bg-panel/60 px-2 py-1 text-xs"
                           >
                             <option value="">Assign manager…</option>
-                            {managerCandidates
-                              .filter((c) => c.assignment.type !== "racket")
-                              .map((c) => (
+                            {managerCandidates.map((c) => (
                               <option key={c.id} value={c.id}>
                                 {c.name} (smarts {c.skills.smarts}
                                 {c.traits.includes("bookkeeper")
@@ -520,11 +511,10 @@ export default function WarehousePanel() {
                             className="mt-1 w-full rounded-md border border-panel-border bg-panel/60 px-2 py-1 text-xs"
                           >
                             <option value="">Remove manager</option>
-                            {managerCandidates
-                              .filter(
-                                (c) => c.assignment.type !== "racket" || c.id === wh.managerId,
-                              )
-                              .map((c) => (
+                            {[
+                              ...(wh.managerId ? crew.filter((c) => c.id === wh.managerId) : []),
+                              ...managerCandidates.filter((c) => c.id !== wh.managerId),
+                            ].map((c) => (
                               <option key={c.id} value={c.id}>
                                 {c.name} (smarts {c.skills.smarts}
                                 {c.traits.includes("bookkeeper")

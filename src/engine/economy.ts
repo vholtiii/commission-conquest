@@ -15,7 +15,7 @@ import { CRATE_STREET_VALUE } from "./passage";
 import { assessPath } from "./supplyRoutes";
 import type { Rng } from "./rng";
 import { createRng, hashString } from "./rng";
-import { aggregateTraitEffects, roleUpkeep } from "./crew";
+import { aggregateTraitEffects, isUnmade, roleUpkeep } from "./crew";
 import { crewIncomeMult } from "./crews";
 import { BOSS_PRESENCE, bossPresenceDistrict } from "./bossPresence";
 import { DINNER_INCOME_MULT, dinnerActive } from "./dinner";
@@ -185,6 +185,115 @@ export function launderCap(
 export function launderCut(type: RacketType): number {
   if (!isLegitBusiness(type)) return 0;
   return LAUNDER_RULES[type].cut;
+}
+
+/** House counsel picks up only once clean cash is this far below zero. */
+export const LAWYER_DEFICIT = 3000;
+/** He keeps half and writes a check for the rest. */
+export const LAWYER_HEAT = 8;
+/** Weeks before he will take another retainer. */
+export const LAWYER_COOLDOWN_TURNS = 4;
+
+export interface LawyerQuote {
+  /** Clean cash is below −$3,000. */
+  inTheRed: boolean;
+  /** A full under-cap wash this week still leaves clean below zero. */
+  washFallsShort: boolean;
+  cooling: boolean;
+  readyTurn: number;
+  deficit: number;
+  washReturn: number;
+  cleanReturn: number;
+  dirtySpent: number;
+  available: boolean;
+}
+
+/** Clean a full under-cap wash of every ready front would return this week. */
+export function weeklyWashCeiling(state: GameState): number {
+  if (!state.playerFamily) return 0;
+  const bossBlock = bossPresenceDistrict(state, state.playerFamily);
+  let clean = 0;
+  for (const t of state.territories) {
+    if (t.owner !== state.playerFamily) continue;
+    const bossHere = t.id === bossBlock;
+    for (const r of t.rackets) {
+      if (!isLegitBusiness(r.type) || isRacketFrozen(r, state.turn)) continue;
+      if (!isLaunderSiteActive(r, state.turn)) continue;
+      const manager = r.managerId
+        ? state.crew.find((c) => c.id === r.managerId && c.status === "active") ?? null
+        : null;
+      const cap = launderCap(r, manager, state.turn, bossHere);
+      clean += Math.floor(cap * (1 - launderCut(r.type)));
+    }
+  }
+  return clean;
+}
+
+export function lawyerOffer(state: GameState): LawyerQuote {
+  const deficit = Math.max(0, -Math.floor(state.money));
+  const washReturn = weeklyWashCeiling(state);
+  const inTheRed = state.money < -LAWYER_DEFICIT;
+  const washFallsShort = washReturn < deficit;
+  const readyTurn = state.lawyerReadyTurn ?? 0;
+  const cooling = state.turn < readyTurn;
+  const cleanReturn = Math.min(deficit, Math.floor(Math.max(0, state.dirtyMoney) / 2));
+  const dirtySpent = cleanReturn * 2;
+  return {
+    inTheRed,
+    washFallsShort,
+    cooling,
+    readyTurn,
+    deficit,
+    washReturn,
+    cleanReturn,
+    dirtySpent,
+    available: inTheRed && washFallsShort && !cooling && cleanReturn > 0,
+  };
+}
+
+/** Why the button is quiet while clean is already deep enough in the red. */
+export function lawyerBlockReason(offer: LawyerQuote): string | null {
+  if (!offer.inTheRed || offer.available) return null;
+  if (offer.cooling) return `He won't take another call until week ${offer.readyTurn}.`;
+  if (!offer.washFallsShort) return "The fronts can cover this hole. Wash it.";
+  return "Nothing dirty to hand him.";
+}
+
+/** Dirty cash, up front, for four weeks on the street lawyer's books. */
+export const STREET_LAWYER_COST = 2400;
+/** Weeks he stays hired. `streetLawyerUntil = turn + this`. */
+export const STREET_LAWYER_WEEKS = 4;
+/** Heat the week he walks a man out. */
+export const STREET_LAWYER_BAIL_HEAT = 3;
+/** Extra heat decay each week the retainer is live. */
+export const STREET_LAWYER_HEAT_DECAY = 1;
+
+export interface StreetLawyerQuote {
+  /** Retainer is live this turn. */
+  onTheBooks: boolean;
+  /** First turn he drops off. 0 when he has never been hired. */
+  until: number;
+  /** One bail is still open on this retainer. */
+  bailOpen: boolean;
+  /** Dirty cash covers a new hire and he is not already retained. */
+  canHire: boolean;
+  /** He is off the books and dirty cash is short of the retainer. */
+  shortCash: boolean;
+}
+
+export function streetLawyerQuote(
+  state: Pick<GameState, "turn" | "dirtyMoney" | "streetLawyerUntil" | "streetLawyerBailUsed">,
+): StreetLawyerQuote {
+  const until = state.streetLawyerUntil ?? 0;
+  const onTheBooks = state.turn < until;
+  const shortCash = state.dirtyMoney < STREET_LAWYER_COST;
+  return {
+    onTheBooks,
+    until,
+    bailOpen: onTheBooks && !state.streetLawyerBailUsed,
+    canHire: !onTheBooks && !shortCash,
+    shortCash: !onTheBooks && shortCash,
+  };
 }
 
 export function isRacketFrozen(racket: Racket, turn: number): boolean {
@@ -387,6 +496,14 @@ export function needsManager(type: RacketType): boolean {
   return type !== "safehouse";
 }
 
+/** Idle or garrisoned family men can run a racket. The boss and associates cannot. */
+export function canManageRacket(member: CrewMember, playerFamily: FamilyName | null): boolean {
+  if (!playerFamily || member.family !== playerFamily) return false;
+  if (member.status !== "active") return false;
+  if (member.role === "boss" || member.role === "associate") return false;
+  return member.assignment.type === "idle" || member.assignment.type === "garrison";
+}
+
 /**
  * Unmanaged rackets run at 70%; managers restore full + trait/skill bonus.
  * A capo managing with his crew behind him earns more per man (pass `crew`).
@@ -407,6 +524,7 @@ export function racketIncome(
     managerMult =
       (1 + traits.incomeMod + (manager.skills.smarts + manager.skills.charm) / 1000) *
       crewIncomeMult(manager, crew);
+    if (isUnmade(manager)) managerMult *= 0.85;
   }
   if (bossHere) managerMult *= BOSS_PRESENCE.incomeMult;
   return Math.floor(base * (1 + incomeBonus) * managerMult);
@@ -436,6 +554,24 @@ export function fundingLabel(funding: RacketFunding): string {
   if (funding === "clean") return "Clean cash";
   if (funding === "dirty") return "Dirty cash";
   return "Dirty or clean";
+}
+
+/** Dirty-only rackets are closed to an associate. Mixed and clean types he may build. */
+export function associateCanBuild(type: RacketType): boolean {
+  return racketFunding(type) !== "dirty";
+}
+
+/**
+ * An associate pays the whole build from clean cash. Dirty is never touched,
+ * including on a still, brewery, warehouse, or speakeasy.
+ */
+export function associateBuildPayment(
+  type: RacketType,
+  cost: number,
+  money: number,
+): { clean: number; dirty: number } | null {
+  if (!associateCanBuild(type) || money < cost) return null;
+  return { clean: cost, dirty: 0 };
 }
 
 /** How much clean/dirty to debit for a racket cost, or null if unaffordable. Mixed types pay dirty first. */

@@ -4,6 +4,7 @@ import { useGameStore } from "@/engine/store";
 import { ALL_FAMILY_NAMES, getFamilyDef } from "@/data/families";
 import {
   FAMILY_HEX,
+  type CommissionCallKind,
   type FamilyName,
   type SitdownVenue,
 } from "@/types/game";
@@ -19,7 +20,7 @@ import {
   type AgendaPick,
   type SitdownParty,
 } from "@/engine/sitdowns";
-import { agendaLabel } from "@/engine/agendas";
+import { agendaLabel, CUT_DEFAULT_SHARE, TRUCE_DEFAULT_WEEKS } from "@/engine/agendas";
 import AgendaPicker from "./AgendaPicker";
 import { activeDeals, dealKindLabel, dealPartner, truceBetween, weeklyCut } from "@/engine/deals";
 import { getRelation, relationKey, statusFromScore } from "@/engine/relations";
@@ -37,16 +38,16 @@ import { titleCase, formatMoney } from "../formatters";
 import { familyInfluence, familyWealth, LEAD_TURNS, STREAK_START_TURN } from "@/engine/victory";
 import { commissionMinutes, minuteAge, minuteFamily, rivalFeuds, seatChips } from "@/engine/commissionMinutes";
 import {
-  canCallCommission,
-  canCallWar,
+  canAsk,
   COMMISSION_COOLDOWN,
   COMMISSION_INFLUENCE,
   commissionHealth,
   defiances,
-  hasCase,
   LOBBY_CASH,
   LOBBY_INFLUENCE,
   lobbyLean,
+  previewSeats,
+  taxBlock,
 } from "@/engine/commission";
 import PortraitAvatar from "@/ui/PortraitAvatar";
 
@@ -102,6 +103,7 @@ export default function CommissionPanel() {
     <PanelShell title="The Commission" subtitle="Standing among the families">
       <Standings />
       <CommissionHealthBlock />
+      <CommissionAskCard />
       <CommissionCallBlock />
       <Minutes />
       <ScheduledSitdowns />
@@ -213,8 +215,6 @@ export default function CommissionPanel() {
                     onAct={takeDiplomacy}
                   />
                 ))}
-                <CommissionButton target={f} />
-                <WarCallButton target={f} />
                 <SitdownButton
                   target={f}
                   open={sitdownFor === f}
@@ -502,29 +502,125 @@ function ScheduledSitdowns() {
 }
 
 /** What the table has been talking about: hits, chairs changing hands, deals, feuds. */
-/** Ask the Commission to sit on the trouble with one rival. */
-function CommissionButton({ target }: { target: FamilyName }) {
+const ASKS: { id: CommissionCallKind; label: string }[] = [
+  { id: "ruling", label: "Truce" },
+  { id: "war", label: "War" },
+  { id: "tax", label: "Tax" },
+];
+
+function leanWord(lean: number): "yours" | "theirs" | "undecided" {
+  if (lean > 0.2) return "yours";
+  if (lean < -0.2) return "theirs";
+  return "undecided";
+}
+
+/** Pick the ask and the family. The bars are the vote, before any standing is spent. */
+function CommissionAskCard() {
   const state = useGameStore();
   const callCommission = useGameStore((s) => s.callCommission);
-  const check = canCallCommission(state, target);
-  const noCase = !hasCase(state, target);
-  const health = commissionHealth(state);
+  const player = state.playerFamily;
+  const call = state.commissionCall;
+  const rivals = ALL_FAMILY_NAMES.filter(
+    (f) => f !== player && !(state.defunctFamilies ?? []).includes(f) && state.crew.some((c) => c.family === f && c.role === "boss" && c.status !== "dead"),
+  );
+  const [kind, setKind] = useState<CommissionCallKind>("ruling");
+  const [target, setTarget] = useState<FamilyName | "">(rivals[0] ?? "");
+  if (!player || (call && call.phase === "lobby")) return null;
+  const chosen = rivals.includes(target as FamilyName) ? (target as FamilyName) : rivals[0];
+  if (!chosen) return null;
+
+  const seats = previewSeats(state, kind, chosen);
+  const yours = seats.filter((s) => leanWord(s.lean) === "yours").length;
+  const theirs = seats.filter((s) => leanWord(s.lean) === "theirs").length;
+  const undecided = seats.length - yours - theirs;
+  const check = canAsk(state, kind, chosen);
+  const block = kind === "tax" ? taxBlock(state, chosen) : undefined;
+  const unprovoked = kind === "war" && defiances(state, chosen).length === 0;
+  const askLabel = kind === "ruling" ? "a truce" : kind === "war" ? "a war" : "a tax";
   const tip = check.ok
-    ? `Costs ${COMMISSION_INFLUENCE} standing. One call every ${COMMISSION_COOLDOWN} weeks. The vote is at the end of the week. ${health.tier}${health.sway >= 0.75 ? " — the seats start on your side." : health.sway < 0.25 ? " — expect to pay for every ear." : "."}${noCase ? " You have no case against them — the seats won't like it." : ""}`
+    ? `Costs ${COMMISSION_INFLUENCE} standing. One call every ${COMMISSION_COOLDOWN} weeks. The vote is at the end of the week.`
     : check.reason;
+
   return (
-    <Tip wrapDisabled content={tip}>
-      <Button
-        type="button"
-        size="sm"
-        variant="secondary"
-        className="h-6 px-1.5 text-[10px]"
-        disabled={!check.ok}
-        onClick={() => callCommission(target)}
+    <div className="mb-3 rounded-md border border-panel-border bg-panel/40 p-2">
+      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Call the Commission</div>
+      <div className="mt-1.5 flex gap-1">
+        {ASKS.map((ask) => (
+          <button
+            key={ask.id}
+            type="button"
+            onClick={() => setKind(ask.id)}
+            className={`flex-1 rounded-md border px-2 py-1 text-[11px] ${
+              kind === ask.id
+                ? "border-steel bg-steel/20 text-steel-light"
+                : "border-panel-border bg-panel/50 text-muted-foreground hover:bg-panel-elevated"
+            }`}
+          >
+            {ask.label}
+          </button>
+        ))}
+      </div>
+      <select
+        id="commission-ask-family"
+        value={chosen}
+        onChange={(e) => setTarget(e.target.value as FamilyName)}
+        className="mt-1.5 h-7 w-full rounded border border-panel-border bg-panel/60 px-1 text-[11px]"
       >
-        Call the Commission
-      </Button>
-    </Tip>
+        {rivals.map((f) => (
+          <option key={f} value={f}>
+            {getFamilyDef(f).name}
+          </option>
+        ))}
+      </select>
+      <p className="mt-1.5 text-[10px] text-muted-foreground">
+        On {askLabel} with {chosen}: {yours} your way, {undecided} undecided, {theirs} toward {chosen}.
+      </p>
+      {unprovoked && (
+        <p className="mt-1 text-[10px] text-amber-300">
+          The table has nothing to avenge. The seats start against you.
+        </p>
+      )}
+      {kind === "tax" && block && (
+        <p className="mt-1 text-[10px] text-muted-foreground">
+          {Math.round(CUT_DEFAULT_SHARE * 100)}% of {block.name}'s take for {TRUCE_DEFAULT_WEEKS} weeks, and the guns go down.
+        </p>
+      )}
+      <div className="mt-2 space-y-1.5">
+        {seats.map((seat) => {
+          const lean = Math.max(-1, Math.min(1, seat.lean));
+          const side = leanWord(seat.lean);
+          const word = side === "yours" ? "leaning your way" : side === "theirs" ? `leaning ${chosen}'s way` : "undecided";
+          return (
+            <div key={seat.family} className="flex items-center gap-2">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className="text-steel-light">{seat.family}</span>
+                  <span className="text-muted-foreground">{word}</span>
+                </div>
+                <div className="mt-0.5 h-1 rounded bg-panel-border">
+                  <div
+                    className="h-1 rounded"
+                    style={{ width: `${((lean + 1) / 2) * 100}%`, background: lean >= 0 ? "#34d399" : "#e85d4c" }}
+                  />
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <Tip wrapDisabled content={tip}>
+        <Button
+          type="button"
+          size="sm"
+          className="mt-2"
+          disabled={!check.ok}
+          onClick={() => callCommission(chosen, kind)}
+        >
+          Call the Commission · {COMMISSION_INFLUENCE} standing
+        </Button>
+      </Tip>
+      {!check.ok && <p className="mt-1 text-[10px] text-amber-300">{check.reason}</p>}
+    </div>
   );
 }
 
@@ -540,31 +636,6 @@ function DefianceBadge({ target }: { target: FamilyName }) {
       <Badge variant="outline" className="text-[10px] text-amber-300">
         Ignored the table{ignored.length > 1 ? ` ×${ignored.length}` : ""}
       </Badge>
-    </Tip>
-  );
-}
-
-/** Ask the table to go to war with a family that ignored it. Only shown once they have. */
-function WarCallButton({ target }: { target: FamilyName }) {
-  const state = useGameStore();
-  const callWar = useGameStore((s) => s.callCommissionWar);
-  if (defiances(state, target).length === 0) return null;
-  const check = canCallWar(state, target);
-  const tip = check.ok
-    ? `Costs ${COMMISSION_INFLUENCE} standing. The seats vote at the end of the week; those who say yes go to war with ${target} alongside you. A no costs you 3 respect.`
-    : check.reason;
-  return (
-    <Tip wrapDisabled content={tip}>
-      <Button
-        type="button"
-        size="sm"
-        variant="secondary"
-        className="h-6 px-1.5 text-[10px] text-heat"
-        disabled={!check.ok}
-        onClick={() => callWar(target)}
-      >
-        Call the table to war
-      </Button>
     </Tip>
   );
 }
@@ -586,7 +657,9 @@ function CommissionCallBlock() {
       <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
         {call.kind === "war"
           ? `The Commission weighs war on ${call.accused}`
-          : `The Commission sits on the trouble with ${call.accused}`}
+          : call.kind === "tax"
+            ? `The Commission weighs a tax on ${call.accused}`
+            : `The Commission sits on a truce with ${call.accused}`}
       </div>
       <p className="mt-0.5 text-[10px] text-muted-foreground">
         The vote is counted at the end of the week. Your weight at the table shifts every seat {shift >= 0 ? "+" : ""}

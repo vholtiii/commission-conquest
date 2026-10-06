@@ -3,11 +3,11 @@ import { useState } from "react";
 import { useGameStore } from "@/engine/store";
 import { getFamilyDef } from "@/data/families";
 import { FAMILY_HEX, RACKET_LABELS } from "@/types/game";
-import { racketIncome, racketCrewBonusPct, racketPayment, isLegitBusiness, isRacketFrozen, launderCap, launderSiteStatus, fundingLabel, racketFunding, hijackRisk, needsManager, legitCoverWantedDrop } from "@/engine/economy";
+import { racketIncome, racketCrewBonusPct, racketPayment, isLegitBusiness, isRacketFrozen, launderCap, launderSiteStatus, fundingLabel, racketFunding, hijackRisk, needsManager, canManageRacket, legitCoverWantedDrop } from "@/engine/economy";
 import { isProducerType, isStorageType, planFeedSpeakeasy, stockCap, warehouseManagerEffectText } from "@/engine/liquor";
 import { isUnguarded, maxRacketsFor, lotTier, lotTierHint, lotTierLabel, allowedRacketTypes } from "@/engine/territoryValue";
 import { RACKET_VISUALS } from "@/data/racketVisuals";
-import { emptyIntel, hiddenCountIn, hasFreshCasing, visibleCrewIn } from "@/engine/intel";
+import { emptyIntel, hiddenCountIn, hasFreshCasing, spottedThisTurn, visibleCrewIn } from "@/engine/intel";
 import { LOCATION_REASON_LABEL, familyHq, isBossUnderground, resolveCrewLocation, resolveCrewTerritoryId } from "@/engine/crewLocation";
 import {
   BOSS_PRESENCE,
@@ -98,8 +98,9 @@ export default function DistrictPanel() {
   const bossStay = useGameStore((s) => s.bossStay);
   const heat = useGameStore((s) => s.heat);
   const bribes = useGameStore((s) => s.bribes);
+  const streetLawyerUntil = useGameStore((s) => s.streetLawyerUntil ?? 0);
   const [caseLookoutId, setCaseLookoutId] = useState("");
-  const riskState = { heat, bribes, territories, turn, playerFamily };
+  const riskState = { heat, bribes, territories, turn, playerFamily, streetLawyerUntil };
 
   const territory = territories.find((t) => t.id === selectedTerritoryId);
   if (!territory || !playerFamily) return null;
@@ -122,11 +123,19 @@ export default function DistrictPanel() {
   const isOwned = territory.owner === playerFamily;
   const isRival = !!territory.owner && territory.owner !== playerFamily;
   const visible = visibleCrewIn(locState, territory.id);
+  const spotted = isRival ? spottedThisTurn(locState, territory.id) : [];
   const garrison = isOwned
     ? (territory.garrisonIds
         .map((id) => crew.find((c) => c.id === id))
         .filter(Boolean) as NonNullable<ReturnType<typeof crew.find>>[])
-    : visible.filter((c) => c.family === territory.owner);
+    : (() => {
+        const named = visible.filter((c) => c.family === territory.owner);
+        const seen = new Set(named.map((c) => c.id));
+        return [
+          ...named,
+          ...spotted.filter((c) => c.family === territory.owner && !seen.has(c.id)),
+        ];
+      })();
   const unknown = isRival ? hiddenCountIn(locState, territory.id) : 0;
   const managingIds = new Set(
     territories.flatMap((t) => t.rackets.map((r) => r.managerId).filter((id): id is string => !!id)),
@@ -138,15 +147,7 @@ export default function DistrictPanel() {
       (c.assignment.type === "idle" || c.assignment.type === "garrison") &&
       !managingIds.has(c.id),
   );
-  const managerCandidates = crew.filter(
-    (c) =>
-      c.family === playerFamily &&
-      c.status === "active" &&
-      c.role !== "boss" &&
-      c.assignment.type !== "operation" &&
-      c.assignment.type !== "surveillance" &&
-      c.assignment.type !== "delivery",
-  );
+  const managerCandidates = crew.filter((c) => canManageRacket(c, playerFamily));
   // Men who could drive over and garrison this block.
   const sendable = crew.filter(
     (c) =>
@@ -872,11 +873,12 @@ export default function DistrictPanel() {
                               className="h-6 max-w-[9rem] rounded border border-panel-border bg-panel/60 px-1 text-[10px]"
                             >
                               <option value="">Assign manager…</option>
-                              {managerCandidates
-                                .filter(
-                                  (c) => c.assignment.type !== "racket" || c.id === r.managerId,
-                                )
-                                .map((c) => (
+                              {[
+                                ...(r.managerId
+                                  ? crew.filter((c) => c.id === r.managerId)
+                                  : []),
+                                ...managerCandidates.filter((c) => c.id !== r.managerId),
+                              ].map((c) => (
                                 <option key={c.id} value={c.id}>
                                   {c.name.split(" ").slice(-1)[0]} ({c.role})
                                 </option>

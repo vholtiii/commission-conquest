@@ -27,6 +27,7 @@ import {
 } from "@/types/game";
 import type { Rng } from "./rng";
 import { createRng, hashString } from "./rng";
+import { applySkillPoints, randomMakingPoints } from "./makingPoints";
 import { walkToRival } from "./defection";
 import { resolveCrewTerritoryId, type LocationState } from "./crewLocation";
 import { BOSS_PRESENCE, bossPresenceDistrict } from "./bossPresence";
@@ -203,7 +204,7 @@ export interface JoinCheck {
   reason?: string;
 }
 
-/** Soldiers and associates can join; associates are made soldiers on the way in. */
+/** Soldiers and associates can join once they are made. Associates are promoted on the way in. */
 export function canJoinCrew(
   crew: CrewMember[],
   memberId: string,
@@ -218,6 +219,7 @@ export function canJoinCrew(
   if (member.role !== "soldier" && member.role !== "associate") {
     return { ok: false, reason: "Only soldiers and associates run in a crew." };
   }
+  if (!member.traits.includes("made_man")) return { ok: false, reason: "He isn't made." };
   if (member.status !== "active") return { ok: false, reason: `${member.name} is out of action.` };
   // A man already running with someone else is spoken for; cut him loose first.
   if (member.capoId && member.capoId !== capoId) {
@@ -417,9 +419,15 @@ export function tickCrewMentoring(
 /* Freelance edge                                                      */
 /* ------------------------------------------------------------------ */
 
-/** Skills as they read on a casing job: loose soldiers are sharper on the street. */
+/** Unmade associates and loose unmade soldiers read sharper on a casing. Made men don't. */
+function hasStreetEdge(member: CrewMember): boolean {
+  if (member.traits.includes("made_man")) return false;
+  return member.role === "associate" || isFreelanceSoldier(member);
+}
+
+/** Skills as they read on a casing job. */
 export function casingSkills(lookout: CrewMember): CrewSkills {
-  if (!isFreelanceSoldier(lookout)) return lookout.skills;
+  if (!hasStreetEdge(lookout)) return lookout.skills;
   return {
     ...lookout.skills,
     stealth: Math.min(100, lookout.skills.stealth + FREELANCE_STEALTH_EDGE),
@@ -431,7 +439,7 @@ export function casingSkills(lookout: CrewMember): CrewSkills {
 export function learnFromCleanCasing(crew: CrewMember[], lookoutId: string | undefined): CrewMember[] {
   if (!lookoutId) return crew;
   return crew.map((c) => {
-    if (c.id !== lookoutId || !isFreelanceSoldier(c) || c.skills.stealth >= 100) return c;
+    if (c.id !== lookoutId || !hasStreetEdge(c) || c.skills.stealth >= 100) return c;
     return { ...c, skills: { ...c.skills, stealth: c.skills.stealth + 1 } };
   });
 }
@@ -555,6 +563,7 @@ export function generateCrewRequests(
         c.id !== capo.id &&
         c.status === "active" &&
         (c.role === "soldier" || c.role === "associate") &&
+        c.traits.includes("made_man") &&
         !c.capoId &&
         !spokenFor.has(c.id) &&
         c.assignment.type !== "operation" &&
@@ -719,18 +728,35 @@ export function answerCrewRequest(
  */
 export function aiFillCrews(crew: CrewMember[], family: FamilyName, turn: number): CrewMember[] {
   let next = crew;
+  const rng = createRng(hashString(`${family}:make:${turn}`));
   const capos = next.filter((c) => c.family === family && canLeadCrew(c) && c.status === "active");
   for (const capo of capos) {
     let slots = openSlots(next, capo);
     if (slots <= 0) continue;
     const want = wantedSkill(capo);
     const loose = next
-      .filter((c) => c.family === family && isFreelanceSoldier(c) && c.status === "active")
+      .filter(
+        (c) =>
+          c.family === family &&
+          c.status === "active" &&
+          !c.capoId &&
+          (c.role === "soldier" || c.role === "associate"),
+      )
       .sort((a, b) => b.skills[want] - a.skills[want]);
     for (const s of loose) {
       if (slots <= 0) break;
-      const after = joinCrew(next, s.id, capo.id, turn);
-      if (after !== next) {
+      let pool = next;
+      const current = pool.find((c) => c.id === s.id);
+      if (current && !current.traits.includes("made_man")) {
+        const alloc = randomMakingPoints(current.skills, rng);
+        pool = pool.map((c) =>
+          c.id === current.id
+            ? { ...c, traits: [...c.traits, "made_man"], skills: applySkillPoints(c.skills, alloc) }
+            : c,
+        );
+      }
+      const after = joinCrew(pool, s.id, capo.id, turn);
+      if (after !== pool) {
         next = after;
         slots -= 1;
       }

@@ -1,7 +1,7 @@
 import type { CaptureTally, CrewMember, FamilyName, GameState, Territory } from "@/types/game";
 import { CAPTURE_LIMIT_BASE, CAPTURE_LIMIT_MAX } from "@/types/game";
 import { getFamilyDef } from "@/data/families";
-import { assignCrew, bumpLoyalty } from "./crew";
+import { assignCrew, bumpLoyalty, isUnmade } from "./crew";
 import { captureParty } from "./crews";
 import type { Rng } from "./rng";
 import { BOSS_PRESENCE, bossAdjacentTo, bossPresentIn, hqIsSoft } from "./bossPresence";
@@ -97,13 +97,18 @@ export function eligibleCaptureCrew(
   territoryId: string,
 ): CrewMember[] {
   if (!state.playerFamily) return [];
-  return state.crew.filter(
-    (c) =>
-      c.family === state.playerFamily &&
-      c.status === "active" &&
-      (c.assignment.type === "idle" ||
-        (c.assignment.type === "garrison" && c.assignment.territoryId === territoryId)),
-  );
+  return state.crew
+    .filter(
+      (c) =>
+        c.family === state.playerFamily &&
+        c.status === "active" &&
+        (c.assignment.type === "idle" || c.assignment.type === "garrison"),
+    )
+    .sort((a, b) => {
+      const here = (c: CrewMember) =>
+        c.assignment.type === "garrison" && c.assignment.territoryId === territoryId ? 0 : 1;
+      return here(a) - here(b);
+    });
 }
 
 /**
@@ -162,8 +167,9 @@ export function captureStrength(
     territoryId,
   );
 
+  const muscle = (c: CrewMember) => c.skills.muscle * (isUnmade(c) ? 0.75 : 1);
   const atk =
-    attackers.reduce((n, c) => n + c.skills.muscle, 0) *
+    attackers.reduce((n, c) => n + muscle(c), 0) *
     (1 + (getFamilyDef(state.playerFamily).bonuses.combatBonus || 0)) *
     mods.atkMult;
   const fortified = safehouseCaptureDefence(t, state.turn ?? 0);
@@ -172,7 +178,7 @@ export function captureStrength(
     notes.push(`Safehouse on the block — defence +${Math.round((fortified - 1) * 100)}%`);
   }
   const def =
-    (defenders.reduce((n, c) => n + c.skills.muscle, 0) + 40) *
+    (defenders.reduce((n, c) => n + muscle(c), 0) + 40) *
     (1 + t.defenseBonus) *
     (t.leadershipVacuum > 0 ? 0.7 : 1) *
     fortified *

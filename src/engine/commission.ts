@@ -16,7 +16,8 @@ import type {
 import { ALL_FAMILY_NAMES, getFamilyDef } from "@/data/families";
 import type { Rng } from "./rng";
 import { getRelation, setRelation, setRelationDelta } from "./relations";
-import { TRUCE_DEFAULT_WEEKS, applyAgendaTerms, bleeding } from "./agendas";
+import { CUT_DEFAULT_SHARE, TRUCE_DEFAULT_WEEKS, applyAgendaTerms, bleeding, cutOn, districtTake } from "./agendas";
+import { makeDeal, truceBetween } from "./deals";
 import { bossIsJailed, livingBoss } from "./jail";
 import { isDefunct } from "./defection";
 import { familyWealth } from "./victory";
@@ -36,12 +37,18 @@ export const SANCTION_WEEKS = 4;
 const REFUSAL_RELATION = -10;
 /** How long the table remembers a ruling being ignored. */
 export const DEFIANCE_WINDOW = 12;
-/** Commission health the player needs before the table will go to war on his word. */
-export const WAR_CALL_HEALTH = 50;
-/** Standing part of that health (out of 30) — half the leader's standing. */
-export const WAR_CALL_STANDING = 15;
-/** Relation the seats drop to when the table goes to war. */
+/** Relation every other living family drops to when the table goes to war. */
 const WAR_RELATION = -70;
+/** Already this bad, and a war ask is refused. */
+const ALREADY_AT_WAR = -60;
+/** No case against them: every seat leans this much against a truce or a tax. */
+const FRIVOLOUS_LEAN = -0.3;
+/** No ignored ruling: every seat starts this far against a war. */
+const WAR_UNPROVOKED_LEAN = -0.6;
+/** A tax asks for money on top of peace. */
+const TAX_GREED_LEAN = -0.25;
+/** Economic and smuggler seats dislike the table setting a price. */
+const TAX_MERCHANT_LEAN = -0.15;
 
 const WAR_LINES: Record<string, { for: string; against: string; abstain: string }> = {
   volatile: {
@@ -236,6 +243,63 @@ function eligibleSeats(state: GameState, caller: FamilyName, accused: FamilyName
   );
 }
 
+function livingFamilies(state: GameState): FamilyName[] {
+  return ALL_FAMILY_NAMES.filter((f) => !isDefunct(state, f) && !!livingBoss(state, f));
+}
+
+/** Their richest owned block that is not already under a cut. */
+export function taxBlock(state: GameState, family: FamilyName) {
+  return state.territories
+    .filter((t) => t.owner === family && !cutOn(state, t.id))
+    .sort((a, b) => districtTake(b) - districtTake(a))[0];
+}
+
+/**
+ * How the seats lean on this ask, before lobbying. Opening a call copies these
+ * leans, so the forecast and the vote start from the same place.
+ */
+export function previewSeats(state: GameState, kind: CommissionCallKind, target: FamilyName): SeatVote[] {
+  const player = state.playerFamily;
+  if (!player) return [];
+  const ignored = kind === "war" ? defiances(state, target) : [];
+  const slighted = new Set(ignored.flatMap((r) => r.forRuling));
+  const frivolous = kind !== "war" && !hasCase(state, target);
+  return eligibleSeats(state, player, target).map((family) => {
+    let lean = seatLean(state, family, player, target);
+    if (kind === "war") {
+      lean += ignored.length === 0 ? WAR_UNPROVOKED_LEAN : 0.15 * ignored.length + (slighted.has(family) ? 0.15 : 0);
+    } else {
+      if (frivolous) lean += FRIVOLOUS_LEAN;
+      if (kind === "tax") {
+        lean -= TAX_GREED_LEAN;
+        const personality = getFamilyDef(family).personality;
+        if (personality === "economic" || personality === "smuggler") lean -= TAX_MERCHANT_LEAN;
+      }
+    }
+    return { family, lean };
+  });
+}
+
+export function canAsk(
+  state: GameState,
+  kind: CommissionCallKind,
+  target: FamilyName,
+): { ok: boolean; reason?: string } {
+  const base = canCallCommission(state, target);
+  if (!base.ok) return base;
+  const player = state.playerFamily!;
+  if (kind === "ruling" && truceBetween(state, player, target)) {
+    return { ok: false, reason: `A truce already holds with ${target}.` };
+  }
+  if (kind === "war" && getRelation(state.relations, player, target) <= ALREADY_AT_WAR) {
+    return { ok: false, reason: `You're already at war with ${target}.` };
+  }
+  if (kind === "tax" && !taxBlock(state, target)) {
+    return { ok: false, reason: `${target} has no take left to tax.` };
+  }
+  return { ok: true };
+}
+
 export function canCallCommission(
   state: GameState,
   target: FamilyName,
@@ -257,92 +321,58 @@ function log(state: GameState, id: string, text: string): TurnLogEntry {
   return { id, turn: state.turn, category: "diplomacy", text, family: state.playerFamily ?? undefined };
 }
 
+const ASK_LOG: Record<CommissionCallKind, (target: FamilyName) => string> = {
+  ruling: (target) => `You call the Commission over a truce with ${target}. It costs ${COMMISSION_INFLUENCE} standing.`,
+  war: (target) => `You ask the Commission to go to war with ${target}. It costs ${COMMISSION_INFLUENCE} standing.`,
+  tax: (target) => `You ask the Commission to tax ${target}. It costs ${COMMISSION_INFLUENCE} standing.`,
+};
+
 /** Spend the standing and open the call. The seats lean; the vote is at the end of the week. */
+export function openCommissionCall(
+  state: GameState,
+  kind: CommissionCallKind,
+  target: FamilyName,
+): { state: GameState; log: TurnLogEntry } {
+  const player = state.playerFamily;
+  const check = canAsk(state, kind, target);
+  if (!player || !check.ok) {
+    return { state, log: log(state, `log_commission_no_${kind}_${state.turn}`, check.reason ?? "You can't call them.") };
+  }
+
+  const call: CommissionCall = {
+    id: `commission_${kind}_${player}_${target}_${state.turn}`,
+    turn: state.turn,
+    kind: kind === "ruling" ? undefined : kind,
+    caller: player,
+    accused: target,
+    seats: previewSeats(state, kind, target),
+    lobbied: {},
+    phase: "lobby",
+  };
+  return {
+    state: {
+      ...state,
+      influence: state.influence - COMMISSION_INFLUENCE,
+      commissionCall: call,
+      diplomacy: { ...state.diplomacy, commissionCooldown: state.turn + COMMISSION_COOLDOWN },
+    },
+    log: log(state, `log_commission_call_${call.id}`, ASK_LOG[kind](target)),
+  };
+}
+
+/** A truce call. Kept so a broken sit-down can still take that one ask to the table. */
 export function openCall(state: GameState, target: FamilyName): { state: GameState; log: TurnLogEntry } {
-  const player = state.playerFamily;
-  const check = canCallCommission(state, target);
-  if (!player || !check.ok) return { state, log: log(state, `log_commission_no_${state.turn}`, check.reason ?? "You can't call them.") };
-
-  const frivolous = !hasCase(state, target);
-  const seats: SeatVote[] = eligibleSeats(state, player, target).map((family) => ({
-    family,
-    lean: seatLean(state, family, player, target) + (frivolous ? -0.3 : 0),
-  }));
-  const call: CommissionCall = {
-    id: `commission_${player}_${target}_${state.turn}`,
-    turn: state.turn,
-    caller: player,
-    accused: target,
-    seats,
-    lobbied: {},
-    phase: "lobby",
-  };
-  return {
-    state: {
-      ...state,
-      influence: state.influence - COMMISSION_INFLUENCE,
-      commissionCall: call,
-      diplomacy: { ...state.diplomacy, commissionCooldown: state.turn + COMMISSION_COOLDOWN },
-    },
-    log: log(state, `log_commission_call_${call.id}`, `You call the Commission over the trouble with ${target}. It costs ${COMMISSION_INFLUENCE} standing.`),
-  };
+  return openCommissionCall(state, "ruling", target);
 }
 
-/**
- * Whether the player can ask the table to go to war with a family that
- * ignored its ruling. Needs a defiance on record, and a player the table
- * actually listens to: respectable standing and enough Commission health.
- */
-export function canCallWar(state: GameState, target: FamilyName): { ok: boolean; reason?: string } {
-  const player = state.playerFamily;
-  if (!player) return { ok: false, reason: "No family." };
-  if (defiances(state, target).length === 0) return { ok: false, reason: `${target} hasn't ignored a ruling lately.` };
-  const health = commissionHealth(state);
-  if (health.parts.standing < WAR_CALL_STANDING) {
-    return { ok: false, reason: `Your standing isn't respectable enough — ${health.parts.standing}/30 at the table. The seats will only send a message.` };
-  }
-  if (health.score < WAR_CALL_HEALTH) {
-    return { ok: false, reason: `Not enough sway — Commission health ${health.score}, needs ${WAR_CALL_HEALTH}. The seats will only send a message.` };
-  }
-  return canCallCommission(state, target);
-}
-
-/** Ask the table to go to war with a family that ignored it. Same fee and rhythm as a call. */
+/** A war call. The forecast starts against you unless they have ignored a ruling. */
 export function openWarCall(state: GameState, target: FamilyName): { state: GameState; log: TurnLogEntry } {
-  const player = state.playerFamily;
-  const check = canCallWar(state, target);
-  if (!player || !check.ok) return { state, log: log(state, `log_commission_war_no_${state.turn}`, check.reason ?? "The table won't hear it.") };
+  return openCommissionCall(state, "war", target);
+}
 
-  const ignored = defiances(state, target);
-  const slighted = new Set(ignored.flatMap((r) => r.forRuling));
-  const seats: SeatVote[] = eligibleSeats(state, player, target).map((family) => ({
-    family,
-    // Every ignored ruling stings; a seat that voted for one stings more.
-    lean: seatLean(state, family, player, target) + 0.15 * ignored.length + (slighted.has(family) ? 0.15 : 0),
-  }));
-  const call: CommissionCall = {
-    id: `commission_war_${player}_${target}_${state.turn}`,
-    turn: state.turn,
-    kind: "war",
-    caller: player,
-    accused: target,
-    seats,
-    lobbied: {},
-    phase: "lobby",
-  };
-  return {
-    state: {
-      ...state,
-      influence: state.influence - COMMISSION_INFLUENCE,
-      commissionCall: call,
-      diplomacy: { ...state.diplomacy, commissionCooldown: state.turn + COMMISSION_COOLDOWN },
-    },
-    log: log(
-      state,
-      `log_commission_war_call_${call.id}`,
-      `You ask the Commission to go to war with ${target} for ignoring its ruling. It costs ${COMMISSION_INFLUENCE} standing.`,
-    ),
-  };
+/** Whether a war ask can be made. Defiance changes the leans, not this gate. */
+export function canCallWar(state: GameState, target: FamilyName): { ok: boolean; reason?: string } {
+  return canAsk(state, "war", target);
 }
 
 /** Buy one seat's ear, once per call. Cash or standing; either way they lean your way. */
@@ -390,14 +420,74 @@ function voteLine(family: FamilyName, side: "for" | "against" | "abstain", kind:
   return lines[side];
 }
 
-/** The table goes to war: the seats that voted for it, and the player, drop to war with the accused. */
-function declareWar(state: GameState, call: CommissionCall, forRuling: FamilyName[]): GameState {
+/** The table decided. Every other living family drops to war with the condemned one. */
+function declareWar(state: GameState, condemned: FamilyName): GameState {
   let relations = state.relations;
-  for (const f of [call.caller, ...forRuling]) {
-    const now = getRelation(relations, f, call.accused);
-    relations = setRelation(relations, f, call.accused, Math.min(now, WAR_RELATION));
+  for (const f of livingFamilies(state)) {
+    if (f === condemned) continue;
+    const now = getRelation(relations, f, condemned);
+    relations = setRelation(relations, f, condemned, Math.min(now, WAR_RELATION));
   }
   return { ...state, relations };
+}
+
+/** One hit from a rival onto a man of the condemned family. The player plans his own. */
+function queueWarHit(state: GameState, from: FamilyName, condemned: FamilyName, rng: Rng): GameState {
+  if (from === state.playerFamily || from === condemned) return state;
+  if (
+    state.operations.some(
+      (o) => !o.resolved && o.kind === "hit" && o.family === from && o.targetFamily === condemned,
+    )
+  ) {
+    return state;
+  }
+  const ground = new Set(state.territories.filter((t) => t.owner === condemned).map((t) => t.id));
+  const men = getActiveCrew(state.crew, condemned);
+  const onGround = men.filter((c) => {
+    const where = resolveCrewTerritoryId(state, c.id);
+    return where != null && ground.has(where);
+  });
+  const mark = onGround.find((c) => c.role !== "boss") ?? onGround[0] ?? men.find((c) => c.role !== "boss") ?? men[0];
+  if (!mark) return state;
+  const where = resolveCrewTerritoryId(state, mark.id) ?? state.territories.find((t) => t.owner === condemned)?.id;
+  if (!where) return state;
+
+  const pool = rng
+    .shuffle(getActiveCrew(state.crew, from).filter((c) => c.role !== "boss"))
+    .sort((a, b) => b.skills.muscle - a.skills.muscle);
+  if (pool.length < 1) return state;
+  const wheelman = pool.find((c) => c.traits.includes("wheelman"));
+  const approach = wheelman && rng.chance(0.5) ? "drive_by" : "ambush";
+  const shooters = pool.filter((c) => approach !== "drive_by" || c.id !== wheelman?.id).slice(0, 2);
+  if (shooters.length < 1) return state;
+  const seated = bringCrewOnHit(
+    state.crew,
+    {
+      shooterIds: shooters.map((c) => c.id),
+      wheelmanId: approach === "drive_by" ? wheelman?.id : undefined,
+    },
+    approach,
+  );
+  const origin = state.territories.find((t) => t.owner === from)?.id ?? where;
+  const op = planHit(
+    state,
+    {
+      family: from,
+      targetTerritoryId: where,
+      targetFamily: condemned,
+      targetCrewId: mark.id,
+      approach,
+      shooterIds: seated.shooterIds,
+      wheelmanId: seated.wheelmanId,
+      lookoutId: seated.lookoutId,
+      originTerritoryId: origin,
+      pendingTurns: 1,
+      motive: "commission",
+    },
+    rng,
+  );
+  const committed = commitHitCrew(state, op);
+  return { ...committed, operations: [...committed.operations, op] };
 }
 
 /**
@@ -437,12 +527,21 @@ export function castVotes(state: GameState, rng: Rng): { state: GameState; logs:
     let next: GameState = { ...state, commissionCall: { ...call, seats, phase: "voted", ruling } };
     const logs: TurnLogEntry[] = [];
     if (verdict === "caller") {
-      next = declareWar(next, call, backers);
+      next = declareWar(next, call.accused);
+      const moving: FamilyName[] = [];
+      for (const family of livingFamilies(next)) {
+        if (family === call.accused || family === next.playerFamily) continue;
+        const before = next.operations.length;
+        next = queueWarHit(next, family, call.accused, rng);
+        if (next.operations.length > before) moving.push(family);
+      }
       logs.push(
         log(
           state,
           `log_commission_war_${call.id}`,
-          `The Commission goes to war with ${call.accused} for ignoring the table. ${backers.join(", ")} put their guns behind you.`,
+          moving.length > 0
+            ? `The Commission goes to war with ${call.accused}. ${moving.join(", ")} are moving on them.`
+            : `The Commission goes to war with ${call.accused}. Nobody had a crew free to send.`,
         ),
       );
     } else {
@@ -463,6 +562,55 @@ export function castVotes(state: GameState, rng: Rng): { state: GameState; logs:
     }
     return { state: { ...next, pendingRulings: [...(next.pendingRulings ?? []), ruling] }, logs };
   }
+
+  if (kind === "tax") {
+    const weeks = TRUCE_DEFAULT_WEEKS;
+    const loser = verdict === "deadlock" ? null : verdict === "caller" ? call.accused : call.caller;
+    const block = loser ? taxBlock(state, loser) : undefined;
+    const terms: AgendaTerms = {
+      cash: 0,
+      standing: 0,
+      weeks,
+      territoryId: block?.id,
+      share: block ? CUT_DEFAULT_SHARE : undefined,
+    };
+    const forRuling = seats
+      .filter((s) => (verdict === "deadlock" ? false : s.vote === (verdict === "caller" ? "caller" : "accused")))
+      .map((s) => s.family);
+    const ruling: CommissionRuling = {
+      id: call.id,
+      turn: state.turn,
+      kind: "tax",
+      caller: call.caller,
+      accused: call.accused,
+      forCaller,
+      against,
+      terms,
+      verdict,
+      forRuling,
+    };
+    let next: GameState = { ...state, commissionCall: { ...call, seats, phase: "voted", ruling } };
+    const pct = Math.round(CUT_DEFAULT_SHARE * 100);
+    const logs = [
+      log(
+        state,
+        `log_commission_tax_${call.id}`,
+        verdict === "deadlock"
+          ? `The Commission deadlocks on taxing ${call.accused}. Nothing is settled.`
+          : block
+            ? `The Commission taxes ${loser}: ${pct}% of ${block.name} for ${weeks} weeks, and the guns go down.`
+            : `The Commission orders the guns down with ${call.accused} for ${weeks} weeks. ${loser} has no take left to tax.`,
+      ),
+    ];
+    if (verdict === "deadlock" && state.playerFamily) {
+      next = {
+        ...next,
+        reputation: { ...next.reputation, respect: Math.max(0, next.reputation.respect - 2) },
+      };
+    }
+    return { state: { ...next, pendingRulings: [...(next.pendingRulings ?? []), ruling] }, logs };
+  }
+
   const loser = verdict === "caller" ? call.accused : call.caller;
   const weeks = TRUCE_DEFAULT_WEEKS;
   // The loser pays, more for every recent hit he landed. A deadlock names no price.
@@ -625,7 +773,39 @@ export function answerRuling(
 
   let next = state;
   const both = callerAnswer === "accept" && accusedAnswer === "accept";
-  if (both) {
+  if (both && ruling.kind === "tax") {
+    const weeks = ruling.terms.weeks ?? TRUCE_DEFAULT_WEEKS;
+    if (!truceBetween(next, player, rival)) {
+      const struck = makeDeal(next, "truce", rival, { cash: 0, standing: 0, weeks }, { weeks, rng });
+      next = { ...struck.state, relations: setRelationDelta(struck.state.relations, player, rival, 5) };
+    }
+    const block = ruling.terms.territoryId
+      ? next.territories.find((t) => t.id === ruling.terms.territoryId)
+      : undefined;
+    if (block && ruling.terms.share && (block.owner === player || block.owner === rival)) {
+      const payer = block.owner === player ? player : rival;
+      const struck = makeDeal(
+        next,
+        "cut",
+        rival,
+        { ...ruling.terms, weeks, share: ruling.terms.share, territoryId: block.id },
+        { obligor: payer, weeks, rng },
+      );
+      next = struck.state;
+      const pct = Math.round(ruling.terms.share * 100);
+      logs.push(
+        log(
+          state,
+          `log_commission_tax_deal_${ruling.id}`,
+          payer === player
+            ? `Guns down with ${rival} for ${weeks} weeks. ${pct}% of ${block.name}'s take goes to them.`
+            : `Guns down with ${rival} for ${weeks} weeks. ${pct}% of ${block.name}'s take comes to you.`,
+        ),
+      );
+    } else {
+      logs.push(log(state, `log_commission_tax_deal_${ruling.id}`, `Guns down with ${rival} for ${weeks} weeks.`));
+    }
+  } else if (both) {
     // Cash is signed from the player's side, which is what applyAgendaTerms expects.
     const applied = applyAgendaTerms(next, rival, "truce", ruling.terms, rng);
     next = applied.state;

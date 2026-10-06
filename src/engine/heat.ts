@@ -1,7 +1,7 @@
 import type { BribeStatus, CrewMember, GameState, HeatState, TurnLogEntry } from "@/types/game";
 import { getFamilyDef } from "@/data/families";
 import { jailInCrew } from "./jail";
-import { isLegitBusiness, isRacketFrozen, legitCoverWantedDrop } from "./economy";
+import { isLegitBusiness, isRacketFrozen, legitCoverWantedDrop, STREET_LAWYER_HEAT_DECAY } from "./economy";
 import { SAFEHOUSE, laidLowHouse } from "./safehouse";
 
 /** When the law starts picking men up at the end of the week. */
@@ -32,13 +32,27 @@ export interface ArrestRisk {
   note: string;
 }
 
-type ArrestState = Pick<GameState, "heat" | "bribes" | "territories" | "turn" | "playerFamily" | "ratLeakTurn">;
+type ArrestState = Pick<
+  GameState,
+  | "heat"
+  | "bribes"
+  | "territories"
+  | "turn"
+  | "playerFamily"
+  | "ratLeakTurn"
+  | "ratLeakWeeks"
+  | "streetLawyerUntil"
+>;
 
-/** A spared rat keeps talking for this many weeks. */
+/** A spared rat keeps talking for this many weeks, unless a harsher leak says otherwise. */
 const RAT_LEAK_WEEKS = 4;
 
-function ratLeaking(state: Pick<ArrestState, "ratLeakTurn" | "turn">): boolean {
-  return state.ratLeakTurn != null && state.turn >= state.ratLeakTurn && state.turn < state.ratLeakTurn + RAT_LEAK_WEEKS;
+function leakWeeks(state: Pick<ArrestState, "ratLeakWeeks">): number {
+  return state.ratLeakWeeks ?? RAT_LEAK_WEEKS;
+}
+
+function ratLeaking(state: Pick<ArrestState, "ratLeakTurn" | "ratLeakWeeks" | "turn">): boolean {
+  return state.ratLeakTurn != null && state.turn >= state.ratLeakTurn && state.turn < state.ratLeakTurn + leakWeeks(state);
 }
 
 const BRIBE_LABEL: Record<keyof GameState["bribes"], string> = {
@@ -66,6 +80,13 @@ export function arrestRisk(state: ArrestState, m: CrewMember): ArrestRisk {
     reducers.push({
       label: `${paid.map((k) => BRIBE_LABEL[k]).join(", ")} paid`,
       effect: `−${cooling} heat/wk`,
+    });
+  }
+
+  if ((state.streetLawyerUntil ?? 0) > state.turn) {
+    reducers.push({
+      label: "street lawyer",
+      effect: `−${STREET_LAWYER_HEAT_DECAY} heat/wk`,
     });
   }
 
@@ -261,6 +282,10 @@ export function processHeatTurn(state: GameState): HeatTurnResult {
 
   let heat = decayHeat(state.heat, 2 + bribeFx.heatReduction);
 
+  if ((state.streetLawyerUntil ?? 0) > state.turn) {
+    heat = decayHeat(heat, STREET_LAWYER_HEAT_DECAY);
+  }
+
   if (state.playerFamily) {
     const def = getFamilyDef(state.playerFamily);
     if (def.bonuses.heatReduction) {
@@ -312,7 +337,7 @@ export function applyWarrantConsequences(state: GameState): GameState {
   let crew = state.crew;
   let turnLog = state.turnLog;
   // The week a spared rat starts talking, wanted climbs across the family.
-  if (ratLeaking(state) && state.turn === state.ratLeakTurn) {
+  if (ratLeaking(state) && state.turn === state.ratLeakTurn && !state.ratLeakSilent) {
     crew = crew.map((c) =>
       c.family === state.playerFamily && c.status === "active" ? { ...c, wanted: c.wanted + 1 } : c,
     );

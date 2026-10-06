@@ -67,7 +67,7 @@ export function traitEffects(trait: CrewTrait): TraitEffect {
     case "bookkeeper":
       return { skillBonus: { smarts: 3 }, loyaltyMod: 2, incomeMod: 0.08, hitMod: 0, stealthMod: 0, heatMod: -1 };
     case "made_man":
-      return { skillBonus: { muscle: 1, charm: 1 }, loyaltyMod: 10, incomeMod: 0, hitMod: 0.05, stealthMod: 0, heatMod: 0 };
+      return { skillBonus: { muscle: 1, charm: 1 }, loyaltyMod: 10, incomeMod: 0, hitMod: 0, stealthMod: 0, heatMod: 0 };
     case "ghost":
       return { skillBonus: { stealth: 4 }, loyaltyMod: 0, incomeMod: 0, hitMod: 0.1, stealthMod: 0.15, heatMod: -2 };
     case "enforcer":
@@ -120,12 +120,42 @@ function rollSkills(rng: Rng, role: CrewRole, bonus = 0): CrewSkills {
 
 function rollTraits(rng: Rng, role: CrewRole, minTraits = 0): CrewTrait[] {
   const count = role === "boss" ? 2 : Math.max(minTraits, rng.int(0, 2));
-  const pool = rng.shuffle([...ALL_TRAITS]);
+  // made_man is the ceremony, not a roll. Bosses are made when they take the chair.
+  const pool = rng.shuffle(ALL_TRAITS.filter((t) => t !== "made_man"));
   const traits = pool.slice(0, count);
-  if (role === "boss" && !traits.includes("made_man")) {
-    traits.push("made_man");
-  }
+  if (role === "boss") traits.push("made_man");
   return traits;
+}
+
+const MADE_EXEMPT: ReadonlySet<CrewRole> = new Set([
+  "boss",
+  "underboss",
+  "consigliere",
+  "capo",
+  "hitman",
+]);
+
+/** An associate or soldier who has not had the books opened. Brass never count. */
+export function isUnmade(member: CrewMember): boolean {
+  if (member.traits.includes("made_man")) return false;
+  if (MADE_EXEMPT.has(member.role)) return false;
+  return true;
+}
+
+/** Stamp the trait. Skills and loyalty are the ceremony's to give. */
+export function stampMade(member: CrewMember): CrewMember {
+  if (member.traits.includes("made_man")) return member;
+  return { ...member, traits: [...member.traits, "made_man"] };
+}
+
+/**
+ * Old saves: anyone already above associate, or already in a crew, was made
+ * the old way. A loose associate stays unmade.
+ */
+export function migrateMade(member: CrewMember): CrewMember {
+  if (!member || member.traits?.includes("made_man")) return member;
+  if (member.role !== "associate" || member.capoId) return stampMade(member);
+  return member;
 }
 
 export function createCrewMember(
@@ -511,7 +541,8 @@ export function crewCombatScore(member: CrewMember): number {
           : member.role === "boss"
             ? 1.5
             : 1;
-  return skillSum * roleMult * (1 + t.hitMod);
+  const score = skillSum * roleMult * (1 + t.hitMod);
+  return isUnmade(member) ? score * 0.75 : score;
 }
 
 /** Clear racket managers who died, were jailed, or left the family. */
@@ -557,7 +588,8 @@ export function tickAssignmentXp(
     else if (m.assignment.type === "racket") {
       if (frozenManagers.has(m.id)) return m;
       amount = 3;
-    } else if (m.assignment.type === "surveillance") amount = 3;
+    } else if (m.assignment.type === "surveillance") amount = 2;
+    else if (m.assignment.type === "delivery") amount = 2;
     if (amount <= 0) return m;
     const result = gainXp(m, amount);
     if (result.leveled && playerFamily && m.family === playerFamily) {

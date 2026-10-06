@@ -92,6 +92,38 @@ const APPROACH_MODS: Record<
   summons: { stealth: 0.3, power: 0.1, heat: 5 },
 };
 
+export type HitXpSeat = "lead" | "shooter" | "support";
+
+/** XP when a casing report comes in. The lookout is already home before the weekly ticker. */
+export const CASING_REPORT_XP = 10;
+
+/**
+ * The strongest shooter is the lead. One gun, and he is the lead.
+ * A tie keeps the man listed first. Everyone else on the job is support:
+ * wheelman, lookout, bomb maker, planter, negotiator.
+ */
+export function hitXpSeat(op: Pick<Operation, "shooterIds">, crewId: string, crew: CrewMember[]): HitXpSeat {
+  if (!op.shooterIds.includes(crewId)) return "support";
+  let leadId = op.shooterIds[0] ?? crewId;
+  let best = -Infinity;
+  for (const id of op.shooterIds) {
+    const member = crew.find((c) => c.id === id);
+    const score = member ? crewCombatScore(member) : -Infinity;
+    if (score > best) {
+      best = score;
+      leadId = id;
+    }
+  }
+  return crewId === leadId ? "lead" : "shooter";
+}
+
+/** Lead gun 30/50, other shooters 20/35, the wheel and the rest of the crew 15/25. */
+export function hitResolveXp(targetDead: boolean, seat: HitXpSeat = "lead"): number {
+  if (seat === "lead") return targetDead ? 50 : 30;
+  if (seat === "shooter") return targetDead ? 35 : 20;
+  return targetDead ? 25 : 15;
+}
+
 /** Diminishing returns for additional shooters (best first). */
 const SHOOTER_WEIGHTS = [1, 0.6, 0.35, 0.2, 0.1, 0.05];
 
@@ -947,9 +979,8 @@ export function resolveHit(
   // The dead don't keep their travel plans.
   crew = crew.map((c) => (c.status === "dead" && c.awayAt ? { ...c, awayAt: undefined } : c));
 
-  const xpPer = targetDead ? 15 : 10;
   for (const sid of hitCrewIds(op)) {
-    const granted = grantXpToCrew(crew, sid, xpPer);
+    const granted = grantXpToCrew(crew, sid, hitResolveXp(targetDead, hitXpSeat(op, sid, crew)));
     crew = granted.crew.map((c) =>
       c.id === sid ? { ...c, hits: c.hits + 1 } : c,
     );
@@ -1733,6 +1764,8 @@ function applyCasingFallout(
   const setCrew = (id: string, patch: Partial<CrewMember>) => {
     crew = crew.map((c) => (c.id === id ? { ...c, ...patch } : c));
   };
+  const payLookout = (nextCrew: CrewMember[]) =>
+    lookout ? grantXpToCrew(nextCrew, lookout.id, CASING_REPORT_XP).crew : nextCrew;
   const territoryName =
     state.territories.find((t) => t.id === op.targetTerritoryId)?.name ?? "the district";
   const lookoutName = lookout ? lastName(lookout) : "Your man";
@@ -1749,7 +1782,7 @@ function applyCasingFallout(
     );
     consequences.push(`${lookoutName} was picked up loitering. He saw nothing.`);
     return {
-      state: { ...next, crew },
+      state: { ...next, crew: payLookout(crew) },
       outcome: "clean",
       relationDelta,
       consequences,
@@ -1766,7 +1799,7 @@ function applyCasingFallout(
       loyalty: Math.max(0, lookout.loyalty - 10),
       traits: lookout.traits.includes("rat_risk") ? lookout.traits : [...lookout.traits, "rat_risk"],
     });
-    return { state: { ...next, crew }, outcome: "clean", relationDelta, consequences };
+    return { state: { ...next, crew: payLookout(crew) }, outcome: "clean", relationDelta, consequences };
   }
 
   if (rung === "clean") {
@@ -1777,7 +1810,7 @@ function applyCasingFallout(
     }
     const paid = lookout ? bumpLoyalty(learned, [lookout.id], 3) : { crew: learned, gained: [] as string[] };
     if (paid.gained.length > 0 && op.family === state.playerFamily) consequences.push("Loyalty +3.");
-    return { state: { ...next, crew: paid.crew }, outcome: "clean", relationDelta, consequences };
+    return { state: { ...next, crew: payLookout(paid.crew) }, outcome: "clean", relationDelta, consequences };
   }
 
   // noticed / made / grabbed all put the block on alert.
@@ -1873,7 +1906,7 @@ function applyCasingFallout(
 
   next = {
     ...next,
-    crew,
+    crew: payLookout(crew),
     relations,
     grudges,
     intel: op.family === state.playerFamily ? intel : next.intel,

@@ -11,6 +11,13 @@ import {
   launderCut,
   launderManagerMods,
   launderSiteStatus,
+  lawyerBlockReason,
+  lawyerOffer,
+  LAWYER_COOLDOWN_TURNS,
+  LAWYER_HEAT,
+  streetLawyerQuote,
+  STREET_LAWYER_COST,
+  STREET_LAWYER_HEAT_DECAY,
   sortLaunderFillOrder,
   type LaunderSitePlan,
 } from "@/engine/economy";
@@ -44,6 +51,17 @@ export default function LaunderingPanel() {
   const suggestSafeSpread = useGameStore((s) => s.suggestSafeSpread);
   const setupLaunderSite = useGameStore((s) => s.setupLaunderSite);
   const stopLaunderSite = useGameStore((s) => s.stopLaunderSite);
+  const callLawyer = useGameStore((s) => s.callLawyer);
+  const lawyerReadyTurn = useGameStore((s) => s.lawyerReadyTurn ?? 0);
+  const lawyer = lawyerOffer({ ...useGameStore.getState(), lawyerReadyTurn });
+  const streetLawyerUntil = useGameStore((s) => s.streetLawyerUntil ?? 0);
+  const streetLawyerBailUsed = useGameStore((s) => s.streetLawyerBailUsed ?? false);
+  const hireStreetLawyer = useGameStore((s) => s.hireStreetLawyer);
+  const streetLawyerBail = useGameStore((s) => s.streetLawyerBail);
+  const street = streetLawyerQuote({ turn, dirtyMoney, streetLawyerUntil, streetLawyerBailUsed });
+  const jailedOwn = crew.filter(
+    (c) => c.family === playerFamily && c.status === "jailed" && c.role !== "boss",
+  );
   const selectTerritory = useGameStore((s) => s.selectTerritory);
   const setPanel = useGameStore((s) => s.setPanel);
   const routes = useGameStore((s) => s.routes);
@@ -147,6 +165,83 @@ export default function LaunderingPanel() {
           <Button type="button" size="sm" variant="ghost" onClick={() => clearLaunderPlan()}>
             Clear
           </Button>
+        </div>
+        {lawyer.inTheRed && (
+          <div className="rounded border border-panel-border bg-panel/40 p-2.5">
+            <div className="text-xs font-semibold">Call the lawyer</div>
+            <p className="mt-1 text-[10px] text-muted-foreground">
+              House counsel takes the dirty cash as a retainer and sends back a check for half.
+              It brings the clean books to zero and no further. Heat +{LAWYER_HEAT}. He will not
+              answer again for {LAWYER_COOLDOWN_TURNS} weeks.
+            </p>
+            {lawyer.available ? (
+              <>
+                {lawyer.cleanReturn < lawyer.deficit && (
+                  <p className="mt-1 text-[10px] text-amber-300">
+                    The check leaves clean at {formatMoney(money + lawyer.cleanReturn)}.
+                  </p>
+                )}
+                <Button
+                  type="button"
+                  size="sm"
+                  className="mt-2"
+                  onClick={() => callLawyer()}
+                >
+                  Hand him {formatMoney(lawyer.dirtySpent)} · check for {formatMoney(lawyer.cleanReturn)}
+                </Button>
+              </>
+            ) : (
+              <p className="mt-1 text-[10px] text-amber-300">{lawyerBlockReason(lawyer)}</p>
+            )}
+          </div>
+        )}
+        <div className="rounded border border-panel-border bg-panel/40 p-2.5">
+          <div className="text-xs font-semibold">Street lawyer</div>
+          {street.onTheBooks ? (
+            <>
+              <p className="mt-1 text-[10px] text-muted-foreground">
+                On the books through week {street.until - 1}. Heat falls {STREET_LAWYER_HEAT_DECAY} extra
+                point a week.
+                {street.bailOpen
+                  ? " He can still walk one man out."
+                  : " He already walked someone this retainer."}
+              </p>
+              {street.bailOpen && jailedOwn.length > 0 && (
+                <select
+                  id="street-lawyer-bail"
+                  value=""
+                  onChange={(e) => {
+                    if (e.target.value) streetLawyerBail(e.target.value);
+                  }}
+                  className="mt-2 h-7 w-full rounded border border-panel-border bg-panel/60 px-1 text-[11px]"
+                >
+                  <option value="">Walk a man out…</option>
+                  {jailedOwn.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name} ({c.role})
+                    </option>
+                  ))}
+                </select>
+              )}
+              {street.bailOpen && jailedOwn.length === 0 && (
+                <p className="mt-1 text-[10px] text-muted-foreground">Nobody of yours is inside.</p>
+              )}
+            </>
+          ) : (
+            <>
+              <p className="mt-1 text-[10px] text-muted-foreground">
+                {formatMoney(STREET_LAWYER_COST)} dirty, four weeks. Heat falls {STREET_LAWYER_HEAT_DECAY}{" "}
+                extra point a week, and he can walk one man out of jail. He will not touch the boss.
+              </p>
+              {street.canHire ? (
+                <Button type="button" size="sm" className="mt-2" onClick={() => hireStreetLawyer()}>
+                  Put him on the books · {formatMoney(STREET_LAWYER_COST)} dirty
+                </Button>
+              ) : (
+                <p className="mt-1 text-[10px] text-amber-300">Not enough dirty cash.</p>
+              )}
+            </>
+          )}
         </div>
       </div>
 

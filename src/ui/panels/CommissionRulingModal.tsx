@@ -55,9 +55,13 @@ export default function CommissionRulingModal() {
               : deadlock
                 ? "The Commission deadlocks on war"
                 : "The Commission won't go to war"
-            : deadlock
-              ? "The Commission deadlocks"
-              : `The Commission rules for ${winner}`}
+            : ruling.kind === "tax"
+              ? deadlock
+                ? "The Commission deadlocks on the tax"
+                : `The Commission taxes ${ruling.verdict === "caller" ? ruling.accused : ruling.caller}`
+              : deadlock
+                ? "The Commission deadlocks"
+                : `The Commission rules for ${winner}`}
         </h2>
         <p className="text-center text-[11px] text-muted-foreground">
           {war
@@ -79,15 +83,24 @@ export default function CommissionRulingModal() {
           ))}
         </div>
 
-        {!deadlock && !war && (
+        {!deadlock && !war && ruling.kind !== "tax" && (
           <p className="mt-3 text-sm text-emerald-400">
             {agendaTermsText(state, "truce", ruling.terms)}
           </p>
         )}
+        {!deadlock && ruling.kind === "tax" && (
+          <p className="mt-3 text-sm text-emerald-400">
+            Guns down for {ruling.terms.weeks ?? 6} weeks.
+            {ruling.terms.share && ruling.terms.territoryId
+              ? ` ${Math.round(ruling.terms.share * 100)}% of ${
+                  state.territories.find((t) => t.id === ruling.terms.territoryId)?.name ?? "that block"
+                }'s take each week.`
+              : ""}
+          </p>
+        )}
         {war && ruling.verdict === "caller" && (
           <p className="mt-3 text-sm text-heat">
-            {ruling.forRuling.length > 0 ? `${ruling.forRuling.join(", ")} put their guns behind you.` : ""} {ruling.accused} is at
-            war with every seat that voted yes.
+            Every other family is at war with {ruling.accused}. Their crews are already planning hits. Yours is your own to plan.
           </p>
         )}
         {war && ruling.verdict !== "caller" && (

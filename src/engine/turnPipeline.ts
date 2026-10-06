@@ -34,6 +34,8 @@ import {
   applyWarrantConsequences,
 } from "./heat";
 import { drawEvent } from "./events";
+import { advanceRatAffair } from "./ratAffair";
+import { advanceMaking } from "./making";
 import { decayRelations } from "./relations";
 import { activePactKeys, expirePacts } from "./diplomacy";
 import { pruneManagers, tickAssignmentXp, grantXpToCrew, bumpLoyalty } from "./crew";
@@ -511,7 +513,35 @@ export function endTurn(state: GameState, rng?: Rng): GameState {
   current.bribes = tickBribes(current.bribes);
   current = applyWarrantConsequences(current);
 
-  const event = drawEvent(current, random);
+  const ratWeek = advanceRatAffair(current, random);
+  current = ratWeek.state;
+  logs.push(...ratWeek.logs);
+  if (ratWeek.state.activeEvent && ratWeek.state.activeEvent !== state.activeEvent) {
+    logs.push({
+      id: `log_event_${ratWeek.state.activeEvent.id}`,
+      turn: current.turn,
+      category: "event",
+      text: `Event: ${ratWeek.state.activeEvent.title}`,
+    });
+  }
+
+  const makingWeek = advanceMaking(current);
+  current = makingWeek.state;
+  logs.push(...makingWeek.logs);
+  if (
+    makingWeek.state.activeEvent &&
+    makingWeek.state.activeEvent !== state.activeEvent &&
+    makingWeek.state.activeEvent !== ratWeek.state.activeEvent
+  ) {
+    logs.push({
+      id: `log_event_${makingWeek.state.activeEvent.id}`,
+      turn: current.turn,
+      category: "event",
+      text: `Event: ${makingWeek.state.activeEvent.title}`,
+    });
+  }
+
+  const event = current.activeEvent ? null : drawEvent(current, random);
   if (event) {
     current.activeEvent = event;
     current.events = [...current.events, event];
