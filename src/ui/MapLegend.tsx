@@ -184,14 +184,7 @@ export default function MapLegend() {
                 className="inline-block h-0.5 w-3.5 border-t-2 border-dotted"
                 style={{ borderColor: MAP_STATUS.supplyRoute }}
               />{" "}
-              Supply route (clicked / chosen)
-            </div>
-            <div className="flex items-center gap-2">
-              <span
-                className="inline-block h-0.5 w-3.5 border-t-2 border-dotted"
-                style={{ borderColor: MAP_STATUS.supplyOption }}
-              />{" "}
-              Other roads on offer
+              Supply route — ring at the start, arrow at the stop
             </div>
           </div>
         </div>

@@ -10,31 +10,11 @@ import { useMapView } from "@/engine/mapView";
 import { useGameStore } from "@/engine/store";
 import type { Territory } from "@/types/game";
 import { FAMILY_HEX } from "@/types/game";
+import Person from "./Person";
 
 interface Props {
   layout: CityLayout;
   territories: Territory[];
-}
-
-function Figure({
-  position,
-  color,
-}: {
-  position: [number, number, number];
-  color: string;
-}) {
-  return (
-    <group position={position}>
-      <mesh position={[0, 0.35, 0]} castShadow>
-        <boxGeometry args={[0.22, 0.45, 0.16]} />
-        <meshStandardMaterial color={color} />
-      </mesh>
-      <mesh position={[0, 0.68, 0]}>
-        <boxGeometry args={[0.16, 0.16, 0.16]} />
-        <meshStandardMaterial color="#d7c4a8" />
-      </mesh>
-    </group>
-  );
 }
 
 function pathPoints(
@@ -159,10 +139,11 @@ export default function BlockPlumbing({ layout, territories }: Props) {
         const block = racketBlockFor(layout, territory.id, site);
         if (!block) return null;
         return (
-          <Figure
+          <Person
             key={racket.id}
             position={[block.worldX, 0, block.worldZ + 0.85]}
             color={color}
+            role="soldier"
           />
         );
       })}

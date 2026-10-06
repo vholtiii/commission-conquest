@@ -9,6 +9,7 @@ import { isMessageTargetRole, routeDisputeWith } from "@/engine/passage";
 import { attributeCinematic, attributionLabel } from "@/engine/attribution";
 import { coverFire, getawayCover, isLaidLow, laidLowHouse, safehouseHitPenalty } from "@/engine/safehouse";
 import { dinnerActive } from "@/engine/dinner";
+import { handsDown } from "@/engine/mourning";
 import { canLeadCrew, freeCrewOf, unseatedCrew } from "@/engine/crews";
 import {
   approachSpec,
@@ -252,7 +253,10 @@ export default function HitPlanner() {
     !blind && !!selectedTarget && isMessageTargetRole(selectedTarget) && !!dispute;
   const message = sendMessage && messageEligible;
   const atTable = dinnerActive(state);
+  const quiet = handsDown(state);
+  const quietWeeks = Math.max(0, (state.mourningUntil ?? 0) - state.turn);
   const canOrder =
+    !quiet &&
     !atTable &&
     missing.length === 0 &&
     crewGap.length === 0 &&
@@ -664,7 +668,9 @@ export default function HitPlanner() {
 
         {!canOrder && (
           <p className="text-[11px] text-heat">
-            {atTable
+            {quiet
+              ? `The city is quiet for a funeral. ${quietWeeks} week${quietWeeks === 1 ? "" : "s"} left.`
+              : atTable
               ? "The family is at the table"
               : crewGap.length > 0
                 ? `His crew comes along — give a role to ${crewGap.flatMap((g) => g.men.map((m) => m.name)).join(", ")}`

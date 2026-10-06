@@ -17,8 +17,8 @@ import { Badge } from "@/components/ui/badge";
 import PortraitAvatar from "@/ui/PortraitAvatar";
 import PanelShell from "./PanelShell";
 import { formatMoney } from "../formatters";
-import { canCallDinner, dinnerActive, dinnerWeek } from "@/engine/dinner";
 import Tip from "@/ui/Tip";
+import DinnerCall from "./DinnerCall";
 
 const SKILL_SHORT: Record<keyof CrewSkills, string> = {
   muscle: "Muscle",
@@ -51,9 +51,6 @@ export default function CrewPanel() {
   const selectCrew = useGameStore((s) => s.selectCrew);
   const joinCrew = useGameStore((s) => s.joinCrew);
   const leaveCrew = useGameStore((s) => s.leaveCrew);
-  const callFamilyDinner = useGameStore((s) => s.callFamilyDinner);
-  const familyDinner = useGameStore((s) => s.familyDinner);
-  const lastDinnerTurn = useGameStore((s) => s.lastDinnerTurn);
   const territories = useGameStore((s) => s.territories);
 
   if (!playerFamily) return null;
@@ -71,11 +68,7 @@ export default function CrewPanel() {
   return (
     <PanelShell title="Crew" subtitle={`${playerCrew.filter((c) => c.status === "active").length} active`}>
       <div className="space-y-5">
-        <DinnerBlock
-          blockName={territories.find((t) => t.id === familyDinner?.territoryId)?.name ?? "the safehouse"}
-          stamp={`${lastDinnerTurn ?? ""}:${familyDinner?.startTurn ?? ""}:${turn}`}
-          onCall={callFamilyDinner}
-        />
+        <DinnerCall />
         <div>
           <h3 className="mb-1.5 flex items-center gap-1.5 text-xs uppercase tracking-wide text-muted-foreground">
             <UserPlus className="h-3.5 w-3.5" /> Recruitment Pool
@@ -230,51 +223,5 @@ export default function CrewPanel() {
         </p>
       </div>
     </PanelShell>
-  );
-}
-
-function DinnerBlock({
-  blockName,
-  stamp,
-  onCall,
-}: {
-  blockName: string;
-  stamp: string;
-  onCall: () => void;
-}) {
-  void stamp;
-  const snap = useGameStore.getState();
-  const active = dinnerActive(snap);
-  const gate = canCallDinner(snap);
-  const week = dinnerWeek(snap);
-  if (active) {
-    return (
-      <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-[11px] text-amber-200">
-        Family dinner — week {week} of 2 · everyone is at {blockName}
-      </div>
-    );
-  }
-  return (
-    <div>
-      <Tip
-        wrapDisabled
-        content={
-          gate.ok
-            ? "+10 loyalty for every man. The rackets run thin and the streets are open for two weeks."
-            : gate.reason
-        }
-      >
-        <Button
-          size="sm"
-          variant="secondary"
-          className="h-7 w-full text-[11px]"
-          disabled={!gate.ok}
-          onClick={onCall}
-        >
-          Call a family dinner
-        </Button>
-      </Tip>
-      {!gate.ok && <p className="mt-1 text-[10px] text-muted-foreground">{gate.reason}</p>}
-    </div>
   );
 }

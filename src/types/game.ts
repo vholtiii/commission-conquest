@@ -1358,6 +1358,12 @@ export interface GameState {
   familyDinner?: { startTurn: number; territoryId: string; knownBy: FamilyName[] } | null;
   /** Last turn a family dinner was called. */
   lastDinnerTurn?: number;
+  /** The family is on the mattresses. `reason` "war" sends them home when it cools. */
+  mattresses?: { startTurn: number; reason: "war" | "hit" } | null;
+  /** Exclusive turn the boss can still call the mattresses after a hit on the family. */
+  mattressReadyUntil?: number;
+  /** Exclusive turn the city may order hits again. A boss's death sets this six weeks out. */
+  mourningUntil?: number;
   /** A summons reel waiting to play, queued by the store when an event resolves. */
   pendingSummons?: HitCinematic | null;
   /** A Commission call in progress. */

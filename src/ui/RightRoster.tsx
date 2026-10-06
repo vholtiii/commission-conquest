@@ -1,11 +1,12 @@
+import type { ReactNode } from "react";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
-import { ArrowUpCircle, Eye } from "lucide-react";
+import { ArrowUpCircle, Eye, Shield } from "lucide-react";
 import { useGameStore } from "@/engine/store";
 import { canLeadCrew, crewOf, crewSlots, isSettling } from "@/engine/crews";
 import { canPromote, pathsFromRole } from "@/engine/crew";
-import { RACKET_LABELS, type CrewMember, type CrewRole } from "@/types/game";
+import { FAMILY_HEX, RACKET_LABELS, type CrewMember, type CrewRole, type Territory } from "@/types/game";
 import PortraitAvatar from "./PortraitAvatar";
 import Tip from "./Tip";
 import { formatMoney, titleCase } from "./formatters";
@@ -47,10 +48,47 @@ function promotionState(
   };
 }
 
+/** A man's current job, for the mark beside his name. Other jobs stay unmarked. */
+function dutyMark(member: CrewMember, territories: Territory[]): { tip: string; node: ReactNode } | null {
+  if (member.status !== "active") return null;
+  const a = member.assignment;
+  if (a.type === "idle") {
+    return {
+      tip: "Idle",
+      node: <span className="inline-block h-2 w-2 shrink-0 rounded-full bg-zinc-500" aria-label="Idle" />,
+    };
+  }
+  if (a.type === "garrison") {
+    const place = territories.find((t) => t.id === a.territoryId)?.name;
+    return {
+      tip: place ? `Garrisoned in ${place}` : "Garrisoned",
+      node: <Shield className="h-3.5 w-3.5 shrink-0 text-steel-light" aria-label="Garrisoned" />,
+    };
+  }
+  if (a.type === "racket") {
+    const post = territories
+      .flatMap((t) => t.rackets.map((r) => ({ racket: r, territory: t })))
+      .find((x) => x.racket.id === a.racketId || x.racket.managerId === member.id);
+    const tip = post ? `Running ${RACKET_LABELS[post.racket.type]} in ${post.territory.name}` : "Running a racket";
+    return {
+      tip,
+      node: (
+        <span
+          className="inline-block h-2 w-2 shrink-0 rounded-full"
+          style={{ background: FAMILY_HEX[member.family] }}
+          aria-label="Running a racket"
+        />
+      ),
+    };
+  }
+  return null;
+}
+
 function CrewRow({
   member,
   crew,
   money,
+  territories,
   onSelect,
   compact = false,
   settling = false,
@@ -60,6 +98,7 @@ function CrewRow({
   member: CrewMember;
   crew: CrewMember[];
   money: number;
+  territories: Territory[];
   onSelect: () => void;
   compact?: boolean;
   settling?: boolean;
@@ -67,6 +106,7 @@ function CrewRow({
   watched?: boolean;
 }) {
   const promo = promotionState(member, crew, money);
+  const duty = dutyMark(member, territories);
   return (
     <div className="flex w-full items-center gap-1 rounded-md pr-1 hover:bg-panel-elevated">
       <button
@@ -87,6 +127,11 @@ function CrewRow({
             {member.name}
             {member.role === "soldier" && !member.traits.includes("made_man") ? " (associate)" : ""}
           </span>
+          {duty && (
+            <Tip content={duty.tip} side="left">
+              {duty.node}
+            </Tip>
+          )}
           {watched && (
             <Tip content="Being watched" side="left">
               <Eye className="h-3.5 w-3.5 shrink-0 text-sky-300" aria-label="Being watched" />
@@ -207,6 +252,7 @@ export default function RightRoster() {
                             member={c}
                             crew={crew}
                             money={money}
+                            territories={territories}
                             slots={canLeadCrew(c) ? `${led.length}/${crewSlots(c)}` : undefined}
                             watched={c.id === watchedId}
                             onSelect={() => selectCrew(c.id)}
@@ -219,6 +265,7 @@ export default function RightRoster() {
                                   member={m}
                                   crew={crew}
                                   money={money}
+                                  territories={territories}
                                   compact
                                   settling={isSettling(m, turn)}
                                   watched={m.id === watchedId}

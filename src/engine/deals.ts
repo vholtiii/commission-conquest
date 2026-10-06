@@ -25,6 +25,7 @@ import { hasPact } from "./diplomacy";
 import { withdrawCrates } from "./liquor";
 import { racketIncome } from "./economy";
 import { HONOR_RESPECT } from "./standing";
+import { handsDown } from "./mourning";
 
 /** Standing the breaker loses with the Commission. */
 export const BREAK_STANDING = 20;
@@ -406,6 +407,20 @@ export function tickDeals(state: GameState, rng: Rng): { state: GameState; logs:
 
   for (const deal of state.deals ?? []) {
     if (deal.status !== "active") continue;
+    // A funeral forbids the hit this contract is for. Hold the deadline until the city is open.
+    if (
+      handsDown(next) &&
+      deal.kind === "alliance" &&
+      deal.untilTurn != null &&
+      deal.untilTurn <= (next.mourningUntil ?? 0)
+    ) {
+      const open = (next.mourningUntil ?? 0) + 1;
+      next = {
+        ...next,
+        deals: next.deals.map((d) => (d.id === deal.id ? { ...d, untilTurn: open } : d)),
+      };
+      continue;
+    }
     const other = dealPartner(next, deal);
     const due = deal.untilTurn !== null && deal.untilTurn <= next.turn;
 

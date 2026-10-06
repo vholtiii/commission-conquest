@@ -5,49 +5,93 @@ import { useGameStore } from "@/engine/store";
 import { MAP_STATUS } from "@/types/game";
 
 type Props = { layout: CityLayout };
+type Pt = [number, number, number];
 
 const Y = 0.45;
 
 /** Dotted road across the district centres on a path. */
-function DottedRoad({
-  points,
-  color,
-  emphasis,
-}: {
-  points: [number, number, number][];
-  color: string;
-  emphasis: boolean;
-}) {
+function DottedRoad({ points, color }: { points: Pt[]; color: string }) {
   if (points.length < 2) return null;
   return (
     <Line
       points={points}
       color={color}
-      lineWidth={emphasis ? 2.6 : 1.4}
+      lineWidth={4}
       transparent
-      opacity={emphasis ? 0.95 : 0.55}
+      opacity={0.95}
       dashed
       dashScale={1}
-      dashSize={emphasis ? 0.22 : 0.18}
-      gapSize={emphasis ? 0.3 : 0.32}
+      dashSize={0.22}
+      gapSize={0.3}
     />
   );
 }
 
-/** Small disc at each end of the drawn road. */
-function EndCap({ x, z, color }: { x: number; z: number; color: string }) {
+/** Stop the dashes short of the arrow so the head reads as the end. */
+function stopBeforeArrow(points: Pt[]): Pt[] {
+  const prev = points[points.length - 2];
+  const end = points[points.length - 1];
+  if (!prev || !end) return points;
+  const dx = end[0] - prev[0];
+  const dz = end[2] - prev[2];
+  const len = Math.hypot(dx, dz) || 1;
+  const gap = Math.min(3.2, len * 0.42);
+  const trimmed: Pt = [end[0] - (dx / len) * gap, end[1], end[2] - (dz / len) * gap];
+  return [...points.slice(0, -1), trimmed];
+}
+
+/** Small disc where the truck starts. */
+function StartCap({ x, z, color }: { x: number; z: number; color: string }) {
   return (
-    <mesh position={[x, Y - 0.02, z]} rotation={[-Math.PI / 2, 0, 0]}>
-      <ringGeometry args={[0.42, 0.6, 24]} />
-      <meshBasicMaterial color={color} transparent opacity={0.85} depthWrite={false} />
+    <mesh position={[x, 0.2, z]} rotation={[-Math.PI / 2, 0, 0]} renderOrder={5}>
+      <ringGeometry args={[1.15, 1.55, 32]} />
+      <meshBasicMaterial color={color} transparent opacity={0.95} depthTest={false} depthWrite={false} />
     </mesh>
   );
 }
 
+/** Arrowhead at the destination, aimed along the last hop. */
+function DestinationArrow({
+  from,
+  to,
+  color,
+}: {
+  from: Pt;
+  to: Pt;
+  color: string;
+}) {
+  const dx = to[0] - from[0];
+  const dz = to[2] - from[2];
+  const len = Math.hypot(dx, dz);
+  if (len < 0.01) return null;
+  const yaw = Math.atan2(dx, dz);
+  return (
+    <group position={[to[0], 3.4, to[2]]} rotation={[0, yaw, 0]}>
+      <mesh position={[0, 0, -0.9]} rotation={[Math.PI / 2, 0, 0]} renderOrder={6}>
+        <coneGeometry args={[0.85, 1.8, 3]} />
+        <meshBasicMaterial color={color} transparent opacity={1} depthTest={false} depthWrite={false} />
+      </mesh>
+    </group>
+  );
+}
+
+function DirectedRoad({ points, color }: { points: Pt[]; color: string }) {
+  if (points.length < 2) return null;
+  const start = points[0]!;
+  const end = points[points.length - 1]!;
+  const prev = points[points.length - 2]!;
+  return (
+    <group>
+      <DottedRoad points={stopBeforeArrow(points)} color={color} />
+      <StartCap x={start[0]} z={start[2]} color={color} />
+      <DestinationArrow from={prev} to={end} color={color} />
+    </group>
+  );
+}
+
 /**
- * Supply-route drawing. A standing route clicked in the Warehouse panel is
- * drawn as a dotted purple road; while a new route is being planned every
- * candidate road is drawn dotted grey with the chosen one in purple.
+ * One liquor road at a time. A route being planned wins over a standing
+ * route you had traced. The ring is the warehouse; the arrow is the stop.
  */
 export default function SupplyRouteOverlay({ layout }: Props) {
   const focusId = useGameStore((s) => s.supplyRouteFocusId);
@@ -64,52 +108,22 @@ export default function SupplyRouteOverlay({ layout }: Props) {
     path
       .map((tid) => centerById.get(tid))
       .filter(Boolean)
-      .map((c) => [c!.worldX, Y, c!.worldZ] as [number, number, number]);
+      .map((c) => [c!.worldX, Y, c!.worldZ] as Pt);
 
   if (hitPlaying || sitdownPhase) return null;
 
-  const focused = focusId ? supplyRoutes.find((r) => r.id === focusId) : undefined;
+  const previewRoad = preview
+    ? preview.options.find((o) => o.id === preview.chosenId) ?? preview.options[0]
+    : undefined;
+  const focused = !preview && focusId ? supplyRoutes.find((r) => r.id === focusId) : undefined;
+  const path = previewRoad?.path ?? focused?.path;
+  if (!path) return null;
+  const pts = toPoints(path);
+  if (pts.length < 2) return null;
 
   return (
     <group>
-      {focused && (() => {
-        const pts = toPoints(focused.path);
-        if (pts.length < 2) return null;
-        const a = pts[0]!;
-        const b = pts[pts.length - 1]!;
-        return (
-          <group key={focused.id}>
-            <DottedRoad points={pts} color={MAP_STATUS.supplyRoute} emphasis />
-            <EndCap x={a[0]} z={a[2]} color={MAP_STATUS.supplyRoute} />
-            <EndCap x={b[0]} z={b[2]} color={MAP_STATUS.supplyRoute} />
-          </group>
-        );
-      })()}
-
-      {preview &&
-        preview.options
-          // Draw the chosen road last so it sits on top of the grey ones.
-          .slice()
-          .sort((a, b) => Number(a.id === preview.chosenId) - Number(b.id === preview.chosenId))
-          .map((o) => {
-            const chosen = o.id === preview.chosenId;
-            const pts = toPoints(o.path);
-            if (pts.length < 2) return null;
-            const a = pts[0]!;
-            const b = pts[pts.length - 1]!;
-            const color = chosen ? MAP_STATUS.supplyRoute : MAP_STATUS.supplyOption;
-            return (
-              <group key={o.id}>
-                <DottedRoad points={pts} color={color} emphasis={chosen} />
-                {chosen && (
-                  <>
-                    <EndCap x={a[0]} z={a[2]} color={color} />
-                    <EndCap x={b[0]} z={b[2]} color={color} />
-                  </>
-                )}
-              </group>
-            );
-          })}
+      <DirectedRoad points={pts} color={MAP_STATUS.supplyRoute} />
     </group>
   );
 }

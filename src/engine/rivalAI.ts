@@ -21,16 +21,18 @@ import { nextRacketSiteIndex } from "./cityLayout";
 import { getRelation, setRelationDelta } from "./relations";
 import { hasPact } from "./diplomacy";
 import { atPeace, contractedTargets } from "./deals";
+import { handsDown } from "./mourning";
 import { captureAllowance, recordCapture } from "./capture";
 import { aiFillCrews, canLeadCrew, freeCrewOf, isHeldOff, placeCrewAt } from "./crews";
 import { AI_SITDOWN_CHANCE, AI_SITDOWN_TRAP_CHANCE, aiProposeSitdown, hasArmedBombOnPlayerBoss } from "./sitdowns";
 import { bringCrewOnHit, commitHitCrew, planHit } from "./hitOps";
 import { dinnerActive } from "./dinner";
+import { mattressDistrict, MATTRESS_DEFENCE } from "./mattresses";
 import { familyHq, isBossUnderground, resolveCrewTerritoryId } from "./crewLocation";
 import { isLaidLow, SAFEHOUSE, safehouseCaptureDefence } from "./safehouse";
 import { BOSS_PRESENCE, bossPresentIn, hqIsSoft } from "./bossPresence";
 import { actingUnderboss, bossIsJailed } from "./jail";
-import { canInheritChair, isDefunct, isFamilyFinished, scatterFamily } from "./defection";
+import { isDefunct, settleRivalChair } from "./defection";
 import { familiesPressingSuddenDeath } from "./victory";
 import { recordIntel } from "./intel";
 import {
@@ -177,7 +179,11 @@ function tryExpand(
   };
   // A safehouse on the block is a fortified door: it reads as extra defence.
   const fortification = (t: Territory): number =>
-    t.owner ? safehouseCaptureDefence(t, state.turn) - 1 : 0;
+    t.owner
+      ? safehouseCaptureDefence(t, state.turn) -
+        1 +
+        (mattressDistrict(state, t.id) ? MATTRESS_DEFENCE : 0)
+      : 0;
   const openStreet = (t: Territory) => dinnerActive(state) && t.owner === state.playerFamily;
   const scored = targets
     .map((t) => {
@@ -323,18 +329,19 @@ function tryHit(
   vendetta: boolean,
   contracted?: FamilyName,
 ): { state: GameState; log?: TurnLogEntry } {
+  if (handsDown(state)) return { state };
   const def = getFamilyDef(family);
   const crew = getActiveCrew(state.crew, family);
   if (crew.filter((c) => c.role !== "boss").length < 1 && crew.length < 1) return { state };
 
   let targetFamily: FamilyName | undefined;
   // A job they've been paid for comes first, unless they've since given that family their word.
-  if (contracted && !atPeace(state, family, contracted)) {
+  if (contracted && !isDefunct(state, contracted) && !atPeace(state, family, contracted)) {
     targetFamily = contracted;
   }
   if (!targetFamily && vendetta && state.vendettas.includes(family)) {
     const vendettaTargets = state.vendettas.filter(
-      (v) => v !== family && !atPeace(state, family, v),
+      (v) => v !== family && !isDefunct(state, v) && !atPeace(state, family, v),
     );
     if (vendettaTargets.length > 0) {
       targetFamily = rng.pick(vendettaTargets);
@@ -342,7 +349,7 @@ function tryHit(
   }
   if (!targetFamily) {
     const open = ALL_FAMILY_NAMES.filter(
-      (f) => f !== family && !atPeace(state, family, f),
+      (f) => f !== family && !isDefunct(state, f) && !atPeace(state, family, f),
     );
     if (open.length === 0) return { state };
     const hostile = open.filter(
@@ -1082,78 +1089,23 @@ function tryBossTravel(
   };
 }
 
-/**
- * A headless rival family doesn't stay headless. After the funeral someone
- * grabs the chair: the underboss if there is one, else the senior capo, else
- * the consigliere. Until then the family is frozen and its turf is soft.
- * Soldiers don't inherit — a family down to soldiers is finished (defection.ts).
- */
-function tryInterimBoss(
-  state: GameState,
-  family: FamilyName,
-  rng: Rng,
-): { state: GameState; log?: TurnLogEntry } {
-  const living = state.crew.filter(
-    (c) => c.family === family && (c.status === "active" || c.status === "wounded"),
-  );
-  if (living.length === 0) return { state };
-  // Funerals take a week; the scramble starts after.
-  if (!rng.chance(0.5)) return { state };
-
-  const rank = (c: CrewMember) =>
-    c.role === "underboss" ? 3 : c.role === "capo" ? 2 : c.role === "consigliere" ? 1 : 0;
-  const heir = [...living]
-    .filter((c) => canInheritChair(c))
-    .sort(
-      (a, b) =>
-        Number(b.status === "active") - Number(a.status === "active") ||
-        rank(b) - rank(a) ||
-        b.level - a.level ||
-        b.loyalty - a.loyalty,
-    )[0];
-  if (!heir) return { state };
-
-  const crew = state.crew.map((c) =>
-    c.id === heir.id
-      ? {
-          ...c,
-          role: "boss" as const,
-          roleSinceTurn: state.turn,
-          level: Math.max(c.level, 5),
-          capoId: undefined,
-          crewSinceTurn: undefined,
-        }
-      : c,
-  );
-  const territories = state.territories.map((t) =>
-    t.owner === family ? { ...t, leadershipVacuum: 0 } : t,
-  );
-  return {
-    state: { ...state, crew, territories },
-    log: {
-      id: `ai_interim_boss_${family}_${state.turn}`,
-      turn: state.turn,
-      category: "ai",
-      text: `${heir.name} takes the ${family} chair after the funeral.`,
-      family,
-    },
-  };
-}
-
 export function runAllAiTurns(state: GameState, rng: Rng): AiTurnResult {
   const rivals = ALL_FAMILY_NAMES.filter((f) => f !== state.playerFamily);
   let current = state;
   const logs: TurnLogEntry[] = [];
 
+  // A dead boss's family either has a ready heir or is already broken,
+  // before anyone else orders a hit.
+  for (const family of rivals) {
+    const settled = settleRivalChair(current, family, rng);
+    current = settled.state;
+    logs.push(...settled.logs);
+  }
+
   for (const family of rivals) {
     if (isDefunct(current, family)) continue;
     const boss = getBoss(current.crew, family);
-    if (!boss && isFamilyFinished(current, family)) {
-      const gone = scatterFamily(current, family, rng);
-      current = gone.state;
-      logs.push(...gone.logs);
-      continue;
-    }
+    if (!boss) continue;
     if (boss && bossIsJailed(current, family)) {
       if (!actingUnderboss(current, family)) continue;
       const result = runAiTurn(current, family, rng);
@@ -1161,15 +1113,9 @@ export function runAllAiTurns(state: GameState, rng: Rng): AiTurnResult {
       logs.push(...result.logs);
       continue;
     }
-    if (boss) {
-      const result = runAiTurn(current, family, rng);
-      current = result.state;
-      logs.push(...result.logs);
-    } else {
-      const interim = tryInterimBoss(current, family, rng);
-      current = interim.state;
-      if (interim.log) logs.push(interim.log);
-    }
+    const result = runAiTurn(current, family, rng);
+    current = result.state;
+    logs.push(...result.logs);
   }
 
   return { state: current, logs };

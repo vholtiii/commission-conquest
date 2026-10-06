@@ -93,14 +93,26 @@ export function valueScore(
   return slots * 200 + t.baseIncome + strategic;
 }
 
+/**
+ * A block with rackets and nobody standing on it.
+ * `activeIds` is every crew member on his feet. An active garrison man or an
+ * active racket manager means the block is not empty. Omit the set and any
+ * listed id counts.
+ */
 export function isUnguarded(
   t: Pick<Territory, "owner" | "rackets" | "garrisonIds">,
-  activeGarrisonIds?: Set<string>,
+  activeIds?: Set<string>,
 ): boolean {
   if (!t.owner || t.rackets.length === 0) return false;
-  if (t.garrisonIds.length === 0) return true;
-  if (!activeGarrisonIds) return false;
-  return !t.garrisonIds.some((id) => activeGarrisonIds.has(id));
+  const standing = (id: string | null | undefined) => !!id && (!activeIds || activeIds.has(id));
+  if (t.garrisonIds.some((id) => standing(id))) return false;
+  if (t.rackets.some((r) => standing(r.managerId))) return false;
+  return true;
+}
+
+/** Crew who are on their feet. Pass this to `isUnguarded`. */
+export function activeCrewIds(crew: { id: string; status: string }[]): Set<string> {
+  return new Set(crew.filter((c) => c.status === "active").map((c) => c.id));
 }
 
 /** Fill buildingBlocks + racketSlots from the city layout (deterministic for seed). */

@@ -16,7 +16,7 @@ import {
   hiddenCountIn,
   visibleCrewIn,
 } from "@/engine/intel";
-import { isUnguarded, maxRacketsFor, lotTier } from "@/engine/territoryValue";
+import { activeCrewIds, isUnguarded, maxRacketsFor, lotTier } from "@/engine/territoryValue";
 import { useMapView } from "@/engine/mapView";
 
 interface Props {
@@ -224,17 +224,7 @@ function TerritoryMarker({ territory, cx, cz }: { territory: Territory; cx: numb
     territory.rackets.some((r) => racketFreshness(r, turn) !== null);
   const racketSlots = maxRacketsFor(territory);
   const isBigBlock = racketSlots >= 5;
-  const playerUnguarded =
-    territory.owner === playerFamily &&
-    isUnguarded(
-      territory,
-      new Set(
-        territory.garrisonIds.filter((id) => {
-          const c = crew.find((m) => m.id === id);
-          return !!c && c.status === "active";
-        }),
-      ),
-    );
+  const playerUnguarded = territory.owner === playerFamily && isUnguarded(territory, activeCrewIds(crew));
 
   const districtColor = territory.owner ? FAMILY_HEX[territory.owner] : "#6a6e76";
   const isHighlighted = selectedTerritoryId === territory.id || !!focused || isHitPreview;

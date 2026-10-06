@@ -1,6 +1,7 @@
 import type { CrewMember, FamilyName, GameState, TurnLogEntry } from "@/types/game";
 import type { Rng } from "./rng";
 import { applySuccession, isSuccessionReady } from "./succession";
+import { declareMourning } from "./mourning";
 
 /** Turns the boss sits before the chair passes for good. */
 export const JAIL_TURNS = 4;
@@ -120,7 +121,9 @@ export function tickJails(
     current = { ...current, crew };
     const succ = applySuccession(current, family, rng);
     current = succ.state;
-    logs.push(...succ.logs);
+    const quiet = declareMourning(current);
+    current = quiet.state;
+    logs.push(...succ.logs, ...quiet.logs);
     logs.push({
       id: `log_jail_expire_${family}_${current.turn}`,
       turn: current.turn,

@@ -4,10 +4,11 @@ import { resolveCrewLocation } from "@/engine/crewLocation";
 import { normalizeIntel } from "@/engine/intel";
 import { useMapView } from "@/engine/mapView";
 import { useGameStore } from "@/engine/store";
-import { activeGarrisonSet, isUnguarded } from "@/engine/territoryValue";
+import { activeCrewIds, isUnguarded } from "@/engine/territoryValue";
 import type { FamilyName, Territory } from "@/types/game";
 import { FAMILY_HEX } from "@/types/game";
 import CrewSedans, { crewSedans } from "./CrewSedans";
+import Person, { type PersonRole } from "./Person";
 
 interface Props {
   layout: CityLayout;
@@ -16,25 +17,10 @@ interface Props {
 
 const LOW_LOYALTY = 40;
 
-function Figure({
-  position,
-  color,
-}: {
-  position: [number, number, number];
-  color: string;
-}) {
-  return (
-    <group position={position}>
-      <mesh position={[0, 0.35, 0]} castShadow>
-        <boxGeometry args={[0.22, 0.45, 0.16]} />
-        <meshStandardMaterial color={color} />
-      </mesh>
-      <mesh position={[0, 0.68, 0]}>
-        <boxGeometry args={[0.16, 0.16, 0.16]} />
-        <meshStandardMaterial color="#d7c4a8" />
-      </mesh>
-    </group>
-  );
+function silhouette(role: string): PersonRole {
+  if (role === "associate") return "associate";
+  if (role === "soldier") return "soldier";
+  return "boss";
 }
 
 function offsetFor(id: string): [number, number] {
@@ -69,7 +55,7 @@ export default function AmbientTells({ layout, territories }: Props) {
 
   const byId = new Map(territories.map((t) => [t.id, t]));
   const centerById = new Map(layout.centers.map((c) => [c.territoryId, c]));
-  const garrison = activeGarrisonSet({ crew, territories }, playerFamily);
+  const standing = activeCrewIds(crew);
   const locState = {
     crew,
     territories,
@@ -109,7 +95,7 @@ export default function AmbientTells({ layout, territories }: Props) {
       {owned.map((territory) => {
         const block = racketBlockFor(layout, territory.id, 0);
         if (!block) return null;
-        const guarded = !isUnguarded(territory, garrison);
+        const guarded = !isUnguarded(territory, standing);
         const x = block.worldX;
         const z = block.worldZ + 0.95;
         return (
@@ -119,7 +105,7 @@ export default function AmbientTells({ layout, territories }: Props) {
               <meshStandardMaterial color="#4a453e" roughness={0.9} />
             </mesh>
             {guarded && (
-              <Figure position={[x, 0, z]} color={FAMILY_HEX[playerFamily]} />
+              <Person position={[x, 0, z]} color={FAMILY_HEX[playerFamily]} role="soldier" />
             )}
           </group>
         );
@@ -133,10 +119,11 @@ export default function AmbientTells({ layout, territories }: Props) {
         if (!center || !home?.discovered) return null;
         const [ox, oz] = offsetFor(member.id);
         return (
-          <Figure
+          <Person
             key={member.id}
             position={[center.worldX + ox, 0, center.worldZ + oz]}
-            color="#6a5a4a"
+            color={FAMILY_HEX[member.family]}
+            role={silhouette(member.role)}
           />
         );
       })}
@@ -149,10 +136,11 @@ export default function AmbientTells({ layout, territories }: Props) {
         const z = block?.worldZ ?? center!.worldZ;
         const roof = block?.kind === "building" ? 3.3 : 1.55;
         return (
-          <Figure
+          <Person
             key={op.id}
             position={[x, roof, z]}
             color="#2a3340"
+            role="soldier"
           />
         );
       })}

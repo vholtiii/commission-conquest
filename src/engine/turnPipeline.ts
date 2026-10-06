@@ -53,11 +53,13 @@ import { aiCallCommission, castVotes, expireCommission } from "./commission";
 import { resolveCrewTerritoryId } from "./crewLocation";
 import { openIncidentFromHijack } from "./incidents";
 import { processSupplyRoutes } from "./supplyRoutes";
+import { ambushRivalTraffic, tickMattresses } from "./mattresses";
 import { tickPassageDeals } from "./passage";
 import { settleDealsAfterHits, tickDeals } from "./deals";
 import { callInFavors } from "./favors";
 import { walkIns } from "./recruiting";
-import { expireFreeAgents } from "./defection";
+import { expireFreeAgents, settleRivalChair } from "./defection";
+import { handsDown } from "./mourning";
 import { applyWeeklyStreet } from "./standing";
 import { expireDinner } from "./dinner";
 
@@ -92,6 +94,7 @@ export function resolvePlayerHits(
     (o) => !o.resolved && o.kind === "hit" && o.family === player && o.pendingTurns <= 1,
   );
   for (const planned of ready) {
+    if (handsDown(current)) continue;
     let op = planned;
     if (op.pendingTurns > 0 && !op.tippedOff && rng.chance(tipOffChance(current, op))) {
       op = { ...op, tippedOff: true };
@@ -246,6 +249,9 @@ export function endTurn(state: GameState, rng?: Rng): GameState {
   const dinnerEnd = expireDinner(current);
   current = dinnerEnd.state;
   if (dinnerEnd.log) logs.push(dinnerEnd.log);
+  const mattressEnd = tickMattresses(current);
+  current = mattressEnd.state;
+  logs.push(...mattressEnd.logs);
   current = stageSitdowns(current);
 
   // The player's own hits already went (resolvePlayerHits, with a reel);
@@ -316,6 +322,10 @@ export function endTurn(state: GameState, rng?: Rng): GameState {
   };
   current = applyHeatToState(current, shipments.heatDelta, "shipments");
   logs.push(...shipments.logs);
+
+  const ambush = ambushRivalTraffic(current);
+  current = ambush.state;
+  logs.push(...ambush.logs);
 
   const deliveries = processDeliveries(current, random);
   turnLedger = mergeLedger(turnLedger, deliveries.ledger);
@@ -593,6 +603,13 @@ export function endTurn(state: GameState, rng?: Rng): GameState {
   const jailed = tickJails(current, random);
   current = jailed.state;
   logs.push(...jailed.logs);
+  // A boss who died in the Tombs: a ready consigliere takes the chair, or the men scatter.
+  for (const family of ALL_FAMILY_NAMES) {
+    if (family === current.playerFamily) continue;
+    const settled = settleRivalChair(current, family, random);
+    current = settled.state;
+    logs.push(...settled.logs);
+  }
 
   current.territories = pruneManagers(current);
   // The dead don't hold corners.

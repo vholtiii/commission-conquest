@@ -7,6 +7,7 @@ import type { Rng } from "./rng";
 import { BOSS_PRESENCE, bossAdjacentTo, bossPresentIn, hqIsSoft } from "./bossPresence";
 import { familyHq, type LocationState } from "./crewLocation";
 import { safehouseCaptureDefence } from "./safehouse";
+import { mattressDistrict, mattressSoldierBonus, MATTRESS_DEFENCE } from "./mattresses";
 
 /* ------------------------------------------------------------------ */
 /* Per-turn capture limit                                              */
@@ -144,7 +145,9 @@ export function presenceCaptureMods(
 }
 
 export function captureStrength(
-  state: Pick<GameState, "crew" | "territories" | "playerFamily"> & Partial<LocationState>,
+  state: Pick<GameState, "crew" | "territories" | "playerFamily"> &
+    Partial<LocationState> &
+    Partial<Pick<GameState, "mattresses" | "turn" | "bribes">>,
   territoryId: string,
   attackerIds: string[],
 ): { atk: number; def: number; defenders: CrewMember[]; notes: string[] } {
@@ -167,15 +170,20 @@ export function captureStrength(
     territoryId,
   );
 
-  const muscle = (c: CrewMember) => c.skills.muscle * (isUnmade(c) ? 0.75 : 1);
+  const muscle = (c: CrewMember) =>
+    (c.skills.muscle + mattressSoldierBonus(state, c)) * (isUnmade(c) ? 0.75 : 1);
   const atk =
     attackers.reduce((n, c) => n + muscle(c), 0) *
     (1 + (getFamilyDef(state.playerFamily).bonuses.combatBonus || 0)) *
     mods.atkMult;
-  const fortified = safehouseCaptureDefence(t, state.turn ?? 0);
+  let fortified = safehouseCaptureDefence(t, state.turn ?? 0);
   const notes = [...mods.notes];
   if (fortified > 1) {
     notes.push(`Safehouse on the block — defence +${Math.round((fortified - 1) * 100)}%`);
+  }
+  if (mattressDistrict(state, territoryId)) {
+    fortified += MATTRESS_DEFENCE;
+    notes.push("On the mattresses — defence +40%");
   }
   const def =
     (defenders.reduce((n, c) => n + muscle(c), 0) + 40) *

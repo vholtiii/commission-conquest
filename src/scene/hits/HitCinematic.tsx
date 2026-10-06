@@ -91,9 +91,33 @@ export default function HitCinematic({ layout, controlsRef }: Props) {
     useReelHold.getState().setHeld(false);
     setLive(phases[0] ? { phase: phases[0], local: 0 } : null);
     setSfxVolume(sfxVolume);
-    if (controlsRef.current) controlsRef.current.enabled = !current;
+    const controls = controlsRef.current as {
+      enabled?: boolean;
+      minDistance?: number;
+      maxPolarAngle?: number;
+      minPolarAngle?: number;
+    } | null;
+    const limits = controls
+      ? { minDistance: controls.minDistance, maxPolarAngle: controls.maxPolarAngle, minPolarAngle: controls.minPolarAngle }
+      : null;
+    if (controls) {
+      controls.enabled = !current;
+      if (current) {
+        // The map refuses to come in closer than a district. A reel has to.
+        controls.minDistance = 0.4;
+        controls.minPolarAngle = 0.05;
+        controls.maxPolarAngle = Math.PI / 2.02;
+      }
+    }
     return () => {
-      if (controlsRef.current) controlsRef.current.enabled = true;
+      const back = controlsRef.current as typeof controls;
+      if (!back) return;
+      back.enabled = true;
+      if (limits) {
+        back.minDistance = limits.minDistance;
+        back.maxPolarAngle = limits.maxPolarAngle;
+        back.minPolarAngle = limits.minPolarAngle;
+      }
     };
   }, [current?.operationId, controlsRef, phases, sfxVolume]);
 

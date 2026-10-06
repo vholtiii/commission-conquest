@@ -1,13 +1,30 @@
 import type { CrewMember, FamilyName, GameState, TurnLogEntry } from "@/types/game";
 import type { Rng } from "./rng";
 
-export function isSuccessionReady(member: CrewMember, turn: number): boolean {
-  if (member.role !== "underboss") return false;
+/** Active, loyal, leveled, and two weeks in the rank. The player's chair still wants an underboss. */
+export function chairBarMet(member: CrewMember, turn: number): boolean {
   if (member.status !== "active") return false;
   if (member.loyalty < 60) return false;
   if (member.level < 5) return false;
   const since = member.roleSinceTurn ?? 0;
   return turn - since >= 2;
+}
+
+export function isSuccessionReady(member: CrewMember, turn: number): boolean {
+  return member.role === "underboss" && chairBarMet(member, turn);
+}
+
+/** A rival chair: a ready underboss, or else a consigliere on the same bar. A capo never inherits. */
+export function readyRivalHeir(
+  crew: CrewMember[],
+  family: FamilyName,
+  turn: number,
+): CrewMember | undefined {
+  const active = crew.filter((c) => c.family === family && c.status === "active");
+  return (
+    active.find((c) => c.role === "underboss" && chairBarMet(c, turn)) ??
+    active.find((c) => c.role === "consigliere" && chairBarMet(c, turn))
+  );
 }
 
 export function successionReadinessReasons(
@@ -42,53 +59,9 @@ export function applySuccession(
   );
   const ready = candidates.find((c) => isSuccessionReady(c, state.turn));
 
-  if (ready) {
-    const isPlayer = family === state.playerFamily;
-    let crew = state.crew.map((c) => {
-      if (c.id === ready.id) {
-        return {
-          ...c,
-          role: "boss" as const,
-          isPlayerBoss: isPlayer ? true : c.isPlayerBoss,
-          roleSinceTurn: state.turn,
-          loyalty: Math.min(100, c.loyalty + 5),
-        };
-      }
-      if (isPlayer && c.family === family && c.id !== ready.id && c.status !== "dead") {
-        return { ...c, loyalty: Math.max(10, c.loyalty - 5) };
-      }
-      // Clear old player-boss flag if any other member still has it
-      if (isPlayer && c.isPlayerBoss && c.id !== ready.id) {
-        return { ...c, isPlayerBoss: false };
-      }
-      return c;
-    });
+  if (ready) return promoteToBoss(state, family, ready);
 
-    let reputation = state.reputation;
-    if (isPlayer) {
-      reputation = {
-        ...reputation,
-        respect: Math.max(0, reputation.respect - 10),
-      };
-    }
-
-    logs.push({
-      id: `succ_${family}_${state.turn}_${ready.id}`,
-      turn: state.turn,
-      category: "system",
-      text: `${ready.name} takes over the ${family} family.`,
-      family,
-    });
-
-    return {
-      state: { ...state, crew, reputation },
-      logs,
-      succeeded: true,
-      newBossName: ready.name,
-    };
-  }
-
-  // No ready successor
+  // No ready underboss. A rival consigliere is settled separately; the player's chair stops here.
   if (family === state.playerFamily) {
     // Player defeat handled by checkVictory (boss dead, no living boss)
     logs.push({
@@ -101,20 +74,55 @@ export function applySuccession(
     return { state, logs, succeeded: false };
   }
 
-  const territories = state.territories.map((t) =>
-    t.owner === family ? { ...t, leadershipVacuum: Math.max(t.leadershipVacuum, 2) } : t,
-  );
-  logs.push({
-    id: `succ_vac_${family}_${state.turn}`,
-    turn: state.turn,
-    category: "system",
-    text: `The ${family} family is leaderless — their turf is vulnerable.`,
-    family,
-  });
+  return { state, logs, succeeded: false };
+}
 
+/** Put an heir in the chair. Rival turf stops being soft. The player's respect dips. */
+export function promoteToBoss(
+  state: GameState,
+  family: FamilyName,
+  heir: CrewMember,
+): SuccessionResult {
+  const isPlayer = family === state.playerFamily;
+  const crew = state.crew.map((c) => {
+    if (c.id === heir.id) {
+      return {
+        ...c,
+        role: "boss" as const,
+        isPlayerBoss: isPlayer ? true : c.isPlayerBoss,
+        roleSinceTurn: state.turn,
+        loyalty: Math.min(100, c.loyalty + 5),
+        capoId: undefined,
+        crewSinceTurn: undefined,
+      };
+    }
+    if (isPlayer && c.family === family && c.id !== heir.id && c.status !== "dead") {
+      return { ...c, loyalty: Math.max(10, c.loyalty - 5) };
+    }
+    if (isPlayer && c.isPlayerBoss && c.id !== heir.id) {
+      return { ...c, isPlayerBoss: false };
+    }
+    return c;
+  });
+  const territories = isPlayer
+    ? state.territories
+    : state.territories.map((t) => (t.owner === family ? { ...t, leadershipVacuum: 0 } : t));
+  const reputation = isPlayer
+    ? { ...state.reputation, respect: Math.max(0, state.reputation.respect - 10) }
+    : state.reputation;
+  const logs: TurnLogEntry[] = [
+    {
+      id: `succ_${family}_${state.turn}_${heir.id}`,
+      turn: state.turn,
+      category: "system",
+      text: `${heir.name} takes over the ${family} family.`,
+      family,
+    },
+  ];
   return {
-    state: { ...state, territories },
+    state: { ...state, crew, territories, reputation },
     logs,
-    succeeded: false,
+    succeeded: true,
+    newBossName: heir.name,
   };
 }

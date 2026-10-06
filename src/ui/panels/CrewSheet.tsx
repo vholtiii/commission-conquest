@@ -3,7 +3,7 @@ import { toast } from "sonner";
 import { useGameStore } from "@/engine/store";
 import type { CrewMember, CrewRole, Racket, RacketType, Territory } from "@/types/game";
 import { FAMILY_HEX, RACKET_LABELS } from "@/types/game";
-import { pathsFromRole, canPromote, xpForLevel } from "@/engine/crew";
+import { MANAGER_WEEK_XP, pathsFromRole, canPromote, xpForLevel } from "@/engine/crew";
 import { successionReadinessReasons } from "@/engine/succession";
 import {
   canJoinCrew,
@@ -17,9 +17,12 @@ import {
 } from "@/engine/crews";
 import { canLieLow, safehouseCapacity } from "@/engine/safehouse";
 import {
+  ASSOCIATE_FRONT_XP,
+  ASSOCIATE_LIQUOR_XP,
   associateBuildPayment,
   associateCanBuild,
   canManageRacket,
+  isLegitBusiness,
   needsManager,
   RACKET_BUILD_COST,
 } from "@/engine/economy";
@@ -35,6 +38,14 @@ import PanelShell from "./PanelShell";
 import { formatMoney, titleCase } from "../formatters";
 import { callInCosts, callInRead, canCallIn } from "@/engine/callIn";
 import { manIsWatched, sheetAffairOpen } from "@/engine/ratAffair";
+import {
+  canCallMattresses,
+  mattressesActive,
+  mattressWeek,
+  MATTRESS_COST,
+  MATTRESS_WEEKS,
+} from "@/engine/mattresses";
+import DinnerCall from "./DinnerCall";
 
 const SKILL_LABELS: Record<string, string> = {
   muscle: "Muscle",
@@ -168,6 +179,13 @@ export default function CrewSheet() {
             <span className="text-muted-foreground">· {turf}</span>
             <span className="ml-auto text-muted-foreground">{focusReason}</span>
           </div>
+        )}
+
+        {isOwn && (member.isPlayerBoss || member.role === "boss") && member.status !== "dead" && (
+          <>
+            <MattressBlock />
+            <DinnerCall />
+          </>
         )}
 
         {isOwn && member.status === "jailed" && member.role !== "boss" && (
@@ -662,7 +680,10 @@ function PostBlock({
   const money = useGameStore((s) => s.money);
   const routes = useGameStore((s) => s.routes);
   const operations = useGameStore((s) => s.operations);
-  const canManage = canManageRacket(member, member.family);
+  const canManage =
+    member.role === "associate"
+      ? canManageRacket(member, member.family, "deli")
+      : canManageRacket(member, member.family);
   const buildChoices =
     member.role === "associate"
       ? owned.flatMap((t) => {
@@ -680,9 +701,10 @@ function PostBlock({
             });
         })
       : [];
-  const racketChoices = canManage
+  const racketChoices = (canManage
     ? rackets
-    : rackets.filter(({ territory, racket }) => `${territory.id}:${racket.id}` === racketValue);
+    : rackets.filter(({ territory, racket }) => `${territory.id}:${racket.id}` === racketValue)
+  ).filter(({ racket }) => member.role !== "associate" || isLegitBusiness(racket.type));
 
   return (
     <div className="space-y-1.5 rounded-md border border-panel-border bg-panel/60 px-2 py-1.5">
@@ -737,7 +759,7 @@ function PostBlock({
             </Tip>
           )}
           {member.role === "associate" && (
-            <Tip content="He pays the whole bill in clean cash. A still, brewery, warehouse, or speakeasy is clean too — dirty cash stays put. Gambling, a brothel, and a loan shark take dirty money, so they are not his to build.">
+            <Tip content={`He pays the whole bill in clean cash. A front or a safehouse is worth ${ASSOCIATE_FRONT_XP} XP. A still, brewery, warehouse, or speakeasy is worth ${ASSOCIATE_LIQUOR_XP} XP. Dirty cash stays put. Gambling, a brothel, and a loan shark take dirty money, so they are not his to build.`}>
               <select
                 value=""
                 onChange={(e) => {
@@ -763,7 +785,13 @@ function PostBlock({
             </Tip>
           )}
           {(canManage || member.assignment.type === "racket") && (
-            <Tip content="A manager lifts the unmanaged income penalty. A warehouse with a manager stops losing crates out the back. A legit front (deli, laundry, etc.) also sheds a little wanted each week — slower than lying low in a safehouse.">
+            <Tip
+              content={
+                member.role === "associate"
+                  ? `He can run a clean front — a deli, laundry, barber, restaurant, or trucking company. That lifts the unmanaged cut and earns +${MANAGER_WEEK_XP} XP a week. A still, a warehouse, or a dirty racket takes a made man.`
+                  : "A manager lifts the unmanaged income penalty. A warehouse with a manager stops losing crates out the back. A legit front (deli, laundry, etc.) also sheds a little wanted each week — slower than lying low in a safehouse."
+              }
+            >
               <select
                 value={racketValue}
                 onChange={(e) => {
@@ -786,7 +814,7 @@ function PostBlock({
                 }}
                 className="h-7 w-full rounded border border-panel-border bg-panel/60 px-1 text-[11px]"
               >
-                <option value="">Manage a racket…</option>
+                <option value="">{member.role === "associate" ? "Manage a front…" : "Manage a racket…"}</option>
                 <option value="idle">Stand down — idle</option>
                 {racketChoices.map(({ territory, racket }) => {
                   const other =
@@ -805,6 +833,66 @@ function PostBlock({
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+function MattressBlock() {
+  const mattresses = useGameStore((s) => s.mattresses ?? null);
+  const turn = useGameStore((s) => s.turn);
+  const dirtyMoney = useGameStore((s) => s.dirtyMoney);
+  const ready = useGameStore((s) => s.mattressReadyUntil ?? 0);
+  const dinnerOn = useGameStore((s) => s.familyDinner ?? null);
+  const territories = useGameStore((s) => s.territories);
+  const crew = useGameStore((s) => s.crew);
+  const relations = useGameStore((s) => s.relations);
+  const bribes = useGameStore((s) => s.bribes);
+  const callMattresses = useGameStore((s) => s.callMattresses);
+  const callThemHome = useGameStore((s) => s.callThemHome);
+  const active = mattressesActive({ mattresses, turn });
+  const gate = canCallMattresses(useGameStore.getState());
+  void dirtyMoney;
+  void ready;
+  void dinnerOn;
+  void territories;
+  void crew;
+  void relations;
+  void bribes;
+
+  if (active) {
+    return (
+      <div className="rounded-md border border-heat/40 bg-heat/10 px-2 py-1.5 text-[11px]">
+        <p className="text-heat">
+          On the mattresses — week {mattressWeek({ mattresses, turn })} of {MATTRESS_WEEKS}
+        </p>
+        <Button size="sm" variant="secondary" className="mt-1.5 h-7 w-full text-[11px]" onClick={() => callThemHome()}>
+          Call them home
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <Tip
+        wrapDisabled
+        content={
+          gate.ok
+            ? `$${MATTRESS_COST.toLocaleString()} dirty. The men pack the safehouses. Heat and fear ease. The rackets collect unmanned.`
+            : gate.reason
+        }
+      >
+        <Button
+          size="sm"
+          variant="secondary"
+          className="h-7 w-full text-[11px]"
+          disabled={!gate.ok}
+          onClick={() => callMattresses()}
+        >
+          Go to the mattresses
+        </Button>
+      </Tip>
+      {!gate.ok && <p className="mt-1 text-[10px] text-muted-foreground">{gate.reason}</p>}
     </div>
   );
 }

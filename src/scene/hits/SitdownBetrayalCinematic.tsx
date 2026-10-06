@@ -6,7 +6,7 @@ import Goon from "./props/Goon";
 import MuzzleFlash from "./props/MuzzleFlash";
 import GlassShards from "./props/GlassShards";
 import { PaddyWagon, PoliceLights } from "./props/PoliceLights";
-import { moveCam, orbitAround } from "./cameraRig";
+import { coverageShot, moveCam, type Coverage } from "./cameraRig";
 import type { SceneProps } from "./sceneProps";
 
 function paint(family: FamilyName): string {
@@ -44,11 +44,10 @@ export default function SitdownBetrayalCinematic({ cinematic, site, phase, local
   const glow = phase === "handshake" && killed ? 1 - local : phase === "walk_out" && killed ? 0.05 : 0.9;
 
   useFrame(() => {
-    const look = door.clone();
-    look.y = 1;
-    const radius = phase === "table" ? 5.2 - local * 0.8 : 7;
-    const pos = orbitAround(door, radius, site.facing + 0.3, phase === "table" ? 2.6 : 3.8);
-    moveCam(camera, controls, pos, look, 0.08);
+    const coverage: Coverage =
+      phase === "arrive" ? "wide" : phase === "table" ? "medium" : phase === "handshake" ? "close" : "pull";
+    const shot = coverageShot(door, site.facing, coverage);
+    moveCam(camera, controls, shot.pos, shot.look, phase === "handshake" ? 0.5 : 0.1);
     if (phase === "handshake" && !turnedAway) shake.current = Math.max(shake.current, shatters ? 0.12 : 0.04);
   });
 
@@ -66,6 +65,7 @@ export default function SitdownBetrayalCinematic({ cinematic, site, phase, local
         rot={site.facing + (phase === "walk_out" ? 0 : Math.PI)}
         pose={police && phase === "walk_out" ? "walk" : "walk"}
         moving={phase === "arrive" || phase === "walk_out"}
+        role="soldier"
         color={paint(cinematic.attackerFamily)}
       />
       {phase !== "arrive" && !markLeaves && (
@@ -73,6 +73,7 @@ export default function SitdownBetrayalCinematic({ cinematic, site, phase, local
           position={[door.x - 0.35, 0, door.z]}
           rot={site.facing}
           pose={killed && phase !== "table" ? "down" : "stand"}
+          role="boss"
           color={paint(cinematic.targetFamily)}
         />
       )}
@@ -82,11 +83,12 @@ export default function SitdownBetrayalCinematic({ cinematic, site, phase, local
           rot={site.facing}
           pose="walk"
           moving
+          role="boss"
           color={paint(cinematic.targetFamily)}
         />
       )}
       {(c === "witness" || c === "kitchen_backup") && !witnessed && phase !== "arrive" && (
-        <Goon position={[door.x + 0.7, 0, door.z - 0.2]} rot={site.facing + Math.PI} gun color="#3f1a1e" />
+        <Goon position={[door.x + 0.7, 0, door.z - 0.2]} rot={site.facing + Math.PI} gun role="soldier" color="#3f1a1e" />
       )}
       <MuzzleFlash
         active={phase === "handshake" && !turnedAway && !cinematic.result.markAbsent}

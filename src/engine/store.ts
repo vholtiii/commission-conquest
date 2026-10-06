@@ -29,6 +29,7 @@ import {
   assignCrew,
   canPromote,
   generateRecruitmentPool,
+  grantXpToCrew,
   promoteCrew,
   funeralLoyaltyHit,
   migrateMade,
@@ -43,6 +44,7 @@ import {
   incomeFlavor,
   racketPayment,
   associateBuildPayment,
+  associateBuildXp,
   associateCanBuild,
   formatPaymentParts,
   RACKET_BUILD_COST,
@@ -79,6 +81,7 @@ import { beginMaking, commitBooks, sittingOut } from "./making";
 import { callInOwn as orderCallIn } from "./callIn";
 import { sheetAffairOpen, sheetRatAction } from "./ratAffair";
 import { callFamilyDinner as orderDinner, dinnerActive } from "./dinner";
+import { callMattresses as orderMattresses, mattressesActive, sendThemHome } from "./mattresses";
 import {
   breakPact,
   canDiplomacy,
@@ -115,6 +118,7 @@ import {
   type TableAnswer,
 } from "./sitdowns";
 import { breakDeal, fulfilLiquorDeal, inTruce } from "./deals";
+import { handsDown } from "./mourning";
 import { answerRuling as settleRuling, lobbySeat as buySeat, openCommissionCall, openWarCall } from "./commission";
 import {
   cancelSupplyRoute,
@@ -331,6 +335,10 @@ interface GameStore extends GameState {
   moveRatOut: (crewId: string) => void;
   /** Gather the family at a safehouse for two weeks. */
   callFamilyDinner: () => void;
+  /** Send the family to the mattresses. */
+  callMattresses: () => void;
+  /** Bring them off the mattresses early. */
+  callThemHome: () => void;
   answerCrewRequest: (requestId: string, answer: CrewRequestAnswer) => void;
   joinCrew: (memberId: string, capoId: string) => void;
   leaveCrew: (memberId: string) => void;
@@ -528,6 +536,8 @@ export const useGameStore = create<GameStore>()(
           id: scattered ? recruit.id : `crew_${s.seed}_${s.crew.length}_${Date.now()}`,
           freeUntilTurn: undefined,
           assignment: { type: "idle" },
+          // No capo behind him. A soldier lands in Loose soldiers.
+          ...(scattered ? { capoId: undefined, crewSinceTurn: undefined, actingBoss: undefined } : {}),
         };
         set({
           money: s.money - cost,
@@ -660,6 +670,10 @@ export const useGameStore = create<GameStore>()(
       assignManager: (territoryId, racketId, crewId) => {
         const s = get();
         if (!s.playerFamily) return;
+        if (crewId && mattressesActive(s)) {
+          toast.error("The family is on the mattresses", { description: "Nobody is running a racket until they come home." });
+          return;
+        }
         if (crewId && refuseSitting(s, crewId)) return;
         const t = s.territories.find((x) => x.id === territoryId);
         const racket = t?.rackets.find((r) => r.id === racketId);
@@ -669,8 +683,13 @@ export const useGameStore = create<GameStore>()(
           const candidate = s.crew.find((c) => c.id === crewId);
           if (
             !candidate ||
-            (!canManageRacket(candidate, s.playerFamily) && racket.managerId !== candidate.id)
+            (!canManageRacket(candidate, s.playerFamily, racket.type) && racket.managerId !== candidate.id)
           ) {
+            if (candidate?.role === "associate") {
+              toast.error("That's not his to run", {
+                description: "He can manage a clean front. The rest take a made man.",
+              });
+            }
             return;
           }
         }
@@ -812,8 +831,11 @@ export const useGameStore = create<GameStore>()(
         );
         const income = racketIncome(racket, 0, null, undefined, bossHere);
         const flavor = incomeFlavor(type);
+        const xpAmount = associateBuildXp(type);
+        const granted = grantXpToCrew(s.crew, crewId, xpAmount);
         set({
           money: s.money - pay.clean,
+          crew: granted.crew,
           territories: s.territories.map((x) =>
             x.id === territoryId ? { ...x, rackets: [...x.rackets, racket] } : x,
           ),
@@ -825,13 +847,26 @@ export const useGameStore = create<GameStore>()(
             type,
             level: 1,
           },
+          turnLog: granted.leveled
+            ? [
+                ...s.turnLog,
+                {
+                  id: `log_xp_build_${crewId}_${s.turn}`,
+                  turn: s.turn,
+                  category: "system" as const,
+                  text: `${granted.name} reached level ${granted.level}.`,
+                  family: s.playerFamily,
+                },
+              ].slice(-200)
+            : s.turnLog,
           ...flyTo(s, territoryId),
         });
         const legitHint = isLegitBusiness(type)
           ? " · Set it up as a laundering site from the district panel"
           : "";
+        const levelNote = granted.leveled ? ` · level ${granted.level}` : "";
         toast.success(`${member.name} opened a ${RACKET_LABELS[type]} in ${t.name}`, {
-          description: `Paid $${pay.clean} clean · +$${income}/turn ${flavor} income (${bossHere ? "boss on the block" : "unmanaged"})${legitHint}`,
+          description: `Paid $${pay.clean} clean · +${xpAmount} XP${levelNote} · +$${income}/turn ${flavor} income (${bossHere ? "boss on the block" : "unmanaged"})${legitHint}`,
         });
       },
 
@@ -1235,6 +1270,13 @@ export const useGameStore = create<GameStore>()(
       planPlayerHit: (args) => {
         const s = get();
         if (!s.playerFamily) return;
+        if (handsDown(s)) {
+          const left = (s.mourningUntil ?? 0) - s.turn;
+          toast.error("The city is quiet", {
+            description: `A funeral holds the families for ${left} more week${left === 1 ? "" : "s"}. Nobody gets shot.`,
+          });
+          return;
+        }
         const seated = [
           ...args.shooterIds,
           args.wheelmanId,
@@ -1624,6 +1666,28 @@ export const useGameStore = create<GameStore>()(
         toast.message("The family sits down", {
           description: result.logs[0]?.text,
         });
+      },
+
+      callMattresses: () => {
+        const s = get();
+        const result = orderMattresses(s);
+        if (result.logs.length === 0) return;
+        set({
+          ...result.state,
+          turnLog: [...s.turnLog, ...result.logs],
+        });
+        toast.message("Go to the mattresses", { description: result.logs[0]?.text });
+      },
+
+      callThemHome: () => {
+        const s = get();
+        const result = sendThemHome(s);
+        if (result.logs.length === 0) return;
+        set({
+          ...result.state,
+          turnLog: [...s.turnLog, ...result.logs],
+        });
+        toast.message("Called home", { description: result.logs[0]?.text });
       },
 
       chooseEvent: (choiceId) => {
@@ -2288,6 +2352,9 @@ export const useGameStore = create<GameStore>()(
             commissionHistory: loaded.commissionHistory ?? [],
             pendingRulings: loaded.pendingRulings ?? [],
             familyDinner: loaded.familyDinner ?? null,
+            mattresses: loaded.mattresses ?? null,
+            mattressReadyUntil: loaded.mattressReadyUntil ?? 0,
+            mourningUntil: loaded.mourningUntil ?? 0,
             ratAffair: loaded.ratAffair ?? null,
           });
           return true;
@@ -2351,6 +2418,8 @@ export const useGameStore = create<GameStore>()(
           "callInOwn",
           "moveRatOut",
           "callFamilyDinner",
+          "callMattresses",
+          "callThemHome",
           "answerCrewRequest",
           "joinCrew",
           "leaveCrew",
@@ -2442,6 +2511,9 @@ export const useGameStore = create<GameStore>()(
           commissionHistory: p.commissionHistory ?? current.commissionHistory ?? [],
           pendingRulings: p.pendingRulings ?? [],
           familyDinner: p.familyDinner ?? null,
+          mattresses: p.mattresses ?? null,
+          mattressReadyUntil: p.mattressReadyUntil ?? 0,
+          mourningUntil: p.mourningUntil ?? 0,
           supplyRoutes: p.supplyRoutes ?? current.supplyRoutes ?? [],
           passageDeals: p.passageDeals ?? current.passageDeals ?? [],
           passageLeverage: p.passageLeverage ?? current.passageLeverage ?? {},

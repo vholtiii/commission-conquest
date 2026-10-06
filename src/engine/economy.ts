@@ -496,11 +496,20 @@ export function needsManager(type: RacketType): boolean {
   return type !== "safehouse";
 }
 
-/** Idle or garrisoned family men can run a racket. The boss and associates cannot. */
-export function canManageRacket(member: CrewMember, playerFamily: FamilyName | null): boolean {
+/**
+ * Idle or garrisoned family men can run a racket. The boss cannot.
+ * An associate can run a clean front only: pass that racket's type.
+ * Omit the type and he does not qualify.
+ */
+export function canManageRacket(
+  member: CrewMember,
+  playerFamily: FamilyName | null,
+  type?: RacketType,
+): boolean {
   if (!playerFamily || member.family !== playerFamily) return false;
   if (member.status !== "active") return false;
-  if (member.role === "boss" || member.role === "associate") return false;
+  if (member.role === "boss") return false;
+  if (member.role === "associate" && !(type && isLegitBusiness(type))) return false;
   return member.assignment.type === "idle" || member.assignment.type === "garrison";
 }
 
@@ -559,6 +568,19 @@ export function fundingLabel(funding: RacketFunding): string {
 /** Dirty-only rackets are closed to an associate. Mixed and clean types he may build. */
 export function associateCanBuild(type: RacketType): boolean {
   return racketFunding(type) !== "dirty";
+}
+
+/** A front or a safehouse. Liquor houses pay more. */
+export const ASSOCIATE_FRONT_XP = 20;
+/** A still, brewery, warehouse, or speakeasy. */
+export const ASSOCIATE_LIQUOR_XP = 30;
+
+const ASSOCIATE_LIQUOR_BUILD = new Set<RacketType>(["still", "brewery", "warehouse", "speakeasy"]);
+
+/** XP for opening a shop. Dirty rackets pay nothing because he cannot build them. */
+export function associateBuildXp(type: RacketType): number {
+  if (!associateCanBuild(type)) return 0;
+  return ASSOCIATE_LIQUOR_BUILD.has(type) ? ASSOCIATE_LIQUOR_XP : ASSOCIATE_FRONT_XP;
 }
 
 /**

@@ -34,25 +34,13 @@ import {
   warehouseManagerEffectText,
   warehouseManagerMods,
 } from "@/engine/liquor";
-import { isUnguarded } from "@/engine/territoryValue";
+import { activeCrewIds, isUnguarded } from "@/engine/territoryValue";
 import { RACKET_VISUALS } from "@/data/racketVisuals";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import PanelShell from "./PanelShell";
 import SupplyRoutesSection from "./SupplyRoutesSection";
 import { formatMoney } from "../formatters";
-
-function activeGarrisonIds(
-  t: Territory,
-  crew: { id: string; status: string }[],
-): Set<string> {
-  return new Set(
-    t.garrisonIds.filter((id) => {
-      const c = crew.find((m) => m.id === id);
-      return !!c && c.status === "active";
-    }),
-  );
-}
 
 function mockRoute(
   territories: Territory[],
@@ -155,7 +143,7 @@ export default function WarehousePanel() {
     0,
   );
   const anyStashHeat = owned.some((t) => {
-    const unguarded = isUnguarded(t, activeGarrisonIds(t, crew));
+    const unguarded = isUnguarded(t, activeCrewIds(crew));
     return stashHeat(t, unguarded, turn, lookup) > 0;
   });
 
@@ -166,7 +154,7 @@ export default function WarehousePanel() {
       c.assignment.type === "idle",
   );
 
-  const managerCandidates = crew.filter((c) => canManageRacket(c, playerFamily));
+  const managerCandidates = crew.filter((c) => canManageRacket(c, playerFamily, "warehouse"));
 
   if (!playerFamily) return null;
 
@@ -390,7 +378,7 @@ export default function WarehousePanel() {
           <div className="space-y-3">
             {warehouseDistricts.map((t) => {
               const storage = districtStorage(t, turn, lookup);
-              const unguarded = isUnguarded(t, activeGarrisonIds(t, crew));
+              const unguarded = isUnguarded(t, activeCrewIds(crew));
               const raidMult = districtRaidMult(t, lookup);
               const raidP = stashRaidChance(
                 storage.stored,

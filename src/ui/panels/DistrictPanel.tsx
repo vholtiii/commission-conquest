@@ -2,10 +2,10 @@ import { Swords, Hammer, ShieldPlus, Flame, ArrowUp, Eye, Wine, Crown } from "lu
 import { useState } from "react";
 import { useGameStore } from "@/engine/store";
 import { getFamilyDef } from "@/data/families";
-import { FAMILY_HEX, RACKET_LABELS } from "@/types/game";
+import { FAMILY_HEX, RACKET_LABELS, type RacketType } from "@/types/game";
 import { racketIncome, racketCrewBonusPct, racketPayment, isLegitBusiness, isRacketFrozen, launderCap, launderSiteStatus, fundingLabel, racketFunding, hijackRisk, needsManager, canManageRacket, legitCoverWantedDrop } from "@/engine/economy";
 import { isProducerType, isStorageType, planFeedSpeakeasy, stockCap, warehouseManagerEffectText } from "@/engine/liquor";
-import { isUnguarded, maxRacketsFor, lotTier, lotTierHint, lotTierLabel, allowedRacketTypes } from "@/engine/territoryValue";
+import { activeCrewIds, isUnguarded, maxRacketsFor, lotTier, lotTierHint, lotTierLabel, allowedRacketTypes } from "@/engine/territoryValue";
 import { RACKET_VISUALS } from "@/data/racketVisuals";
 import { emptyIntel, hiddenCountIn, hasFreshCasing, spottedThisTurn, visibleCrewIn } from "@/engine/intel";
 import { LOCATION_REASON_LABEL, familyHq, isBossUnderground, resolveCrewLocation, resolveCrewTerritoryId } from "@/engine/crewLocation";
@@ -147,7 +147,7 @@ export default function DistrictPanel() {
       (c.assignment.type === "idle" || c.assignment.type === "garrison") &&
       !managingIds.has(c.id),
   );
-  const managerCandidates = crew.filter((c) => canManageRacket(c, playerFamily));
+  const managersFor = (type: RacketType) => crew.filter((c) => canManageRacket(c, playerFamily, type));
   // Men who could drive over and garrison this block.
   const sendable = crew.filter(
     (c) =>
@@ -155,9 +155,7 @@ export default function DistrictPanel() {
       c.status === "active" &&
       c.role !== "boss" &&
       !(c.awayAt && c.awayAt.untilTurn > turn) &&
-      c.assignment.type !== "operation" &&
-      c.assignment.type !== "surveillance" &&
-      c.assignment.type !== "delivery" &&
+      (c.assignment.type === "idle" || c.assignment.type === "garrison") &&
       resolveCrewTerritoryId(locState, c.id) !== territory.id,
   );
   const sendHere = (crewId: string) => {
@@ -260,14 +258,8 @@ export default function DistrictPanel() {
   const slotsFull = territory.rackets.length >= racketSlots;
   const tier = lotTier(territory);
   const tierLabel = lotTierLabel(tier);
-  const unguarded =
-    isOwned &&
-    isUnguarded(territory, new Set(
-      territory.garrisonIds.filter((id) => {
-        const c = crew.find((m) => m.id === id);
-        return !!c && c.status === "active";
-      }),
-    ));
+  const fighters = garrison.filter((c) => c.status === "active").length;
+  const unguarded = isOwned && isUnguarded(territory, activeCrewIds(crew));
 
   return (
     <PanelShell title={territory.name} subtitle={territory.borough}>
@@ -304,7 +296,14 @@ export default function DistrictPanel() {
             valueClassName={territory.heatLevel > 4 ? "text-heat" : undefined}
             icon={territory.heatLevel > 4 ? <Flame className="h-3 w-3" /> : undefined}
           />
-          <InfoBox label="Defense" value={`+${Math.round(territory.defenseBonus * 100)}%`} />
+          <InfoBox
+            label="Defense"
+            value={
+              isOwned
+                ? `+${Math.round(territory.defenseBonus * 100)}% · ${fighters} garrisoned`
+                : `+${Math.round(territory.defenseBonus * 100)}%`
+            }
+          />
         </div>
         <div className="grid grid-cols-2 gap-2 text-center text-xs">
           <InfoBox
@@ -877,7 +876,7 @@ export default function DistrictPanel() {
                                 ...(r.managerId
                                   ? crew.filter((c) => c.id === r.managerId)
                                   : []),
-                                ...managerCandidates.filter((c) => c.id !== r.managerId),
+                                ...managersFor(r.type).filter((c) => c.id !== r.managerId),
                               ].map((c) => (
                                 <option key={c.id} value={c.id}>
                                   {c.name.split(" ").slice(-1)[0]} ({c.role})

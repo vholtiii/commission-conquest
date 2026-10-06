@@ -237,16 +237,21 @@ export default function SupplyRoutesSection() {
     [playerFamily, territories, turn],
   );
 
-  // Draw the roads on offer while the form is open: chosen (or hovered) in purple, the rest grey.
+  // One road on the map: the chip under the cursor, otherwise the chosen strategy.
   useEffect(() => {
     if (!open || options.length === 0) {
       setPreview(null);
       return;
     }
-    const shown = hoverId && options.some((o) => o.id === hoverId) ? hoverId : chosen?.id ?? null;
+    const shownId = hoverId && options.some((o) => o.id === hoverId) ? hoverId : chosen?.id ?? null;
+    const shown = options.find((o) => o.id === shownId);
+    if (!shown) {
+      setPreview(null);
+      return;
+    }
     setPreview({
-      options: options.map((o) => ({ id: o.id, path: o.path, label: o.label, strategies: o.strategies })),
-      chosenId: shown,
+      options: [{ id: shown.id, path: shown.path, label: shown.label, strategies: shown.strategies }],
+      chosenId: shown.id,
     });
   }, [open, options, chosen, hoverId, setPreview]);
   useEffect(() => () => setPreview(null), [setPreview]);
@@ -304,7 +309,7 @@ export default function SupplyRoutesSection() {
           ))}
           <Tip content="Click a standing route to trace it on the map in dotted purple.">
             <p className="text-[9px] text-muted-foreground">
-              Click a route to trace it on the map
+              Click a route to trace it. The ring is the start, the arrow the stop
               <span className="ml-1 inline-block h-[3px] w-5 align-middle" style={{ borderTop: `2px dotted ${MAP_STATUS.supplyRoute}` }} />
             </p>
           </Tip>
@@ -396,20 +401,12 @@ export default function SupplyRoutesSection() {
                     <p className="text-[10px] uppercase tracking-wide text-muted-foreground">How do you want to run it?</p>
                   </Tip>
                   {options.length > 1 && (
-                    <span className="flex items-center gap-2 text-[9px] text-muted-foreground">
-                      <Tip content="The road behind your chosen strategy, drawn dotted purple on the map.">
-                        <span className="flex items-center gap-1">
-                          <span className="inline-block h-[3px] w-4" style={{ borderTop: `2px dotted ${MAP_STATUS.supplyRoute}` }} />
-                          chosen
-                        </span>
-                      </Tip>
-                      <Tip content="Other roads on offer — grey dotted lines until you pick or hover a chip.">
-                        <span className="flex items-center gap-1">
-                          <span className="inline-block h-[3px] w-4" style={{ borderTop: `2px dotted ${MAP_STATUS.supplyOption}` }} />
-                          other roads
-                        </span>
-                      </Tip>
-                    </span>
+                    <Tip content="The chosen road is the purple line on the map. Hover another chip to swap it.">
+                      <span className="flex items-center gap-1 text-[9px] text-muted-foreground">
+                        <span className="inline-block h-[3px] w-4" style={{ borderTop: `2px dotted ${MAP_STATUS.supplyRoute}` }} />
+                        chosen road
+                      </span>
+                    </Tip>
                   )}
                 </div>
                 <StrategyChips
@@ -813,7 +810,7 @@ function RouteRow({
       style={focused ? { borderColor: MAP_STATUS.supplyRoute } : undefined}
     >
       <div className="flex items-center justify-between gap-2">
-        <Tip content={focused ? "Hide the dotted road on the map." : "Trace this route on the map in dotted purple."}>
+        <Tip content={focused ? "Hide this road on the map." : "Trace this route. A ring marks the start and an arrow the stop."}>
           <button
             type="button"
             onClick={onFocus}

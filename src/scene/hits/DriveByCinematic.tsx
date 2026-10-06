@@ -7,7 +7,7 @@ import MuzzleFlash from "./props/MuzzleFlash";
 import GlassShards from "./props/GlassShards";
 import Smoke from "./props/Smoke";
 import { PaddyWagon, PoliceLights } from "./props/PoliceLights";
-import { moveCam } from "./cameraRig";
+import { coverageShot, moveCam, type Coverage } from "./cameraRig";
 import type { SceneProps } from "./sceneProps";
 
 function paint(family: FamilyName): string {
@@ -66,20 +66,18 @@ export default function DriveByCinematic({ cinematic, site, phase, local, shake 
 
   const markDown = killed && (phase === "spray" || phase === "getaway");
   const markSpot: [number, number, number] = [
-    site.building.x + Math.sin(site.facing) * 0.9,
+    site.building.x + Math.sin(site.facing) * 1.2,
     0,
-    site.building.z + Math.cos(site.facing) * 0.9,
+    site.building.z + Math.cos(site.facing) * 1.2,
   ];
   const muzzle: [number, number, number] = [pos.x, 0.7, pos.z];
 
   useFrame(() => {
-    const look = phase === "roll" || phase === "getaway" ? pos.clone() : site.building.clone();
-    const back = tangent.clone().multiplyScalar(-10);
-    const cam =
-      phase === "spray" || phase === "pass"
-        ? new THREE.Vector3(site.building.x + 6, 4.5, site.building.z + 6)
-        : pos.clone().add(new THREE.Vector3(back.x, 8, back.z));
-    moveCam(camera, controls, cam, look, 0.12);
+    const coverage: Coverage =
+      phase === "roll" ? "wide" : phase === "pass" ? "medium" : phase === "spray" ? "close" : "pull";
+    const focus = phase === "spray" ? new THREE.Vector3(markSpot[0], 0, markSpot[2]) : phase === "pass" ? site.building.clone() : pos.clone();
+    const shot = coverageShot(focus, phase === "spray" ? site.facing : rot, coverage);
+    moveCam(camera, controls, shot.pos, shot.look, phase === "spray" ? 0.5 : 0.12);
     if (phase === "spray") shake.current = Math.max(shake.current, 0.08);
   });
 
@@ -90,6 +88,7 @@ export default function DriveByCinematic({ cinematic, site, phase, local, shake 
         position={markSpot}
         rot={site.facing}
         pose={c === "fruit_cart" && phase !== "roll" ? "crouch" : markDown ? "down" : "stand"}
+        role="boss"
         color={paint(cinematic.targetFamily)}
       />
       {c === "fruit_cart" && (

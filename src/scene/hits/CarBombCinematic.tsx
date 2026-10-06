@@ -7,7 +7,7 @@ import Goon from "./props/Goon";
 import Explosion from "./props/Explosion";
 import Smoke from "./props/Smoke";
 import { PaddyWagon, PoliceLights } from "./props/PoliceLights";
-import { moveCam, orbitAround } from "./cameraRig";
+import { coverageShot, moveCam, type Coverage } from "./cameraRig";
 import type { SceneProps } from "./sceneProps";
 
 function paint(family: FamilyName): string {
@@ -64,17 +64,11 @@ export default function CarBombCinematic({ cinematic, site, phase, local, shake 
   }
 
   useFrame(() => {
-    const look = carPos.clone();
-    look.y = 0.6;
-    let pos: THREE.Vector3;
-    if (phase === "plant" || phase === "abort") {
-      pos = orbitAround(carPos, 5.5, site.facing + 0.6, 2.4);
-    } else if (phase === "wait") {
-      pos = orbitAround(carPos, 7 - local * 1.5, site.facing + 1.1, 3.2);
-    } else {
-      pos = orbitAround(carPos, 9, site.facing + 2.2, 5);
-    }
-    moveCam(camera, controls, pos, look, phase === "detonate" ? 0.2 : 0.08);
+    const coverage: Coverage =
+      phase === "plant" || phase === "abort" ? "wide" : phase === "wait" ? "medium" : phase === "detonate" ? "close" : "pull";
+    const focus = phase === "detonate" || phase === "aftermath" ? mark : carPos;
+    const shot = coverageShot(focus, site.facing, coverage);
+    moveCam(camera, controls, shot.pos, shot.look, phase === "detonate" ? 0.5 : 0.1);
     if (blast) shake.current = Math.max(shake.current, messy ? 0.45 : 0.28);
   });
 
@@ -91,6 +85,7 @@ export default function CarBombCinematic({ cinematic, site, phase, local, shake 
         rot={site.facing + Math.PI}
         pose={phase === "plant" && local > 0.45 && local < 0.75 ? "crouch" : "walk"}
         moving={phase === "plant" || phase === "abort"}
+        role="soldier"
         color={paint(cinematic.attackerFamily)}
       />
       {showMark && (
@@ -99,6 +94,7 @@ export default function CarBombCinematic({ cinematic, site, phase, local, shake 
           rot={site.facing + Math.PI}
           pose={markPose}
           moving={phase === "wait" && !killed}
+          role="boss"
           color={paint(cinematic.targetFamily)}
         />
       )}

@@ -30,6 +30,20 @@ import { emptyIntel, hasFreshCasing, recordIntel } from "./intel";
 import { coverFire, getawayCover, isLaidLow, laidLowHouse, safehouseHitPenalty } from "./safehouse";
 import { buildLookoutReport, runCasing, rungToOutcome, type CasingResult } from "./lookout";
 import { applySuccession } from "./succession";
+import { territoryHops } from "./territoryHops";
+import { isDefunct, scatterFamily, settleRivalChair } from "./defection";
+import { declareMourning, handsDown } from "./mourning";
+
+export { territoryHops };
+import {
+  mattressDistrict,
+  mattressLeaked,
+  mattressesActive,
+  mattressSoldierBonus,
+  noteMattressWindow,
+  MATTRESS_DISTRICT_RISK,
+  MATTRESS_HIT_RISK,
+} from "./mattresses";
 import {
   ALERT_TURNS,
   BURN_TURNS,
@@ -102,13 +116,18 @@ export const CASING_REPORT_XP = 10;
  * A tie keeps the man listed first. Everyone else on the job is support:
  * wheelman, lookout, bomb maker, planter, negotiator.
  */
-export function hitXpSeat(op: Pick<Operation, "shooterIds">, crewId: string, crew: CrewMember[]): HitXpSeat {
+export function hitXpSeat(
+  op: Pick<Operation, "shooterIds">,
+  crewId: string,
+  crew: CrewMember[],
+  state?: Pick<GameState, "mattresses" | "turn">,
+): HitXpSeat {
   if (!op.shooterIds.includes(crewId)) return "support";
   let leadId = op.shooterIds[0] ?? crewId;
   let best = -Infinity;
   for (const id of op.shooterIds) {
     const member = crew.find((c) => c.id === id);
-    const score = member ? crewCombatScore(member) : -Infinity;
+    const score = member ? crewCombatScore(member, state ? mattressSoldierBonus(state, member) : 0) : -Infinity;
     if (score > best) {
       best = score;
       leadId = id;
@@ -168,31 +187,6 @@ export function defendersFor(state: GameState, op: Operation, opts?: OddsOptions
   return Math.max(0, raw - reduction);
 }
 
-/** BFS hop count between territories via adjacency; 0 if same, large if unreachable. */
-export function territoryHops(
-  state: GameState,
-  originId: string | undefined,
-  targetId: string,
-): number {
-  if (!originId || originId === targetId) return 0;
-  const byId = new Map(state.territories.map((t) => [t.id, t]));
-  if (!byId.has(originId) || !byId.has(targetId)) return 4;
-  const queue: { id: string; dist: number }[] = [{ id: originId, dist: 0 }];
-  const seen = new Set<string>([originId]);
-  while (queue.length > 0) {
-    const cur = queue.shift()!;
-    const node = byId.get(cur.id);
-    if (!node) continue;
-    for (const adj of node.adjacentTerritories) {
-      if (seen.has(adj)) continue;
-      if (adj === targetId) return cur.dist + 1;
-      seen.add(adj);
-      queue.push({ id: adj, dist: cur.dist + 1 });
-    }
-  }
-  return 5;
-}
-
 export function getawayRisk(state: GameState, op: Operation, opts?: OddsOptions): number {
   let hops = territoryHops(state, op.originTerritoryId, op.targetTerritoryId);
   if (usesClues(state, op)) {
@@ -232,7 +226,7 @@ function weightedShooterBonus(
       const s = findCrew(state, id);
       if (!s) return 0;
       const traits = aggregateTraitEffects(s.traits);
-      return crewCombatScore(s) / combatDivisor + traits.hitMod;
+      return crewCombatScore(s, mattressSoldierBonus(state, s)) / combatDivisor + traits.hitMod;
     })
     .sort((a, b) => b - a);
   let total = 0;
@@ -380,6 +374,15 @@ export function calculateHitOddsBreakdown(
       const key = [op.family, targetRel].sort().join("|");
       const score = state.relations.scores[key] ?? 0;
       if (score < -30) other += 0.05;
+    }
+  }
+
+  if (mattressesActive(state)) {
+    const playerShot = op.family === state.playerFamily;
+    const playerMarked = op.targetFamily === state.playerFamily;
+    if (playerShot || playerMarked) other -= MATTRESS_HIT_RISK;
+    if (mattressDistrict(state, op.targetTerritoryId) && !mattressLeaked(state)) {
+      other -= MATTRESS_DISTRICT_RISK;
     }
   }
 
@@ -980,7 +983,7 @@ export function resolveHit(
   crew = crew.map((c) => (c.status === "dead" && c.awayAt ? { ...c, awayAt: undefined } : c));
 
   for (const sid of hitCrewIds(op)) {
-    const granted = grantXpToCrew(crew, sid, hitResolveXp(targetDead, hitXpSeat(op, sid, crew)));
+    const granted = grantXpToCrew(crew, sid, hitResolveXp(targetDead, hitXpSeat(op, sid, crew, state)));
     crew = granted.crew.map((c) =>
       c.id === sid ? { ...c, hits: c.hits + 1 } : c,
     );
@@ -1193,12 +1196,17 @@ export function resolveHit(
     if (m?.role === "boss") deadBossFamilies.add(m.family);
   }
 
+  let bossFell = false;
   for (const fam of deadBossFamilies) {
     const stillBoss = newState.crew.find(
       (c) => c.family === fam && c.role === "boss" && c.status !== "dead",
     );
     if (stillBoss) continue;
-    const succ = applySuccession(newState, fam, rng);
+    bossFell = true;
+    const succ =
+      fam === state.playerFamily
+        ? applySuccession(newState, fam, rng)
+        : settleRivalChair(newState, fam, rng);
     newState = succ.state;
     if (succ.logs.length) {
       newState = {
@@ -1206,7 +1214,7 @@ export function resolveHit(
         turnLog: [...newState.turnLog, ...succ.logs].slice(-200),
       };
     }
-    if (succ.succeeded && succ.newBossName) {
+    if (succ.newBossName) {
       finalResult = {
         ...finalResult,
         headline: `${finalResult.headline} ${succ.newBossName} takes the chair.`,
@@ -1215,6 +1223,21 @@ export function resolveHit(
         newState = { ...newState, pendingHitResult: finalResult };
       }
     }
+  }
+
+  if (bossFell) {
+    const quiet = declareMourning(newState);
+    newState = quiet.state;
+    if (quiet.logs.length) {
+      newState = {
+        ...newState,
+        turnLog: [...newState.turnLog, ...quiet.logs].slice(-200),
+      };
+    }
+  }
+
+  if (state.playerFamily && op.targetFamily === state.playerFamily && op.family !== state.playerFamily) {
+    newState = noteMattressWindow(newState, op.targetFamily, op.family);
   }
 
   return { state: newState, result: finalResult };
@@ -1603,6 +1626,15 @@ export function resolvePendingOperations(
       (!opts.skipFamily || o.family !== opts.skipFamily),
   );
   for (const op of pendingHits) {
+    if (handsDown(current)) continue;
+    if (isDefunct(current, op.targetFamily)) {
+      const stopped = scatterFamily(current, op.targetFamily, rng);
+      current = stopped.state;
+      if (stopped.logs.length) {
+        current = { ...current, turnLog: [...current.turnLog, ...stopped.logs].slice(-200) };
+      }
+      continue;
+    }
     const settled = settleReadyHit(current, op, rng);
     current = settled.state;
     if (settled.log) tipLogs.push(settled.log);
@@ -1614,6 +1646,14 @@ export function resolvePendingOperations(
     (o) => !o.resolved && o.pendingTurns <= 1 && o.kind === "surveillance",
   );
   for (const op of pendingSurv) {
+    if (isDefunct(current, op.targetFamily)) {
+      const stopped = scatterFamily(current, op.targetFamily, rng);
+      current = stopped.state;
+      if (stopped.logs.length) {
+        current = { ...current, turnLog: [...current.turnLog, ...stopped.logs].slice(-200) };
+      }
+      continue;
+    }
     const stateBefore = current;
     const casing = runCasing(current, op, rng);
     current = casing.state;

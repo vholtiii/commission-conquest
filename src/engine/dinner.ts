@@ -2,11 +2,11 @@
  * A family dinner at a safehouse. Two weeks of loyalty, thin rackets, and an
  * open street for anyone who hears where the family went.
  */
-import type { FamilyName, GameState, Territory, TurnLogEntry } from "@/types/game";
+import type { CrewMember, FamilyName, GameState, Territory, TurnLogEntry } from "@/types/game";
 import { ALL_FAMILY_NAMES } from "@/data/families";
 import type { Rng } from "./rng";
 import { safehouseLevel } from "./economy";
-import { bossIsJailed } from "./jail";
+import { livingBoss } from "./jail";
 import { isDefunct } from "./defection";
 import { getRelation, statusFromScore } from "./relations";
 
@@ -43,13 +43,55 @@ function houses(state: GameState): { territory: Territory; seats: number }[] {
     .sort((a, b) => b.seats - a.seats);
 }
 
+/** The living boss can host if he is on his feet or wounded. A corpse still titled boss does not count. */
+function hostBoss(state: GameState) {
+  if (!state.playerFamily) return undefined;
+  const boss = livingBoss(state, state.playerFamily);
+  if (!boss || (boss.status !== "active" && boss.status !== "wounded")) return undefined;
+  return boss;
+}
+
+/** Active men, plus a wounded boss. He sits with them. */
+function dinnerParty(state: GameState): CrewMember[] {
+  if (!state.playerFamily) return [];
+  const boss = hostBoss(state);
+  return state.crew.filter(
+    (c) =>
+      c.family === state.playerFamily &&
+      (c.status === "active" || (!!boss && c.id === boss.id)),
+  );
+}
+
+const SEAT_RANK: Record<string, number> = {
+  boss: 0,
+  underboss: 1,
+  consigliere: 2,
+  capo: 3,
+  hitman: 4,
+  soldier: 5,
+  associate: 6,
+};
+
+/** Largest safehouse. The boss sits first, then the chairs, then the rest, until the seats run out. */
+function hosting(state: GameState): { house: Territory; seated: CrewMember[]; left: number } | null {
+  const options = houses(state);
+  const best = options[0];
+  if (!best || best.seats < 1) return null;
+  const party = dinnerParty(state).sort(
+    (a, b) => (SEAT_RANK[a.role] ?? 9) - (SEAT_RANK[b.role] ?? 9) || a.name.localeCompare(b.name),
+  );
+  if (party.length === 0) return null;
+  const seated = party.slice(0, best.seats);
+  return { house: best.territory, seated, left: party.length - seated.length };
+}
+
 export function canCallDinner(state: GameState): { ok: boolean; reason?: string } {
   if (!state.playerFamily) return { ok: false, reason: "No family." };
   if (dinnerActive(state)) return { ok: false, reason: "The family is already at the table." };
-  const boss = state.crew.find(
-    (c) => c.family === state.playerFamily && (c.isPlayerBoss || c.role === "boss"),
-  );
-  if (!boss || boss.status !== "active" || bossIsJailed(state, state.playerFamily)) {
+  if (state.mattresses && state.turn < state.mattresses.startTurn + 4) {
+    return { ok: false, reason: "The family is on the mattresses." };
+  }
+  if (!hostBoss(state)) {
     return { ok: false, reason: "The boss isn't free to host it." };
   }
   const last = state.lastDinnerTurn;
@@ -63,33 +105,29 @@ export function canCallDinner(state: GameState): { ok: boolean; reason?: string 
           : `Too soon — the family ate ${ago} week${ago === 1 ? "" : "s"} ago.`,
     };
   }
-  const active = state.crew.filter((c) => c.family === state.playerFamily && c.status === "active");
-  const options = houses(state);
-  if (options.length === 0) return { ok: false, reason: "You need a safehouse to host it." };
-  const best = options[0]!;
-  if (best.seats < active.length) {
-    return {
-      ok: false,
-      reason: `The safehouse at ${best.territory.name} seats ${best.seats} — you have ${active.length} men. Upgrade it.`,
-    };
-  }
   const job = state.operations.some(
     (o) => o.family === state.playerFamily && o.kind === "hit" && !o.resolved,
   );
   if (job) return { ok: false, reason: "You've got a job in the works — the whole family has to be free." };
-  const table = (state.sitdowns ?? []).some(
+  const clash = (state.sitdowns ?? []).find(
     (s) =>
       (s.proposer === state.playerFamily || s.other === state.playerFamily) &&
       (s.status === "proposed" || s.status === "scheduled" || s.status === "at_table") &&
       s.heldTurn < dinnerUntil(state.turn),
   );
-  if (table) return { ok: false, reason: "The boss has a sit-down that week." };
+  if (clash) {
+    const other = clash.proposer === state.playerFamily ? clash.other : clash.proposer;
+    return { ok: false, reason: `The boss sits down with ${other} that week.` };
+  }
+  const table = hosting(state);
+  if (!table) return { ok: false, reason: "You need a safehouse to host it." };
+  if (table.left > 0) {
+    return {
+      ok: true,
+      reason: `${table.house.name} seats ${table.seated.length}. ${table.left} stay on the street.`,
+    };
+  }
   return { ok: true };
-}
-
-function venue(state: GameState): Territory | null {
-  const active = state.crew.filter((c) => c.family === state.playerFamily && c.status === "active").length;
-  return houses(state).find((h) => h.seats >= active)?.territory ?? null;
 }
 
 function rivalCasedPlayer(state: GameState, family: FamilyName): boolean {
@@ -112,15 +150,19 @@ function watching(state: GameState, family: FamilyName): boolean {
 
 export function callFamilyDinner(state: GameState, rng: Rng): { state: GameState; logs: TurnLogEntry[] } {
   const check = canCallDinner(state);
-  const house = venue(state);
-  if (!check.ok || !house || !state.playerFamily) return { state, logs: [] };
+  const table = hosting(state);
+  if (!check.ok || !table || !state.playerFamily) return { state, logs: [] };
+  const house = table.house;
 
   const logs: TurnLogEntry[] = [
     {
       id: `log_dinner_${state.turn}`,
       turn: state.turn,
       category: "event",
-      text: `The family sits down to eat at ${house.name}. For two weeks the streets are thin.`,
+      text:
+        table.left > 0
+          ? `The family sits down to eat at ${house.name}. ${table.seated.length} have a chair. The rest stay on the street.`
+          : `The family sits down to eat at ${house.name}. For two weeks the streets are thin.`,
       family: state.playerFamily,
     },
   ];
@@ -139,8 +181,9 @@ export function callFamilyDinner(state: GameState, rng: Rng): { state: GameState
   });
 
   const until = dinnerUntil(state.turn);
+  const seated = new Set(table.seated.map((c) => c.id));
   const crew = state.crew.map((c) =>
-    c.family === state.playerFamily && c.status === "active"
+    seated.has(c.id)
       ? {
           ...c,
           loyalty: Math.min(100, c.loyalty + DINNER_LOYALTY),

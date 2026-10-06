@@ -4,15 +4,15 @@ import type { Rng } from "./rng";
 import { getRelation } from "./relations";
 import { livingBoss } from "./jail";
 import { familyInfluence } from "./victory";
-import { territoryHops } from "./hitOps";
+import { territoryHops } from "./territoryHops";
 import { resolveCrewTerritoryId } from "./crewLocation";
+import { hitCrewIds } from "@/data/hitApproaches";
+import { promoteToBoss, readyRivalHeir } from "./succession";
 
 /**
- * When a family runs out of men who could take the chair, it's finished.
- * Its soldiers and associates don't wait around: each one picks a new family
- * — yours included — weighted by standing, how close the turf is, and how the
- * two families got along. A man who picks you turns up in the recruitment
- * pool asking for nothing; pass on him for long enough and he goes to a rival.
+ * When a rival boss dies and neither a ready underboss nor a ready consigliere
+ * can take the chair, the family is finished. The survivors come to you as
+ * free agents. Pass on one for long enough and he leaves town.
  */
 export const DEFECTION = {
   /** Weeks a scattered man waits in your pool before he gives up. */
@@ -21,9 +21,9 @@ export const DEFECTION = {
   loyalty: 45,
 } as const;
 
-/** Ranks that would take the chair after a funeral (see rivalAI.tryInterimBoss). */
+/** Ranks that can take a rival chair. A capo cannot. Readiness is a separate bar. */
 export function canInheritChair(m: CrewMember): boolean {
-  return m.role === "underboss" || m.role === "capo" || m.role === "consigliere";
+  return m.role === "underboss" || m.role === "consigliere";
 }
 
 /** No living boss and nobody on the roster who could become one. */
@@ -175,23 +175,54 @@ function offerToPlayer(state: GameState, man: CrewMember): GameState {
   };
 }
 
-function lastName(c: CrewMember): string {
-  return c.name.replace(/"[^"]*"\s*/g, "").trim().split(/\s+/).pop() ?? c.name;
-}
-
-function countNoun(n: number, one: string, many: string): string {
-  return n === 1 ? one : `${n} ${many}`;
+/** Call off hits and casing aimed at a finished family, and send those crews home. */
+function dropJobs(state: GameState, family: FamilyName): { state: GameState; calledOff: number } {
+  const dropped = state.operations.filter(
+    (o) => !o.resolved && o.targetFamily === family && (o.kind === "hit" || o.kind === "surveillance"),
+  );
+  if (dropped.length === 0) return { state, calledOff: 0 };
+  const home = new Set(dropped.flatMap((o) => hitCrewIds(o)));
+  const crew = state.crew.map((c) =>
+    home.has(c.id) && (c.assignment.type === "operation" || c.assignment.type === "surveillance")
+      ? { ...c, assignment: { type: "idle" as const } }
+      : c,
+  );
+  const operations = state.operations.map((o) =>
+    !o.resolved && o.targetFamily === family && (o.kind === "hit" || o.kind === "surveillance")
+      ? { ...o, resolved: true, pendingTurns: 0, resolvedTurn: state.turn }
+      : o,
+  );
+  return { state: { ...state, crew, operations }, calledOff: dropped.length };
 }
 
 /**
- * Mark a family finished and scatter its soldiers, hitmen and associates.
- * Men in a cell or a rival's basement stay where they are.
+ * Mark a rival family finished. Everyone still on his feet or wounded comes to
+ * the player's pool as a free agent. Men in a cell or a basement stay put.
+ * Jobs aimed at the family are called off.
  */
 export function scatterFamily(
   state: GameState,
   family: FamilyName,
-  rng: Rng,
+  _rng: Rng,
 ): { state: GameState; logs: TurnLogEntry[] } {
+  if (family === state.playerFamily) return { state, logs: [] };
+  // Already finished: still call off any job that slipped through.
+  if (isDefunct(state, family)) {
+    const jobs = dropJobs(state, family);
+    if (jobs.calledOff === 0) return { state, logs: [] };
+    return {
+      state: jobs.state,
+      logs: [
+        {
+          id: `log_defunct_jobs_${family}_${state.turn}`,
+          turn: state.turn,
+          category: "hit",
+          text: `The work on the ${family} family is called off. There's no one left to hit.`,
+          family: state.playerFamily ?? undefined,
+        },
+      ],
+    };
+  }
   const logs: TurnLogEntry[] = [];
   let current: GameState = {
     ...state,
@@ -205,59 +236,33 @@ export function scatterFamily(
     family,
   });
 
-  // Everyone below the chair: soldiers, associates, and the family's hitmen.
   const men = state.crew.filter(
-    (c) =>
-      c.family === family &&
-      (c.status === "active" || c.status === "wounded") &&
-      !canInheritChair(c) &&
-      c.role !== "boss",
+    (c) => c.family === family && (c.status === "active" || c.status === "wounded"),
   );
-  if (men.length === 0) return { state: current, logs };
+  for (const man of men) current = offerToPlayer(current, man);
 
-  const toPlayer: CrewMember[] = [];
-  const toRival = new Map<FamilyName, CrewMember[]>();
-
-  for (const man of men) {
-    const from = resolveCrewTerritoryId(current, man.id);
-    let options = openFamilies(current, family);
-    // A wounded man can't sit in a pool waiting on a hire; he goes where there's a bed.
-    if (man.status !== "active") options = options.filter((f) => f !== current.playerFamily);
-    const to = pickWeighted(rng, options, (f) => appeal(current, family, from, f));
-    if (!to) continue;
-    if (to === current.playerFamily) {
-      current = offerToPlayer(current, man);
-      toPlayer.push(man);
-    } else {
-      current = joinRival(current, man, to);
-      toRival.set(to, [...(toRival.get(to) ?? []), man]);
-    }
-  }
-
-  for (const [to, group] of toRival) {
-    const names = group.map(lastName).join(", ");
-    logs.push({
-      id: `log_defect_${family}_${to}_${state.turn}`,
-      turn: state.turn,
-      category: "ai",
-      text:
-        group.length === 1
-          ? `${group[0]!.name}, late of the ${family}, went over to the ${to}.`
-          : `${countNoun(group.length, "One", `${family} men`)} went over to the ${to} — ${names}.`,
-      family: to,
-      victim: family,
-    });
-  }
-  if (toPlayer.length > 0) {
-    const names = toPlayer.map((c) => c.name).join(", ");
+  if (men.length > 0) {
+    const names = men.map((c) => c.name).join(", ");
     logs.push({
       id: `log_defect_${family}_player_${state.turn}`,
       turn: state.turn,
       category: "system",
       text:
-        toPlayer.length === 1
-          ? `${toPlayer[0]!.name}, a ${family} ${toPlayer[0]!.role}, came asking for a place. He'll work for nothing.`
-          : `${toPlayer.length} ${family} men came asking for a place — ${names}. They'll work for nothing.`,
+        men.length === 1
+          ? `${men[0]!.name}, a ${family} ${men[0]!.role}, came asking for a place. He'll work for nothing.`
+          : `${men.length} ${family} men came asking for a place — ${names}. They'll work for nothing.`,
+      family: current.playerFamily ?? undefined,
+    });
+  }
+
+  const jobs = dropJobs(current, family);
+  current = jobs.state;
+  if (jobs.calledOff > 0) {
+    logs.push({
+      id: `log_defunct_jobs_${family}_${state.turn}`,
+      turn: state.turn,
+      category: "hit",
+      text: `The work on the ${family} family is called off. There's no one left to hit.`,
       family: current.playerFamily ?? undefined,
     });
   }
@@ -266,33 +271,48 @@ export function scatterFamily(
 }
 
 /**
+ * The week a rival boss dies: a ready underboss takes the chair, else a ready
+ * consigliere. Otherwise the outfit breaks and the survivors become free agents.
+ */
+export function settleRivalChair(
+  state: GameState,
+  family: FamilyName,
+  rng: Rng,
+): { state: GameState; logs: TurnLogEntry[]; newBossName?: string } {
+  if (family === state.playerFamily || isDefunct(state, family) || livingBoss(state, family)) {
+    return { state, logs: [] };
+  }
+  const heir = readyRivalHeir(state.crew, family, state.turn);
+  if (heir) {
+    const promoted = promoteToBoss(state, family, heir);
+    return { state: promoted.state, logs: promoted.logs, newBossName: promoted.newBossName };
+  }
+  return scatterFamily(state, family, rng);
+}
+
+/**
  * Turn-start pass: scattered men the player hasn't hired by their deadline
- * give up and go to a rival instead.
+ * leave town. They do not join a family that can still be shot at.
  */
 export function expireFreeAgents(
   state: GameState,
-  rng: Rng,
+  _rng: Rng,
 ): { state: GameState; logs: TurnLogEntry[] } {
   const logs: TurnLogEntry[] = [];
   const pool = state.recruitmentPool ?? [];
   const leaving = pool.filter((c) => c.freeUntilTurn != null && c.freeUntilTurn <= state.turn);
   if (leaving.length === 0) return { state, logs };
 
-  let current: GameState = {
+  const current: GameState = {
     ...state,
     recruitmentPool: pool.filter((c) => !leaving.includes(c)),
   };
   for (const man of leaving) {
-    const origin = man.origin ?? man.family;
-    const options = openFamilies(current, origin).filter((f) => f !== current.playerFamily);
-    const to = pickWeighted(rng, options, (f) => appeal(current, origin, null, f));
-    if (!to) continue;
-    current = joinRival(current, { ...man, freeUntilTurn: undefined }, to);
     logs.push({
       id: `log_defect_wait_${man.id}_${state.turn}`,
       turn: state.turn,
       category: "system",
-      text: `${man.name} got tired of waiting on you and went to the ${to}.`,
+      text: `${man.name} got tired of waiting and left town.`,
       family: current.playerFamily ?? undefined,
     });
   }

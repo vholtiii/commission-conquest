@@ -522,11 +522,12 @@ export function roleUpkeep(role: CrewRole): number {
   }
 }
 
-export function crewCombatScore(member: CrewMember): number {
+export function crewCombatScore(member: CrewMember, muscleBonus = 0): number {
   const t = aggregateTraitEffects(member.traits);
   const s = member.skills;
+  const muscle = s.muscle + muscleBonus;
   const skillSum =
-    s.muscle * 1.2 +
+    muscle * 1.2 +
     s.stealth * 0.8 +
     s.smarts * 0.6 +
     s.driving * 0.5 +
@@ -563,6 +564,9 @@ export function pruneManagers(state: {
   }));
 }
 
+/** Weekly XP for running a racket, including an associate on a clean front. */
+export const MANAGER_WEEK_XP = 3;
+
 /** Per-turn XP for garrison / managers / lookouts. Skip managers of frozen rackets. */
 export function tickAssignmentXp(
   crew: CrewMember[],
@@ -587,7 +591,7 @@ export function tickAssignmentXp(
     if (m.assignment.type === "garrison") amount = 2;
     else if (m.assignment.type === "racket") {
       if (frozenManagers.has(m.id)) return m;
-      amount = 3;
+      amount = MANAGER_WEEK_XP;
     } else if (m.assignment.type === "surveillance") amount = 2;
     else if (m.assignment.type === "delivery") amount = 2;
     if (amount <= 0) return m;

@@ -45,7 +45,7 @@ function fullTimeline(approach: HitApproach, result: HitResult): PhaseDef[] {
     return [
       { name: "plant", duration: 1.8, caption: "approach", label: "The plant" },
       { name: "wait", duration: 1.8, caption: "complication", label: "The wait" },
-      { name: "detonate", duration: 1.8, caption: "execution", label: fizzle ? "The fuse" : "Detonation" },
+      { name: "detonate", duration: 2.4, caption: "execution", label: fizzle ? "The fuse" : "Detonation" },
       { name: "aftermath", duration: police(result) ? 2.2 : 1.6, caption: "getaway", label: police(result) ? "The law" : "Aftermath" },
     ];
   }
@@ -53,7 +53,7 @@ function fullTimeline(approach: HitApproach, result: HitResult): PhaseDef[] {
     return [
       { name: "roll", duration: 2.0, caption: "approach", label: "En route" },
       { name: "pass", duration: 1.6, caption: "complication", label: "The pass" },
-      { name: "spray", duration: 1.6, caption: "execution", label: "The spray" },
+      { name: "spray", duration: 2.4, caption: "execution", label: "The spray" },
       { name: "getaway", duration: police(result) ? 2.2 : 1.8, caption: "getaway", label: police(result) ? "The law" : "Getaway" },
     ];
   }
@@ -61,7 +61,7 @@ function fullTimeline(approach: HitApproach, result: HitResult): PhaseDef[] {
     return [
       { name: "call", duration: 1.6, caption: "approach", label: "The call" },
       { name: "drive", duration: 2.4, caption: "complication", label: "The drive" },
-      { name: "back_room", duration: 1.6, caption: "execution", label: "The back room" },
+      { name: "back_room", duration: 2.4, caption: "execution", label: "The back room" },
       { name: "drive_off", duration: 1.8, caption: "getaway", label: "Gone" },
     ];
   }
@@ -69,14 +69,14 @@ function fullTimeline(approach: HitApproach, result: HitResult): PhaseDef[] {
     return [
       { name: "arrive", duration: 2.0, caption: "approach", label: "Arrival" },
       { name: "table", duration: 2.2, caption: "complication", label: "The table" },
-      { name: "handshake", duration: 1.4, caption: "execution", label: "The handshake" },
+      { name: "handshake", duration: 2.4, caption: "execution", label: "The handshake" },
       { name: "walk_out", duration: police(result) ? 2.2 : 1.6, caption: "getaway", label: police(result) ? "The law" : "The walk" },
     ];
   }
   return [
     { name: "position", duration: 1.8, caption: "approach", label: "In position" },
     { name: "wait", duration: 2.0, caption: "complication", label: "The wait" },
-    { name: "strike", duration: 1.5, caption: "execution", label: "The hit" },
+    { name: "strike", duration: 2.6, caption: "execution", label: "The hit" },
     { name: "melt", duration: police(result) ? 2.2 : 1.7, caption: "getaway", label: police(result) ? "The law" : "Away" },
   ];
 }
