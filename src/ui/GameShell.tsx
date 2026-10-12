@@ -35,7 +35,7 @@ import { RACKET_LABELS } from "@/types/game";
 import { isLegitBusiness, launderSiteStatus } from "@/engine/economy";
 import { livingBoss } from "@/engine/jail";
 import { Button } from "@/components/ui/button";
-import { formatMoney } from "./formatters";
+import { formatDelta, formatMoney } from "./formatters";
 
 function TombsBanner() {
   const playerFamily = useGameStore((s) => s.playerFamily);
@@ -63,10 +63,18 @@ function TombsBanner() {
   );
 }
 
+function bookPair(clean: number, dirty: number): string {
+  if (clean === 0 && dirty === 0) return "$0";
+  if (dirty === 0) return formatDelta(clean);
+  if (clean === 0) return `${formatDelta(dirty)} dirty`;
+  return `${formatDelta(clean)} clean, ${formatDelta(dirty)} dirty`;
+}
+
 function RacketsOverviewPanel() {
   const playerFamily = useGameStore((s) => s.playerFamily);
   const territories = useGameStore((s) => s.territories);
   const turn = useGameStore((s) => s.turn);
+  const weekBooks = useGameStore((s) => s.weekBooks);
   const selectTerritory = useGameStore((s) => s.selectTerritory);
   const rackets = territories
     .filter((t) => t.owner === playerFamily)
@@ -74,6 +82,78 @@ function RacketsOverviewPanel() {
 
   return (
     <PanelShell title="Rackets" subtitle={`${rackets.length} operations running`}>
+      <div className="mb-3 space-y-1 border-b border-panel-border pb-3 text-xs">
+        {!weekBooks && (
+          <p className="text-muted-foreground">The books haven't closed yet.</p>
+        )}
+        {weekBooks && (
+          <>
+            <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+              Last week · Turn {weekBooks.turn}
+            </div>
+            {weekBooks.rackets.map((line, i) => (
+              <div key={`${line.territoryName}-${line.label}-${i}`} className="flex items-baseline justify-between gap-3">
+                <span className="min-w-0">
+                  {line.territoryName} · {line.label}
+                  <span className="text-muted-foreground"> · {line.manager ?? "Nobody"}</span>
+                  {line.frozen && <span className="ml-1 text-heat">Frozen</span>}
+                </span>
+                <span className="shrink-0 tabular-nums">{bookPair(line.clean, line.dirty)}</span>
+              </div>
+            ))}
+            {weekBooks.blocks !== 0 && (
+              <div className="flex items-baseline justify-between gap-3">
+                <span>Blocks</span>
+                <span className="shrink-0 tabular-nums">{formatDelta(weekBooks.blocks)}</span>
+              </div>
+            )}
+            {(weekBooks.liquorClean !== 0 || weekBooks.liquorDirty !== 0) && (
+              <div className="flex items-baseline justify-between gap-3">
+                <span>Liquor</span>
+                <span className="shrink-0 tabular-nums">{bookPair(weekBooks.liquorClean, weekBooks.liquorDirty)}</span>
+              </div>
+            )}
+            {(weekBooks.laundryClean !== 0 || weekBooks.laundryDirty !== 0) && (
+              <div className="flex items-baseline justify-between gap-3">
+                <span>Laundry</span>
+                <span className="shrink-0 tabular-nums">{bookPair(weekBooks.laundryClean, weekBooks.laundryDirty)}</span>
+              </div>
+            )}
+            {weekBooks.cuts.map((cut, i) => (
+              <div key={`${cut.family}-${i}`} className="flex items-baseline justify-between gap-3">
+                <span>{cut.clean + cut.dirty < 0 ? `Paid ${cut.family}` : `${cut.family} paid`}</span>
+                <span className="shrink-0 tabular-nums">{bookPair(cut.clean, cut.dirty)}</span>
+              </div>
+            ))}
+            <div className="flex items-baseline justify-between gap-3">
+              <span>Upkeep</span>
+              <span className="shrink-0 tabular-nums">{formatDelta(-weekBooks.upkeep)}</span>
+            </div>
+            {(weekBooks.adjustmentClean !== 0 || weekBooks.adjustmentDirty !== 0) && (
+              <div className="flex items-baseline justify-between gap-3">
+                <span>No one speaking for the family</span>
+                <span className="shrink-0 tabular-nums">
+                  {bookPair(weekBooks.adjustmentClean, weekBooks.adjustmentDirty)}
+                </span>
+              </div>
+            )}
+            <div className="mt-1 space-y-0.5 border-t border-panel-border pt-1">
+              <div className="flex items-baseline justify-between gap-3">
+                <span>Clean</span>
+                <span className="shrink-0 tabular-nums">{formatDelta(weekBooks.clean)}</span>
+              </div>
+              <div className="flex items-baseline justify-between gap-3">
+                <span>Dirty</span>
+                <span className="shrink-0 tabular-nums">{formatDelta(weekBooks.dirty)}</span>
+              </div>
+              <div className="flex items-baseline justify-between gap-3 font-medium">
+                <span>Net</span>
+                <span className="shrink-0 tabular-nums">{formatDelta(weekBooks.net)}</span>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
       <div className="space-y-1.5">
         {rackets.length === 0 && <p className="text-xs text-muted-foreground">No rackets yet — select a district you own.</p>}
         {rackets.map(({ racket, territory }) => {

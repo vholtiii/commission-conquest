@@ -268,6 +268,45 @@ export interface LiquorLedger {
   heat: number;
 }
 
+/** One racket's take in a closed week. Frozen shops that earned nothing are still listed. */
+export interface WeekBookRacket {
+  territoryName: string;
+  label: string;
+  manager: string | null;
+  clean: number;
+  dirty: number;
+  frozen: boolean;
+}
+
+/** A cut that moved cash. Received cuts are clean; a cut the player paid is dirty first. */
+export interface WeekBookCut {
+  family: FamilyName;
+  clean: number;
+  dirty: number;
+}
+
+/**
+ * Last closed week's books for the player. Lines are the full take.
+ * `adjustmentClean` / `adjustmentDirty` are the headless three-quarter scale,
+ * so clean + dirty equals what landed in the bank.
+ */
+export interface WeekBooks {
+  turn: number;
+  rackets: WeekBookRacket[];
+  blocks: number;
+  liquorClean: number;
+  liquorDirty: number;
+  laundryClean: number;
+  laundryDirty: number;
+  cuts: WeekBookCut[];
+  upkeep: number;
+  adjustmentClean: number;
+  adjustmentDirty: number;
+  clean: number;
+  dirty: number;
+  net: number;
+}
+
 export interface FamilyBonuses {
   combatBonus: number;
   incomeBonus: number;
@@ -1378,6 +1417,8 @@ export interface GameState {
   pendingShipments: PendingShipment[];
   /** Last turn's liquor P&L (null before first liquor turn). */
   liquorLedger: LiquorLedger | null;
+  /** Last closed week's books (null before the first week ends). */
+  weekBooks: WeekBooks | null;
   selectedTerritoryId: string | null;
   flyToTerritoryId: string | null;
   /** World point and camera distance for a roster zoom. Null keeps the wider district framing. */

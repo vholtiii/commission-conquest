@@ -531,26 +531,34 @@ export function sellSpeakeasies(
   dirtyRevenue: number;
   sold: number;
   dryCount: number;
+  /** Each bar's own take, before any dinner thinning. Sums to revenue / dirtyRevenue. */
+  byRacket: { id: string; clean: number; dirty: number }[];
 } {
   let revenue = 0;
   let dirtyRevenue = 0;
   let sold = 0;
   let dryCount = 0;
+  const byRacket: { id: string; clean: number; dirty: number }[] = [];
 
   const rackets = territory.rackets.map((r) => {
     if (r.type !== "speakeasy") return r;
     const base = Math.floor(SPEAKEASY_BASE_INCOME * r.level * (1 + incomeBonus));
     if (r.stock <= 0) {
       dryCount += 1;
-      dirtyRevenue += Math.floor(base * 0.25);
+      const dirty = Math.floor(base * 0.25);
+      dirtyRevenue += dirty;
+      byRacket.push({ id: r.id, clean: 0, dirty });
       return r;
     }
     const amount = Math.min(r.stock, speakeasyPull(r.level, localWarehouse, bossHere));
     const price = 15 + r.level * 5;
-    dirtyRevenue += amount * price;
-    revenue += Math.floor(amount * price * 0.3);
-    dirtyRevenue += Math.floor(base * 0.7);
-    revenue += Math.floor(base * 0.3);
+    const crateDirty = amount * price;
+    const crateClean = Math.floor(amount * price * 0.3);
+    const baseDirty = Math.floor(base * 0.7);
+    const baseClean = Math.floor(base * 0.3);
+    dirtyRevenue += crateDirty + baseDirty;
+    revenue += crateClean + baseClean;
+    byRacket.push({ id: r.id, clean: crateClean + baseClean, dirty: crateDirty + baseDirty });
     sold += amount;
     return { ...r, stock: r.stock - amount };
   });
@@ -561,6 +569,7 @@ export function sellSpeakeasies(
     dirtyRevenue,
     sold,
     dryCount,
+    byRacket,
   };
 }
 

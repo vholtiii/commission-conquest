@@ -8,6 +8,9 @@ import type {
   RacketType,
   Territory,
   TurnLogEntry,
+  WeekBookCut,
+  WeekBookRacket,
+  WeekBooks,
 } from "@/types/game";
 import { RACKET_LABELS } from "@/types/game";
 import { ALL_FAMILY_NAMES, getFamilyDef } from "@/data/families";
@@ -916,6 +919,70 @@ export function calculateUpkeep(state: GameState, family: FamilyName): number {
   return crewCost + racketCost;
 }
 
+/** Player-only pieces of a week, caught while the cash moves. Rivals leave this null. */
+export interface PlayerWeekParts {
+  rackets: WeekBookRacket[];
+  blocks: number;
+  dumpCash: number;
+  idleStorage: number;
+  laundryClean: number;
+  laundryDirty: number;
+  upkeep: number;
+}
+
+export function emptyPlayerWeekParts(): PlayerWeekParts {
+  return {
+    rackets: [],
+    blocks: 0,
+    dumpCash: 0,
+    idleStorage: 0,
+    laundryClean: 0,
+    laundryDirty: 0,
+    upkeep: 0,
+  };
+}
+
+/**
+ * Assemble the closed week. Road liquor and cuts are deposited before the
+ * economy pass; dump cash and idle storage sit inside it. The displayed
+ * liquor line carries those two, and the headless adjustment is the only
+ * difference between the full lines and what landed.
+ */
+export function buildWeekBooks(args: {
+  turn: number;
+  parts: PlayerWeekParts;
+  economyClean: number;
+  economyDirty: number;
+  headless: boolean;
+  roadClean: number;
+  roadDirty: number;
+  cuts: WeekBookCut[];
+}): WeekBooks {
+  const scale = (n: number) => (args.headless && n > 0 ? n * 0.75 : n);
+  const scaledClean = scale(args.economyClean);
+  const scaledDirty = scale(args.economyDirty);
+  const cutClean = args.cuts.reduce((n, c) => n + c.clean, 0);
+  const cutDirty = args.cuts.reduce((n, c) => n + c.dirty, 0);
+  const clean = scaledClean + args.roadClean + cutClean;
+  const dirty = scaledDirty + args.roadDirty + cutDirty;
+  return {
+    turn: args.turn,
+    rackets: args.parts.rackets,
+    blocks: args.parts.blocks,
+    liquorClean: args.roadClean - args.parts.idleStorage,
+    liquorDirty: args.roadDirty + args.parts.dumpCash,
+    laundryClean: args.parts.laundryClean,
+    laundryDirty: args.parts.laundryDirty,
+    cuts: args.cuts,
+    upkeep: args.parts.upkeep,
+    adjustmentClean: scaledClean - args.economyClean,
+    adjustmentDirty: scaledDirty - args.economyDirty,
+    clean,
+    dirty,
+    net: clean + dirty,
+  };
+}
+
 export interface EconomyTurnResult {
   moneyDelta: number;
   dirtyDelta: number;
@@ -927,6 +994,7 @@ export interface EconomyTurnResult {
   audits: LaunderAudit[];
   racketUpdates: Racket[];
   ledger: LiquorLedger;
+  books: PlayerWeekParts | null;
 }
 
 export interface LaunderAudit {
@@ -1155,6 +1223,23 @@ export function processLaundering(
   return { moneyDelta, dirtyDelta, heatDelta, logs, audits, racketUpdates };
 }
 
+/** Same split the income loop deposits: legit clean, vice dirty, the rest 30/70. */
+function racketTake(type: RacketType, inc: number): { clean: number; dirty: number } {
+  if (isLegitBusiness(type)) return { clean: inc, dirty: 0 };
+  if (type === "gambling" || type === "brothel" || type === "loan_shark") {
+    return { clean: 0, dirty: inc };
+  }
+  return { clean: Math.floor(inc * 0.3), dirty: Math.floor(inc * 0.7) };
+}
+
+function activeManagerName(state: GameState, family: FamilyName, managerId: string | null): string | null {
+  if (!managerId) return null;
+  const manager = state.crew.find(
+    (c) => c.id === managerId && c.family === family && c.status === "active",
+  );
+  return manager?.name ?? null;
+}
+
 export function processEconomyTurn(
   state: GameState,
   family: FamilyName,
@@ -1169,6 +1254,12 @@ export function processEconomyTurn(
   const audits: LaunderAudit[] = [];
   let ledger = emptyLiquorLedger();
   const isPlayer = family === state.playerFamily;
+  const racketLines: WeekBookRacket[] = [];
+  let blockTake = 0;
+  let dumpedCash = 0;
+  let idleStorage = 0;
+  let laundryClean = 0;
+  let laundryDirty = 0;
   const activeIds = new Set(
     state.crew.filter((c) => c.status === "active").map((c) => c.id),
   );
@@ -1233,6 +1324,7 @@ export function processEconomyTurn(
         heat: prod.dumpHeat,
       });
       dirtyDelta += prod.dumpCash;
+      dumpedCash += prod.dumpCash;
       heatDelta += prod.dumpHeat;
       if (prod.backedUp) {
         logs.push({
@@ -1270,6 +1362,16 @@ export function processEconomyTurn(
       rackets: updated.rackets.map((racket) => {
         if (isRacketFrozen(racket, state.turn)) {
           racketHeat += racket.heatGen * 0.5;
+          if (isPlayer && racket.type !== "speakeasy") {
+            racketLines.push({
+              territoryName: t.name,
+              label: RACKET_LABELS[racket.type],
+              manager: activeManagerName(state, family, racket.managerId),
+              clean: 0,
+              dirty: 0,
+              frozen: true,
+            });
+          }
           return racket;
         }
         if (racket.type === "speakeasy") {
@@ -1286,13 +1388,18 @@ export function processEconomyTurn(
           : null;
         let inc = racketIncome(racket, incomeBonus, manager, state.crew, bossHere);
         if (isPlayer && dinnerActive(state)) inc = Math.floor(inc * DINNER_INCOME_MULT);
-        if (isLegitBusiness(racket.type)) {
-          moneyDelta += inc;
-        } else if (["gambling", "brothel", "loan_shark"].includes(racket.type)) {
-          dirtyDelta += inc;
-        } else {
-          dirtyDelta += Math.floor(inc * 0.7);
-          moneyDelta += Math.floor(inc * 0.3);
+        const take = racketTake(racket.type, inc);
+        moneyDelta += take.clean;
+        dirtyDelta += take.dirty;
+        if (isPlayer) {
+          racketLines.push({
+            territoryName: t.name,
+            label: RACKET_LABELS[racket.type],
+            manager: manager?.name ?? null,
+            clean: take.clean,
+            dirty: take.dirty,
+            frozen: false,
+          });
         }
         racketHeat += racket.heatGen;
         return racket;
@@ -1309,8 +1416,30 @@ export function processEconomyTurn(
     );
     updated = sell.territory;
     const thin = isPlayer && dinnerActive(state) ? DINNER_INCOME_MULT : 1;
-    moneyDelta += Math.floor(sell.revenue * thin);
-    dirtyDelta += Math.floor(sell.dirtyRevenue * thin);
+    const cleanLanded = Math.floor(sell.revenue * thin);
+    const dirtyLanded = Math.floor(sell.dirtyRevenue * thin);
+    moneyDelta += cleanLanded;
+    dirtyDelta += dirtyLanded;
+    if (isPlayer && sell.byRacket.length > 0) {
+      const sales = sell.byRacket.map((s) => ({
+        id: s.id,
+        clean: Math.floor(s.clean * thin),
+        dirty: Math.floor(s.dirty * thin),
+      }));
+      sales[sales.length - 1].clean += cleanLanded - sales.reduce((n, s) => n + s.clean, 0);
+      sales[sales.length - 1].dirty += dirtyLanded - sales.reduce((n, s) => n + s.dirty, 0);
+      for (const sale of sales) {
+        const bar = updated.rackets.find((r) => r.id === sale.id);
+        racketLines.push({
+          territoryName: t.name,
+          label: RACKET_LABELS.speakeasy,
+          manager: activeManagerName(state, family, bar?.managerId ?? null),
+          clean: sale.clean,
+          dirty: sale.dirty,
+          frozen: bar ? isRacketFrozen(bar, state.turn) : false,
+        });
+      }
+    }
     if (isPlayer) {
       ledger = mergeLedger(ledger, {
         sold: sell.sold,
@@ -1320,13 +1449,14 @@ export function processEconomyTurn(
 
     // Every held district kicks back a tenth of its base income in clean cash.
     // General territory money, not liquor: it stays out of the crate ledger.
-    moneyDelta += Math.floor(t.baseIncome * (1 + incomeBonus) * 0.1);
-
-    if (t.strategicBonus?.type === "income") {
-      moneyDelta += Math.floor(t.strategicBonus.value * (1 + incomeBonus));
-    }
-
-    moneyDelta += Math.floor(t.baseIncome * (1 + incomeBonus) * 0.15);
+    const tenth = Math.floor(t.baseIncome * (1 + incomeBonus) * 0.1);
+    const strategic =
+      t.strategicBonus?.type === "income"
+        ? Math.floor(t.strategicBonus.value * (1 + incomeBonus))
+        : 0;
+    const slice = Math.floor(t.baseIncome * (1 + incomeBonus) * 0.15);
+    moneyDelta += tenth + strategic + slice;
+    blockTake += tenth + strategic + slice;
 
     if (isPlayer) {
       const unguarded = isUnguarded(updated, activeIds);
@@ -1335,6 +1465,7 @@ export function processEconomyTurn(
       ledger = mergeLedger(ledger, { heat: sh });
       const idle = idleStorageCost(updated, state.turn, lookup);
       moneyDelta -= idle;
+      idleStorage += idle;
       if (idle > 0) ledger = mergeLedger(ledger, { cashOut: idle });
     }
 
@@ -1354,6 +1485,8 @@ export function processEconomyTurn(
     );
     moneyDelta += wash.moneyDelta;
     dirtyDelta += wash.dirtyDelta;
+    laundryClean += wash.moneyDelta;
+    laundryDirty += wash.dirtyDelta;
     heatDelta += wash.heatDelta;
     logs.push(...wash.logs);
     audits.push(...wash.audits);
@@ -1406,6 +1539,17 @@ export function processEconomyTurn(
     audits,
     racketUpdates,
     ledger,
+    books: isPlayer
+      ? {
+          rackets: racketLines,
+          blocks: blockTake,
+          dumpCash: dumpedCash,
+          idleStorage,
+          laundryClean,
+          laundryDirty,
+          upkeep,
+        }
+      : null,
   };
 }
 
@@ -1423,6 +1567,7 @@ export function processAllEconomy(
   rivalTreasury: Partial<Record<FamilyName, number>>;
   audits: LaunderAudit[];
   ledger: LiquorLedger;
+  books: PlayerWeekParts | null;
 } {
   let territories = state.territories;
   let moneyDelta = 0;
@@ -1433,6 +1578,7 @@ export function processAllEconomy(
   const logs: TurnLogEntry[] = [];
   const audits: LaunderAudit[] = [];
   let playerNet = 0;
+  let playerBooks: PlayerWeekParts | null = null;
   const rivalTreasury: Partial<Record<FamilyName, number>> = {
     ...(state.rivalTreasury ?? {}),
   };
@@ -1452,6 +1598,7 @@ export function processAllEconomy(
       moneyDelta += partial.moneyDelta;
       dirtyDelta += partial.dirtyDelta;
       playerNet = partial.netIncome;
+      playerBooks = partial.books;
       audits.push(...partial.audits);
       ledger = mergeLedger(ledger, partial.ledger);
     } else {
@@ -1510,6 +1657,7 @@ export function processAllEconomy(
     rivalTreasury,
     audits,
     ledger,
+    books: playerBooks,
   };
 }
 

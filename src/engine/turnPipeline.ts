@@ -16,7 +16,7 @@ import {
   tipOffChance,
 } from "./hitOps";
 import { runAllAiTurns } from "./rivalAI";
-import { findDeliveryPath, processDeliveries, processAllEconomy, isLegitBusiness, pruneLaunderPlan, tickLegitCover } from "./economy";
+import { findDeliveryPath, processDeliveries, processAllEconomy, isLegitBusiness, pruneLaunderPlan, tickLegitCover, buildWeekBooks, emptyPlayerWeekParts } from "./economy";
 import { tickSafehouses } from "./safehouse";
 import {
   emptyLiquorLedger,
@@ -345,7 +345,11 @@ export function endTurn(state: GameState, rng?: Rng): GameState {
   }
 
   // Standing orders roll after the one-off runs: tolls, hot stops, the road, the landing.
+  const moneyBeforeSupply = current.money;
+  const dirtyBeforeSupply = current.dirtyMoney;
   const supply = processSupplyRoutes(current, random);
+  const supplyClean = supply.state.money - moneyBeforeSupply;
+  const supplyDirty = supply.state.dirtyMoney - dirtyBeforeSupply;
   current = supply.state;
   turnLedger = mergeLedger(turnLedger, supply.ledger);
   current = applyHeatToState(current, supply.heatDelta, "supply routes");
@@ -353,6 +357,7 @@ export function endTurn(state: GameState, rng?: Rng): GameState {
 
   // Truces run out, jobs owed come due, and the odd hothead tears up paper.
   const tableDeals = tickDeals(current, random);
+  const weekCuts = tableDeals.cuts;
   current = tableDeals.state;
   logs.push(...tableDeals.logs);
 
@@ -425,11 +430,22 @@ export function endTurn(state: GameState, rng?: Rng): GameState {
       family: current.playerFamily ?? undefined,
     });
   }
+  const weekParts = economy.books ?? emptyPlayerWeekParts();
   current = {
     ...current,
     territories: economy.territories,
     money: current.money + scaleIncome(economy.moneyDelta),
     dirtyMoney: current.dirtyMoney + scaleIncome(economy.dirtyDelta),
+    weekBooks: buildWeekBooks({
+      turn: current.turn,
+      parts: weekParts,
+      economyClean: economy.moneyDelta,
+      economyDirty: economy.dirtyDelta,
+      headless,
+      roadClean: supplyClean,
+      roadDirty: shipments.dirtyDelta + deliveries.dirtyDelta + supplyDirty,
+      cuts: weekCuts,
+    }),
     lastNetIncome: scaleIncome(economy.lastNetIncome),
     liquorStock: economy.liquorStock,
     rivalTreasury: economy.rivalTreasury,

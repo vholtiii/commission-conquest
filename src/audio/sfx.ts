@@ -6,8 +6,8 @@
  *
  * Every cue is built from the same recipe a recorded impact has: a bright
  * millisecond transient, a fast-darkening body, a low-end thump, mild
- * saturation for punch, and a wet send so it lands in a space. Shots are
- * randomised in pitch, level and timing so bursts don't sound like a machine.
+ * saturation for punch, and a wet send so it lands in a space. A burst is one
+ * gun cycling: the same report, a bolt tick, and only a little drift.
  */
 
 type Space = "street" | "room" | "dry";
@@ -243,33 +243,52 @@ function voice(r: Rig, space: Space, wet: number, level = 1): GainNode {
 // Guns
 
 function shot(r: Rig, at: number, level = 1, space: Space = "street"): void {
-  const p = 0.92 + Math.random() * 0.16;
-  const out = voice(r, space, space === "room" ? 0.5 : 0.38, 0.9);
-  const sat = drive(r, 3);
+  // One gun. A few percent of drift, not a new pitch every trigger pull.
+  const p = 0.97 + Math.random() * 0.06;
+  const out = voice(r, space, space === "room" ? 0.45 : 0.22, 0.95);
+  const sat = drive(r, 2.6);
   sat.connect(out);
 
-  // Crack: the supersonic snap. A few milliseconds of bright broadband.
-  chain(noise(r, at, 0.008), filter(r, "highpass", 2400 * p, 0.6), env(r, at, 0, 1.4 * level, 0.006), sat);
+  // Bolt, just ahead of the report.
+  const tickAt = Math.max(r.audio.currentTime, at - 0.011);
+  chain(
+    noise(r, tickAt, 0.004),
+    filter(r, "bandpass", 2800 * p, 4),
+    env(r, tickAt, 0, 0.12 * level, 0.008),
+    out,
+  );
 
-  // Blast: muzzle gases, darkening fast as the pressure wave passes.
-  const blast = filter(r, "lowpass", 5600 * p, 0.8);
-  blast.frequency.exponentialRampToValueAtTime(320, at + 0.09);
-  chain(noise(r, at, 0.13), blast, env(r, at, 0.001, 1.0 * level, 0.11), sat);
+  // Crack: a few milliseconds of bright noise, gone almost at once.
+  chain(
+    noise(r, at, 0.005),
+    filter(r, "highpass", 4500 * p, 0.7),
+    env(r, at, 0, 1.6 * level, 0.004),
+    sat,
+  );
 
-  // Thump: the low end you feel in the chest.
-  const thump = tone(r, "sine", 175 * p, at, at + 0.2);
-  thump.frequency.exponentialRampToValueAtTime(44, at + 0.13);
-  chain(thump, env(r, at, 0.003, 1.1 * level, 0.16), sat);
+  // Muzzle blast: about 40 ms. The band starts near 1 kHz and falls. Not a tail.
+  const blast = filter(r, "bandpass", 1100 * p, 0.7);
+  blast.frequency.setValueAtTime(1100 * p, at);
+  blast.frequency.exponentialRampToValueAtTime(280, at + 0.04);
+  chain(noise(r, at, 0.05), blast, env(r, at, 0, 1.15 * level, 0.04), sat);
 
-  // Slapback off the facades across the street.
+  // Low end of the pressure wave. Noise, not a note.
+  chain(
+    noise(r, at, 0.018, true),
+    filter(r, "lowpass", 140, 0.7),
+    env(r, at, 0, 0.85 * level, 0.014),
+    sat,
+  );
+
+  // Slapback off the facades. Quieter than the dry crack.
   if (space === "street") {
     const echoes: [delay: number, level: number, cutoff: number][] = [
-      [0.115, 0.22, 1400],
-      [0.26, 0.11, 700],
+      [0.115, 0.16, 1400],
+      [0.26, 0.08, 700],
     ];
     for (const [delay, g, cutoff] of echoes) {
       const d = r.audio.createDelay(0.5);
-      d.delayTime.value = delay + Math.random() * 0.02;
+      d.delayTime.value = delay + Math.random() * 0.008;
       chain(out, d, filter(r, "lowpass", cutoff), gain(r, g), r.bus);
     }
   }
@@ -286,39 +305,41 @@ function casing(r: Rig, at: number): void {
 export function gunshot(): void {
   const r = ready();
   if (!r) return;
-  shot(r, r.audio.currentTime + 0.01);
+  shot(r, r.audio.currentTime + 0.02);
 }
 
-/** Automatic fire scheduled on the audio clock, with human jitter and level drift. */
+/** Automatic fire on the audio clock. Spacing stays a Thompson's rate; level barely drifts. */
 export function burst(count: number, interval = 0.09): void {
   const r = ready();
   if (!r) return;
-  const now = r.audio.currentTime + 0.01;
+  const now = r.audio.currentTime + 0.02;
   for (let i = 0; i < count; i++) {
-    const at = now + i * interval + (i ? (Math.random() - 0.5) * 0.012 : 0);
-    shot(r, at, 0.85 + Math.random() * 0.15);
+    const at = now + i * interval + (i ? (Math.random() - 0.5) * 0.008 : 0);
+    shot(r, at, 0.92 + Math.random() * 0.08);
     if (i > 0) casing(r, at + 0.06 + Math.random() * 0.08);
   }
 }
 
-/** A revolver across a table: flat, hard, all room slap and no tail. */
+/** A revolver across a table: one hard pop in a small room. No sweeping tone. */
 export function mutedShot(): void {
   const r = ready();
   if (!r) return;
-  const at = r.audio.currentTime + 0.01;
-  const out = voice(r, "room", 0.55, 1.2);
-  const sat = drive(r, 4);
+  const at = r.audio.currentTime + 0.02;
+  const p = 0.98 + Math.random() * 0.04;
+  const out = voice(r, "room", 0.62, 1.15);
+  const sat = drive(r, 3.2);
   sat.connect(out);
 
-  chain(noise(r, at, 0.006), filter(r, "highpass", 1600, 0.6), env(r, at, 0, 0.9, 0.005), sat);
+  // Crack, shorter and closer than the street.
+  chain(noise(r, at, 0.004), filter(r, "highpass", 3200 * p, 0.8), env(r, at, 0, 1.35, 0.003), sat);
 
-  const body = filter(r, "lowpass", 1800);
-  body.frequency.exponentialRampToValueAtTime(220, at + 0.07);
-  chain(noise(r, at, 0.09), body, env(r, at, 0.001, 0.8, 0.08), sat);
+  // Boxy muzzle. The band sits lower and dies inside the room.
+  const blast = filter(r, "bandpass", 700 * p, 1.1);
+  blast.frequency.setValueAtTime(700 * p, at);
+  blast.frequency.exponentialRampToValueAtTime(220, at + 0.028);
+  chain(noise(r, at, 0.035), blast, env(r, at, 0, 1.05, 0.028), sat);
 
-  const pop = tone(r, "sine", 140, at, at + 0.12);
-  pop.frequency.exponentialRampToValueAtTime(50, at + 0.09);
-  chain(pop, env(r, at, 0.002, 0.9, 0.1), sat);
+  chain(noise(r, at, 0.012, true), filter(r, "lowpass", 180, 0.6), env(r, at, 0, 0.7, 0.012), sat);
 
   // Hammer back down.
   const click = at + 0.16;

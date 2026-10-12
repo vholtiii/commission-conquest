@@ -333,6 +333,7 @@ export function buildInitialState(
     liquorStock: 20,
     pendingShipments: [],
     liquorLedger: null,
+    weekBooks: null,
     launderPlan: {},
     launderNudgeShown: false,
     lawyerReadyTurn: 0,

@@ -17,6 +17,7 @@ import type {
   GameState,
   HitResult,
   TurnLogEntry,
+  WeekBookCut,
 } from "@/types/game";
 import { ALL_FAMILY_NAMES, getFamilyDef } from "@/data/families";
 import type { Rng } from "./rng";
@@ -234,6 +235,18 @@ export function breakDeal(
   };
 }
 
+/**
+ * The same split `settleCash` is about to make, signed the way the books read it:
+ * money leaving the player is negative. A cut received lands entirely in clean cash.
+ */
+function cutSplit(state: GameState, cash: number): { clean: number; dirty: number } {
+  if (cash > 0) {
+    const dirty = Math.min(state.dirtyMoney, cash);
+    return { clean: -(cash - dirty), dirty: -dirty };
+  }
+  return { clean: -cash, dirty: 0 };
+}
+
 /** Cash moves between the player and a rival. Positive = the player pays, dirty money first. */
 function settleCash(state: GameState, other: FamilyName, cash: number): GameState {
   if (cash === 0) return state;
@@ -399,10 +412,14 @@ export function contractedTargets(state: DealState, family: FamilyName): FamilyN
  * Truces run out, deadlines pass, and once in a while a hot-headed family
  * decides the paper isn't worth keeping.
  */
-export function tickDeals(state: GameState, rng: Rng): { state: GameState; logs: TurnLogEntry[] } {
+export function tickDeals(
+  state: GameState,
+  rng: Rng,
+): { state: GameState; logs: TurnLogEntry[]; cuts: WeekBookCut[] } {
   const logs: TurnLogEntry[] = [];
+  const cuts: WeekBookCut[] = [];
   const player = state.playerFamily;
-  if (!player) return { state, logs };
+  if (!player) return { state, logs, cuts };
   let next = state;
 
   for (const deal of state.deals ?? []) {
@@ -510,10 +527,14 @@ export function tickDeals(state: GameState, rng: Rng): { state: GameState; logs:
           });
           continue;
         }
+        cuts.push({ family: other, ...cutSplit(next, amount) });
         next = settleCash(next, other, amount);
       } else {
         const paid = Math.min(amount, Math.max(0, next.rivalTreasury?.[other] ?? 0));
-        next = settleCash(next, other, -paid);
+        if (paid > 0) {
+          cuts.push({ family: other, ...cutSplit(next, -paid) });
+          next = settleCash(next, other, -paid);
+        }
       }
       continue;
     }
@@ -534,5 +555,5 @@ export function tickDeals(state: GameState, rng: Rng): { state: GameState; logs:
   const trimmed = (next.deals ?? []).filter(
     (d) => d.status === "active" || (d.untilTurn ?? next.turn) > next.turn - 12,
   );
-  return { state: { ...next, deals: trimmed }, logs };
+  return { state: { ...next, deals: trimmed }, logs, cuts };
 }

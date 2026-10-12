@@ -2280,6 +2280,7 @@ export const useGameStore = create<GameStore>()(
             liquorLedger: loaded.liquorLedger
               ? { ...emptyLiquorLedger(), ...loaded.liquorLedger }
               : null,
+            weekBooks: loaded.weekBooks ?? null,
             buildFx:
               loaded.buildFx && loaded.buildFx.kind && loaded.buildFx.type
                 ? loaded.buildFx
@@ -2473,6 +2474,7 @@ export const useGameStore = create<GameStore>()(
           liquorLedger: p.liquorLedger
             ? { ...emptyLiquorLedger(), ...p.liquorLedger }
             : current.liquorLedger ?? null,
+          weekBooks: p.weekBooks ?? current.weekBooks ?? null,
           buildFx:
             p.buildFx && p.buildFx.kind && p.buildFx.type
               ? p.buildFx
