@@ -13,8 +13,11 @@ import {
 } from "@/types/game";
 import { useGameStore } from "@/engine/store";
 import {
+  extraHaul,
+  roadCut,
   routeOptions,
   STRATEGY_ORDER,
+  truckingLevel,
   strategyBlurb,
   strategyChipLabel,
   strategyUnavailableReason,
@@ -221,6 +224,7 @@ export default function SupplyRoutesSection() {
   const effEscort = free.some((c) => c.id === escortId && c.id !== effDriver) ? escortId : "";
 
   const state = useGameStore.getState();
+  const yardCut = playerFamily ? roadCut(truckingLevel(state, playerFamily)) : 0;
   const options = useMemo(() => {
     if (!playerFamily || !effSource || !effDest) return [];
     return routeOptions(state, effSource, effDest, playerFamily, effDriver || undefined, effEscort || undefined);
@@ -557,7 +561,7 @@ export default function SupplyRoutesSection() {
                 <Tip
                   content={
                     chosen && effStrategy
-                      ? `Weekly run: ${strategyChipLabel(effStrategy, chosen.dodges)}, ${chosen.path.length - 1} hops, ~${riskText(chosen)} chance of hijack each delivery.`
+                      ? `Weekly run: ${strategyChipLabel(effStrategy, chosen.dodges)}, ${chosen.path.length - 1} hops, ~${riskText(chosen)} chance of hijack each delivery.${yardCut > 0 ? ` Trucking co. takes ${Math.round(yardCut * 100)}% off that figure.` : ""}`
                       : "Pick a strategy chip to see the road summary."
                   }
                 >
@@ -789,6 +793,7 @@ function RouteRow({
   onGoTo: () => void;
 }) {
   const state = useGameStore.getState();
+  const haul = extraHaul(truckingLevel(state, route.family));
   const families = route.path
     .map((tid) => state.territories.find((t) => t.id === tid)?.owner)
     .filter((f): f is NonNullable<typeof f> => !!f && f !== route.family);
@@ -846,7 +851,9 @@ function RouteRow({
         </p>
       )}
       <p className="text-muted-foreground">
-        {route.cratesPerTurn} crates/week · {crewName(route.driverId)}
+        {route.cratesPerTurn}
+        {haul > 0 ? `+${haul}` : ""} crates/week · {crewName(route.driverId)}
+        {route.coverDriverId ? ` · ${crewName(route.coverDriverId)} covering` : ""}
         {route.escortId ? ` + ${crewName(route.escortId)}` : ""} · {route.path.length - 1} hops
       </p>
       {route.last && (

@@ -73,6 +73,10 @@ export default function CrewRequestModal() {
     );
   }
 
+  if (req.kind === "cover") {
+    return <CoverAsk reqId={req.id} speaker={capo} man={candidate} pitch={req.pitch} volunteer={!!req.volunteer} routeId={req.routeId} />;
+  }
+
   const teaches = crewCurriculum(capo);
   const members = crewOf(crew, capo.id);
   const slots = crewSlots(capo);
@@ -157,6 +161,74 @@ export default function CrewRequestModal() {
             onClick={() => answer(req.id, "approve")}
           >
             Approve
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CoverAsk({
+  reqId,
+  speaker,
+  man,
+  pitch,
+  volunteer,
+  routeId,
+}: {
+  reqId: string;
+  speaker: CrewMember;
+  man: CrewMember;
+  pitch: string;
+  volunteer: boolean;
+  routeId?: string;
+}) {
+  const answer = useGameStore((s) => s.answerCrewRequest);
+  const territories = useGameStore((s) => s.territories);
+  const supplyRoutes = useGameStore((s) => s.supplyRoutes ?? []);
+  const route = supplyRoutes.find((r) => r.id === routeId);
+  const nameOf = (id: string) => territories.find((t) => t.id === id)?.name ?? "the block";
+  const road = route ? `${nameOf(route.sourceTerritoryId)} → ${nameOf(route.destTerritoryId)}` : "the route";
+  const associate = man.role === "associate";
+  const wheel = man.traits.includes("wheelman");
+  const note = associate
+    ? wheel
+      ? `He runs ${road} until the regular driver is back, and he'll remember you trusted him.`
+      : `He runs ${road} until the regular driver is back. He'll remember you trusted him. The road is a little hotter with an associate at the wheel.`
+    : `He'll take ${road}, and he'll hold it against you. A route is beneath a soldier.`;
+  const title = volunteer ? `${man.name} wants the truck` : `${speaker.name} needs a driver`;
+
+  return (
+    <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/75 backdrop-blur-sm">
+      <div className="panel-surface-elevated w-[420px] rounded-lg border p-5">
+        <div className="flex items-center gap-3">
+          <PortraitAvatar
+            seed={speaker.portraitSeed}
+            size={44}
+            ringColor={FAMILY_HEX[speaker.family]}
+            role={speaker.role}
+            family={speaker.family}
+            alt={speaker.name}
+          />
+          <div className="min-w-0">
+            <h2 className="font-display text-lg text-steel-light">{title}</h2>
+            <p className="text-[11px] text-muted-foreground">
+              {titleCase(speaker.role)}
+              {speaker.id !== man.id ? ` · asking for ${man.name}` : ` · drive ${man.skills.driving}`}
+            </p>
+          </div>
+        </div>
+        <p className="mt-3 text-sm italic text-foreground/85">&ldquo;{pitch}&rdquo;</p>
+        <p className="mt-2 text-[11px] text-muted-foreground">{note}</p>
+        <div className="mt-4 flex gap-2">
+          <Button variant="ghost" className="flex-1" onClick={() => answer(reqId, "later")}>
+            Later
+          </Button>
+          <Button variant="secondary" className="flex-1" onClick={() => answer(reqId, "reject")}>
+            No
+          </Button>
+          <Button className="flex-1" onClick={() => answer(reqId, "approve")}>
+            Send him
           </Button>
         </div>
       </div>

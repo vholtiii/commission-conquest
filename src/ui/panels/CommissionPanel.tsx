@@ -50,6 +50,7 @@ import {
   taxBlock,
 } from "@/engine/commission";
 import PortraitAvatar from "@/ui/PortraitAvatar";
+import CommissionErrandCard from "./CommissionErrandCard";
 
 const DIPLOMACY_ACTIONS: { id: DiplomacyAction; label: string; war?: boolean }[] = [
   { id: "sitdown", label: "Sit-down" },
@@ -101,6 +102,7 @@ export default function CommissionPanel() {
 
   return (
     <PanelShell title="The Commission" subtitle="Standing among the families">
+      <CommissionErrandCard />
       <Standings />
       <CommissionHealthBlock />
       <CommissionAskCard />
@@ -405,9 +407,12 @@ function Deals() {
       <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Deals</div>
       {live.map((d) => {
         const other = dealPartner({ playerFamily }, d);
+        const weekly = !!d.terms.weekly;
         const left = d.untilTurn == null ? null : d.untilTurn - turn;
+        const shownLeft = left == null ? null : weekly ? Math.max(0, left - 1) : left;
         const theyOwe = !!d.obligor && d.obligor !== playerFamily;
         const forFavor = d.terms.calledIn ? " — for the favor you owed" : "";
+        const barName = territories.find((t) => t.id === d.terms.destTerritoryId)?.name ?? "their speakeasy";
         const detail =
           d.kind === "truce"
             ? "guns down both ways"
@@ -416,7 +421,9 @@ function Deals() {
                 ? `they hit ${d.terms.targetFamily} — you pay $${d.terms.cash} when it's done`
                 : `hit ${d.terms.targetFamily}${forFavor || ` — $${-d.terms.cash} on the job`}`
               : d.kind === "liquor"
-                ? `${d.terms.crates} crates to ${territories.find((t) => t.id === d.terms.destTerritoryId)?.name ?? "their speakeasy"}${forFavor || ` — $${-d.terms.cash} on delivery`}`
+                ? weekly
+                  ? `${d.terms.crates} crates a week to ${barName} — $${-d.terms.cash}/wk`
+                  : `${d.terms.crates} crates to ${barName}${forFavor || ` — $${-d.terms.cash} on delivery`}`
                 : d.kind === "cut"
                   ? `${Math.round((d.terms.share ?? 0) * 100)}% of ${territories.find((t) => t.id === d.terms.territoryId)?.name ?? "the block"} — $${weeklyCut({ territories }, d)}/wk ${theyOwe ? "to you" : "to them"}`
                   : "they'll call it in when they need something";
@@ -428,12 +435,20 @@ function Deals() {
                 {dealKindLabel(d.kind)} with {other}
               </span>
               <span className="text-muted-foreground">
-                {left == null ? "open" : left <= 1 ? "last week" : `${left} weeks left`}
+                {left == null
+                  ? "open"
+                  : weekly
+                    ? shownLeft! <= 0
+                      ? "last week"
+                      : `${shownLeft} weeks left`
+                    : left <= 1
+                      ? "last week"
+                      : `${left} weeks left`}
               </span>
             </div>
             <div className="text-[10px] text-muted-foreground">{detail}</div>
             <div className="mt-1 flex gap-2">
-              {d.kind === "liquor" && d.obligor === playerFamily && (
+              {d.kind === "liquor" && d.obligor === playerFamily && !d.terms.weekly && (
                 <button
                   type="button"
                   className="text-[10px] text-emerald-400 hover:underline"

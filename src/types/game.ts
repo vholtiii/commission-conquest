@@ -110,6 +110,7 @@ export type PanelId =
   | "racket_build"
   | "capture"
   | "laundering"
+  | "lawyer"
   | "warehouse"
   | "event"
   | "cases"
@@ -165,6 +166,8 @@ export interface CrewMember {
   capoId?: string;
   /** Turn he joined his current crew (mentoring runs at half rate while settling). */
   crewSinceTurn?: number;
+  /** Job waiting for him when a hit or a casing ends. */
+  returnTo?: CrewAssignment;
   /** Where he stood at the end of the previous turn (car bombs need him to move). */
   lastSiteId?: string;
   /**
@@ -179,6 +182,13 @@ export interface CrewMember {
    * for nothing before he gives up and goes to a rival.
    */
   freeUntilTurn?: number;
+  /**
+   * Bank toward the next point from the job he is on. Switching jobs clears it.
+   * Garrison pays muscle, a racket pays smarts, a truck that arrives pays driving.
+   */
+  practice?: { kind: "garrison" | "racket" | "driving"; progress: number };
+  /** A hitman matched or passed in muscle. Clears when he rides a hit that resolves. */
+  needsWork?: boolean;
 }
 
 /** A capo asking the boss to bring a man into his crew. */
@@ -190,8 +200,16 @@ export interface CrewRequest {
   /** The capo's line. */
   pitch: string;
   status: "pending" | "approved" | "rejected" | "expired";
-  /** "walk" is a man asking to leave after one of his own was taken out. */
-  kind?: "walk";
+  /**
+   * "walk" is a man asking to leave after one of his own was taken out.
+   * "cover" is an idle man asking for a truck, or a wounded driver asking
+   * you to send one. `volunteer` means the idle man spoke for himself.
+   */
+  kind?: "walk" | "cover";
+  /** Standing route a cover ask is about. */
+  routeId?: string;
+  /** The idle man asked to drive. An associate who is trusted gains loyalty. */
+  volunteer?: boolean;
   /** Turns the boss said "later"; the ask expires after one deferral. */
   deferred?: number;
 }
@@ -210,6 +228,8 @@ export interface Racket {
   level: number;
   managerId: string | null;
   stock: number;
+  /** Crates inside `stock` that sat a week in a managed warehouse. Worth $5 more. */
+  proofed?: number;
   heatGen: number;
   upgradeCost: number;
   /**
@@ -240,6 +260,8 @@ export interface DeliveryRoute {
   destTerritoryId: string;
   path: string[];
   cargo: number;
+  /** How many of `cargo` were proofed when the truck was loaded. */
+  proofed?: number;
   status: "active" | "hijacked" | "seized" | "complete";
 }
 
@@ -412,7 +434,9 @@ export interface Operation {
    * than a plain hit, never starts a vendetta, and the shooter's family follows
    * it with a sit-down.
    */
-  intent?: "message" | "summons" | "commission_message";
+  intent?: "message" | "summons" | "commission_message" | "commission";
+  /** Set when this casing or hit belongs to a Commission manhunt. */
+  errandId?: string;
 }
 
 /** How long a planted car bomb waits for a boss to use his car. */
@@ -524,6 +548,10 @@ export interface SupplyRoute {
   path: string[];
   cratesPerTurn: number;
   driverId: string;
+  /** Idle man sent to drive while the named driver is down. */
+  coverDriverId?: string;
+  /** Last turn someone asked the boss for a cover. */
+  coverAskedTurn?: number;
   /** Optional soldier riding shotgun: lower hijack odds, exposed to the shooting. */
   escortId?: string;
   status: "negotiating" | "active" | "suspended";
@@ -533,6 +561,11 @@ export interface SupplyRoute {
   awaitingFamilies: FamilyName[];
   /** Whether to roll without a deal (hot) if the table fails. */
   runHot: boolean;
+  /**
+   * The truck is not on the road until this turn.
+   * -1: he left it, and he is still out. 0: buy it on the next supply pass.
+   */
+  truckReadyTurn?: number;
   last?: { turn: number; outcome: SupplyRunOutcome; text: string; stoppedBy?: FamilyName };
 }
 
@@ -582,10 +615,12 @@ export interface AgendaTerms {
   crewId?: string;
   /** Third family (alliance target). */
   targetFamily?: FamilyName;
-  /** Crates owed (liquor). */
+  /** Crates owed (liquor). On a standing sale, crates per week. */
   crates?: number;
   /** Speakeasy district the crates go to (liquor). */
   destTerritoryId?: string;
+  /** Standing liquor sale: `crates` every week for `weeks`, paid as each week ships. */
+  weekly?: boolean;
   /** The player owes them one. Called in later. */
   favor?: boolean;
   /** Share of a district's weekly take (racket), 0.1–0.5. */
@@ -613,6 +648,8 @@ export interface Deal {
   breachedBy?: FamilyName;
   /** Who has something to do (deliver crates, make the hit, owe the favor). */
   obligor?: FamilyName;
+  /** Crates already sent on a standing liquor sale. */
+  delivered?: number;
 }
 
 export type DealOutcome = "honored" | "breached" | "expired" | "called_in";
@@ -915,6 +952,29 @@ export interface CommissionRuling {
   messageSent?: FamilyName;
   /** Seats that voted with the ruling. */
   forRuling: FamilyName[];
+}
+
+/** A man the Commission wants found and killed. */
+export interface CommissionErrand {
+  id: string;
+  phase: "offered" | "hunting" | "rival";
+  kind: "family" | "stranger";
+  targetCrewId?: string;
+  targetName: string;
+  /** The mark's family. Absent when he is from out of town. */
+  markFamily?: FamilyName;
+  /** Who is carrying the job once it has been accepted. */
+  carrier?: FamilyName;
+  /** Lead first, hideout last. */
+  path: string[];
+  leadIndex: number;
+  detail: string;
+  /** Latest casing line. */
+  report?: string;
+  found: boolean;
+  /** Last week the job can still be finished, inclusive. */
+  untilTurn?: number;
+  openedTurn: number;
 }
 
 export interface CommissionCall {
@@ -1314,6 +1374,14 @@ export interface GameState {
   streetLawyerUntil: number;
   /** The one bail on the current retainer has been used. */
   streetLawyerBailUsed: boolean;
+  /** First turn house counsel's heat retainer lapses. 0 means he was never kept. */
+  counselUntil: number;
+  /** The week a name was quieted. Once a week. */
+  lawyerWantedTurn: number;
+  /** The jailed-until week of the sentence the boss's plea was spent on. 0 means none. */
+  lawyerBossPleaUntil: number;
+  /** The week a rush wash was bought. Once a week. */
+  lawyerWashTurn: number;
   /** Rival AI cash pools (player uses money/dirtyMoney). */
   rivalTreasury: Partial<Record<FamilyName, number>>;
   territories: Territory[];
@@ -1407,6 +1475,10 @@ export interface GameState {
   pendingSummons?: HitCinematic | null;
   /** A Commission call in progress. */
   commissionCall?: CommissionCall | null;
+  /** The open Commission manhunt, if the table has offered one. */
+  commissionErrand?: CommissionErrand | null;
+  /** First turn another manhunt may be offered. */
+  commissionErrandReady?: number;
   /** Rulings handed down, newest last. */
   commissionHistory: CommissionRuling[];
   /** A ruling waiting on the player's accept or refuse. */

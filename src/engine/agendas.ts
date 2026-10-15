@@ -27,6 +27,7 @@ import { familyHq } from "./crewLocation";
 import { familiesPressingSuddenDeath } from "./victory";
 import { hasConsigliere, hasPact } from "./diplomacy";
 import { activeDeals, atPeace, inTruce, makeDeal } from "./deals";
+import { hasManagedWarehouse, makeManagerLookup } from "./liquor";
 import { CRATE_STREET_VALUE, activeDeal, familiesOnPath } from "./passage";
 
 /** Counters the player gets before the other side leaves the table. */
@@ -48,6 +49,9 @@ export const TRUCE_MAX_WEEKS = 12;
 export const TRUCE_DEFAULT_WEEKS = 6;
 /** Weeks the rival gives the player to run a liquor order. */
 export const LIQUOR_WEEKS = 2;
+/** A standing sale the player can offer a dry bar. */
+export const LIQUOR_WEEKLY_CRATES = 4;
+export const LIQUOR_WEEKLY_WEEKS = 6;
 /** What they pay per crate over the street price. */
 export const LIQUOR_PREMIUM = 1.5;
 /** Weeks either side gets to make a contract hit. */
@@ -67,6 +71,7 @@ export const PLAYER_AGENDAS: SitdownAgenda[] = [
   "general",
   "truce",
   "passage",
+  "liquor",
   "territory",
   "racket",
   "release",
@@ -110,7 +115,7 @@ export function agendaBlurb(agenda: SitdownAgenda): string {
     case "alliance":
       return "Pay them to put a third family's man in the ground within a deadline. Cash on delivery.";
     case "liquor":
-      return "They buy crates for a speakeasy of theirs. You deliver.";
+      return "A standing order: 4 crates a week to a dry bar of theirs, for 6 weeks. You need a managed warehouse.";
     case "racket":
       return "Buy a share of one of their districts' weekly take for a stretch of weeks. Cash up front.";
     case "passage":
@@ -250,6 +255,19 @@ export function agendaAvailable(
         return { ok: false, reason: "You've seen nothing of theirs worth a cut." };
       }
       return { ok: true };
+    case "liquor": {
+      const lookup = makeManagerLookup(state.crew, player);
+      if (!turfOf(state, player).some((t) => hasManagedWarehouse(t, lookup, state.turn))) {
+        return { ok: false, reason: "You need a managed warehouse." };
+      }
+      if (drySpeakeasies(state, family).length === 0) {
+        return { ok: false, reason: "None of their bars are dry." };
+      }
+      if (activeDeals(state).some((d) => d.kind === "liquor" && d.b === family)) {
+        return { ok: false, reason: "You already have a liquor order with them." };
+      }
+      return { ok: true };
+    }
     case "passage": {
       if (turfOf(state, family).length === 0) return { ok: false, reason: "They hold no turf to cross." };
       const deal = activeDeal(state, family);
@@ -401,11 +419,15 @@ export function openingTerms(
       return { ...base, share, weeks, cash: cutPrice(state, t, share, weeks) };
     }
     case "liquor": {
-      const crates = seed.crates ?? 10;
+      const weekly = !!seed.weekly;
+      const crates = seed.crates ?? (weekly ? LIQUOR_WEEKLY_CRATES : 10);
+      const weeks = seed.weeks ?? (weekly ? LIQUOR_WEEKLY_WEEKS : LIQUOR_WEEKS);
       return {
         ...base,
         crates,
-        weeks: seed.weeks ?? LIQUOR_WEEKS,
+        weeks,
+        weekly,
+        destTerritoryId: seed.destTerritoryId,
         cash: -Math.round(crates * CRATE_STREET_VALUE * LIQUOR_PREMIUM),
       };
     }
@@ -601,8 +623,14 @@ export function agendaTermsText(
       break;
     }
     case "liquor":
-      bits.push(`${terms.crates ?? 0} crates to ${districtName(state, terms.destTerritoryId)} within ${terms.weeks ?? LIQUOR_WEEKS} weeks`);
-      bits.push(terms.calledIn ? "for the favor owed" : pay);
+      bits.push(
+        terms.weekly
+          ? `${terms.crates ?? LIQUOR_WEEKLY_CRATES} crates a week to ${districtName(state, terms.destTerritoryId)} for ${terms.weeks ?? LIQUOR_WEEKLY_WEEKS} weeks`
+          : `${terms.crates ?? 0} crates to ${districtName(state, terms.destTerritoryId)} within ${terms.weeks ?? LIQUOR_WEEKS} weeks`,
+      );
+      bits.push(
+        terms.calledIn ? "for the favor owed" : terms.weekly ? `they pay $${-terms.cash} a week` : pay,
+      );
       break;
     case "racket":
       bits.push(
@@ -903,9 +931,14 @@ export function applyAgendaTerms(
       break;
     }
     case "liquor": {
-      const weeks = terms.weeks ?? LIQUOR_WEEKS;
-      next = makeDeal(next, "liquor", family, { ...terms, weeks }, { obligor: player, weeks, rng }).state;
-      lines.push(`${terms.crates} crates to ${districtName(state, terms.destTerritoryId)} within ${weeks} weeks, $${-terms.cash} on delivery.`);
+      const weeks = terms.weeks ?? (terms.weekly ? LIQUOR_WEEKLY_WEEKS : LIQUOR_WEEKS);
+      const span = terms.weekly ? weeks + 1 : weeks;
+      next = makeDeal(next, "liquor", family, { ...terms, weeks }, { obligor: player, weeks: span, rng }).state;
+      lines.push(
+        terms.weekly
+          ? `${terms.crates} crates a week to ${districtName(state, terms.destTerritoryId)} for ${weeks} weeks, $${-terms.cash} a week.`
+          : `${terms.crates} crates to ${districtName(state, terms.destTerritoryId)} within ${weeks} weeks, $${-terms.cash} on delivery.`,
+      );
       break;
     }
     default:

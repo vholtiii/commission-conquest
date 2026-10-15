@@ -232,7 +232,8 @@ export function canLieLow(
     return { ok: false, reason: "He's on the road this week." };
   }
   const a = member.assignment.type;
-  if (a === "operation" || a === "surveillance" || a === "delivery") {
+  // A wounded driver can go in to heal. The route keeps his name.
+  if (a === "operation" || a === "surveillance" || (a === "delivery" && member.status !== "wounded")) {
     return { ok: false, reason: "He's tied up on a job." };
   }
   if (isLaidLow(member) && member.assignment.territoryId === territoryId) {
@@ -258,6 +259,7 @@ export function tickSafehouses(state: GameState): { state: GameState; logs: Turn
   const byId = new Map(state.territories.map((t) => [t.id, t]));
   const cooled: string[] = [];
   const clean: string[] = [];
+  const healed: string[] = [];
   const turnedOut: string[] = [];
   const toGarrison = new Map<string, string>();
 
@@ -274,11 +276,13 @@ export function tickSafehouses(state: GameState): { state: GameState; logs: Turn
       return { ...m, assignment: home ? { type: "garrison" as const, territoryId: home.id } : { type: "idle" as const } };
     }
     const wanted = Math.max(0, m.wanted - level - SAFEHOUSE.wantedBonus);
+    const onHisFeet = m.status === "wounded";
     if (m.family === player) {
       if (wanted < m.wanted) cooled.push(m.name);
       if (wanted === 0 && m.wanted > 0) clean.push(m.name);
+      if (onHisFeet) healed.push(m.name);
     }
-    return { ...m, wanted };
+    return onHisFeet ? { ...m, wanted, status: "active" as const } : { ...m, wanted };
   });
 
   // Rival housekeeping.
@@ -332,6 +336,15 @@ export function tickSafehouses(state: GameState): { state: GameState; logs: Turn
         turn,
         category: "system",
         text: `${clean.join(", ")} ${clean.length === 1 ? "is" : "are"} off the blotter. Safe to come out.`,
+        family: player,
+      });
+    }
+    if (healed.length > 0) {
+      logs.push({
+        id: `log_safehouse_heal_${turn}`,
+        turn,
+        category: "system",
+        text: `${healed.join(", ")} ${healed.length === 1 ? "is" : "are"} back on ${healed.length === 1 ? "his" : "their"} feet.`,
         family: player,
       });
     }

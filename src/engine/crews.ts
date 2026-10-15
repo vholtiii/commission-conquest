@@ -31,6 +31,7 @@ import { applySkillPoints, randomMakingPoints } from "./makingPoints";
 import { walkToRival } from "./defection";
 import { resolveCrewTerritoryId, type LocationState } from "./crewLocation";
 import { BOSS_PRESENCE, bossPresenceDistrict } from "./bossPresence";
+import { practiceCleanCasing } from "./practice";
 
 /* ------------------------------------------------------------------ */
 /* Tuning                                                              */
@@ -112,7 +113,7 @@ export function freeCrewOf(crew: CrewMember[], leaderId: string): CrewMember[] {
   return crewOf(crew, leaderId).filter((c) => !isHeldOff(c));
 }
 
-/** Leaders already on a job whose free men still have no seat. */
+/** A capo already on a job whose free men still have no seat. */
 export function unseatedCrew(
   crew: CrewMember[],
   seatedIds: string[],
@@ -121,7 +122,7 @@ export function unseatedCrew(
   const out: { leader: CrewMember; men: CrewMember[] }[] = [];
   for (const id of seatedIds) {
     const leader = crew.find((c) => c.id === id);
-    if (!leader || leader.status !== "active" || !canLeadCrew(leader)) continue;
+    if (!leader || leader.status !== "active" || leader.role !== "capo") continue;
     const men = freeCrewOf(crew, leader.id).filter((m) => !seated.has(m.id));
     if (men.length > 0) out.push({ leader, men });
   }
@@ -435,13 +436,9 @@ export function casingSkills(lookout: CrewMember): CrewSkills {
   };
 }
 
-/** A clean casing teaches a freelance soldier something. */
+/** A clean casing teaches the lookout, made or not. Spotted work does not call this. */
 export function learnFromCleanCasing(crew: CrewMember[], lookoutId: string | undefined): CrewMember[] {
-  if (!lookoutId) return crew;
-  return crew.map((c) => {
-    if (c.id !== lookoutId || !hasStreetEdge(c) || c.skills.stealth >= 100) return c;
-    return { ...c, skills: { ...c.skills, stealth: c.skills.stealth + 1 } };
-  });
+  return practiceCleanCasing(crew, lookoutId);
 }
 
 /* ------------------------------------------------------------------ */
@@ -533,6 +530,22 @@ export function generateCrewRequests(
     if (r.status !== "pending") return r;
     // Answered nothing for a full turn after a deferral: he stops asking.
     if ((r.deferred ?? 0) >= 1 && r.turn + 1 < turn) return { ...r, status: "expired" as const };
+    if (r.kind === "cover") {
+      const speaker = state.crew.find((c) => c.id === r.capoId);
+      const cover = state.crew.find((c) => c.id === r.candidateId);
+      const route = (state.supplyRoutes ?? []).find((x) => x.id === r.routeId);
+      if (
+        !speaker ||
+        speaker.status === "dead" ||
+        !cover ||
+        cover.status !== "active" ||
+        cover.assignment.type !== "idle" ||
+        !route
+      ) {
+        return { ...r, status: "expired" as const };
+      }
+      return r;
+    }
     // The man he asked for has since joined another crew: the ask is moot.
     const candidate = state.crew.find((c) => c.id === r.candidateId);
     if (candidate?.capoId && candidate.capoId !== r.capoId) return { ...r, status: "expired" as const };

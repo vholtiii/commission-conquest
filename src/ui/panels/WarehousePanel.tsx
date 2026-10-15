@@ -395,10 +395,18 @@ export default function WarehousePanel() {
                 form.destId && otherManaged.some((d) => d.id === form.destId)
                   ? form.destId
                   : otherManaged[0]?.id ?? "";
+              const driversHere = crew.filter(
+                (c) =>
+                  c.family === playerFamily &&
+                  c.status === "active" &&
+                  c.role !== "boss" &&
+                  (c.assignment.type === "idle" ||
+                    (c.assignment.type === "garrison" && c.assignment.territoryId === t.id)),
+              );
               const driverId =
-                form.driverId && idleDrivers.some((c) => c.id === form.driverId)
+                form.driverId && driversHere.some((c) => c.id === form.driverId)
                   ? form.driverId
-                  : idleDrivers[0]?.id ?? "";
+                  : driversHere[0]?.id ?? "";
               const maxSend = Math.max(1, storage.stored);
               const sendCrates = Math.min(
                 Math.max(1, form.crates || 1),
@@ -604,12 +612,13 @@ export default function WarehousePanel() {
                           }
                           className="min-w-0 flex-1 rounded-md border border-panel-border bg-panel/60 px-2 py-1 text-xs"
                         >
-                          {idleDrivers.length === 0 && (
-                            <option value="">No idle crew</option>
+                          {driversHere.length === 0 && (
+                            <option value="">No driver</option>
                           )}
-                          {idleDrivers.map((c) => (
+                          {driversHere.map((c) => (
                             <option key={c.id} value={c.id}>
-                              {c.name} (drive {c.skills.driving})
+                              {c.name} (drive {c.skills.driving}
+                              {c.assignment.type === "garrison" ? ", posted" : ""})
                             </option>
                           ))}
                         </select>

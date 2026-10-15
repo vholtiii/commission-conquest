@@ -1,7 +1,7 @@
 import type { BribeStatus, CrewMember, GameState, HeatState, TurnLogEntry } from "@/types/game";
 import { getFamilyDef } from "@/data/families";
 import { jailInCrew } from "./jail";
-import { isLegitBusiness, isRacketFrozen, legitCoverWantedDrop, STREET_LAWYER_HEAT_DECAY } from "./economy";
+import { isLegitBusiness, isRacketFrozen, legitCoverWantedDrop, STREET_LAWYER_HEAT_DECAY, COUNSEL_HEAT_DECAY } from "./economy";
 import { SAFEHOUSE, laidLowHouse } from "./safehouse";
 
 /** When the law starts picking men up at the end of the week. */
@@ -42,6 +42,7 @@ type ArrestState = Pick<
   | "ratLeakTurn"
   | "ratLeakWeeks"
   | "streetLawyerUntil"
+  | "counselUntil"
 >;
 
 /** A spared rat keeps talking for this many weeks, unless a harsher leak says otherwise. */
@@ -87,6 +88,13 @@ export function arrestRisk(state: ArrestState, m: CrewMember): ArrestRisk {
     reducers.push({
       label: "street lawyer",
       effect: `−${STREET_LAWYER_HEAT_DECAY} heat/wk`,
+    });
+  }
+
+  if ((state.counselUntil ?? 0) > state.turn) {
+    reducers.push({
+      label: "counsel",
+      effect: `−${COUNSEL_HEAT_DECAY} heat/wk`,
     });
   }
 
@@ -284,6 +292,10 @@ export function processHeatTurn(state: GameState): HeatTurnResult {
 
   if ((state.streetLawyerUntil ?? 0) > state.turn) {
     heat = decayHeat(heat, STREET_LAWYER_HEAT_DECAY);
+  }
+
+  if ((state.counselUntil ?? 0) > state.turn) {
+    heat = decayHeat(heat, COUNSEL_HEAT_DECAY);
   }
 
   if (state.playerFamily) {

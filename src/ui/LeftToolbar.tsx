@@ -9,6 +9,7 @@ import {
   Menu as MenuIcon,
   Map,
   Banknote,
+  Gavel,
   Wine,
 } from "lucide-react";
 import type { PanelId } from "@/types/game";
@@ -26,6 +27,7 @@ const ITEMS: ToolbarItem[] = [
   { id: "crew", label: "Crew", icon: Users },
   { id: "rackets", label: "Rackets", icon: Warehouse },
   { id: "laundering", label: "Launder", icon: Banknote },
+  { id: "lawyer", label: "Lawyer", icon: Gavel },
   { id: "warehouse", label: "Liquor", icon: Wine },
   { id: "operations", label: "Operations", icon: Crosshair },
   { id: "corruption", label: "Corruption", icon: HandCoins },
@@ -42,6 +44,7 @@ export default function LeftToolbar() {
   const launderPlan = useGameStore((s) => s.launderPlan ?? {});
   const planned = Object.values(launderPlan).reduce((a, b) => a + b, 0);
   const nudge = dirtyMoney >= 1000 && planned <= 0;
+  const errandOpen = useGameStore((s) => s.commissionErrand?.phase === "offered");
 
   return (
     <nav className="panel-surface scrollbar-thin flex h-full min-h-0 w-16 shrink-0 flex-col items-center gap-1 overflow-y-auto overscroll-contain border-r py-3">
@@ -64,6 +67,9 @@ export default function LeftToolbar() {
             <Icon className="h-4 w-4" />
             {item.label}
             {item.id === "laundering" && nudge && (
+              <span className="absolute right-1.5 top-1.5 h-2 w-2 animate-pulse rounded-full bg-amber-400" />
+            )}
+            {item.id === "commission" && errandOpen && (
               <span className="absolute right-1.5 top-1.5 h-2 w-2 animate-pulse rounded-full bg-amber-400" />
             )}
           </button>

@@ -10,6 +10,8 @@ import {
   CUT_MAX_WEEKS,
   CUT_MIN_SHARE,
   CUT_MIN_WEEKS,
+  LIQUOR_WEEKLY_CRATES,
+  LIQUOR_WEEKLY_WEEKS,
   PLAYER_AGENDAS,
   TRUCE_DEFAULT_WEEKS,
   TRUCE_MAX_WEEKS,
@@ -25,6 +27,7 @@ import {
   cutOn,
   districtPrice,
   districtTake,
+  drySpeakeasies,
   heldBy,
   openingTerms,
   playerOpening,
@@ -66,6 +69,7 @@ export default function AgendaPicker({
   const held = agenda === "release" && player ? heldBy(state, target, player) : [];
   const marks = agenda === "alliance" ? contractTargets(state, target) : [];
   const blocks = agenda === "racket" ? cutDistricts(state, target).filter((t) => !cutOn(state, t.id)) : [];
+  const dry = agenda === "liquor" ? drySpeakeasies(state, target) : [];
   const seed: Partial<AgendaTerms> | undefined =
     agenda === "territory"
       ? { territoryId: subject || districts[0]?.id }
@@ -75,7 +79,14 @@ export default function AgendaPicker({
           ? { targetFamily: (subject as FamilyName) || marks[0], obligor: target }
           : agenda === "racket"
             ? { territoryId: subject || blocks[0]?.id }
-            : undefined;
+            : agenda === "liquor"
+              ? {
+                  destTerritoryId: subject || dry[0]?.territory.id,
+                  weekly: true,
+                  crates: LIQUOR_WEEKLY_CRATES,
+                  weeks: LIQUOR_WEEKLY_WEEKS,
+                }
+              : undefined;
   const agendaTable = agenda !== "general" && agenda !== "passage";
   const routes = agenda === "passage" ? routesThroughFamily(state, target) : [];
   const route = routes.find((r) => r.id === subject);
@@ -89,7 +100,9 @@ export default function AgendaPicker({
         ? !!seed?.crewId
         : agenda === "alliance"
           ? !!seed?.targetFamily
-          : true;
+          : agenda === "liquor"
+            ? !!seed?.destTerritoryId
+            : true;
   const theirAsk = agendaTable && subjectOk ? openingTerms(state, target, agenda, seed) : null;
   const myOpening = opening ?? (agendaTable && subjectOk ? playerOpening(state, target, agenda, seed) : null);
   const pick: AgendaPick | undefined =
@@ -108,7 +121,9 @@ export default function AgendaPicker({
       ? [2, 12, ALLIANCE_WEEKS]
       : agenda === "racket"
         ? [CUT_MIN_WEEKS, CUT_MAX_WEEKS, CUT_DEFAULT_WEEKS]
-        : [TRUCE_MIN_WEEKS, TRUCE_MAX_WEEKS, TRUCE_DEFAULT_WEEKS];
+        : agenda === "liquor"
+          ? [4, 8, LIQUOR_WEEKLY_WEEKS]
+          : [TRUCE_MIN_WEEKS, TRUCE_MAX_WEEKS, TRUCE_DEFAULT_WEEKS];
 
   const choices = atTable ? PLAYER_AGENDAS.filter((a) => a !== "general") : PLAYER_AGENDAS;
 
@@ -226,6 +241,22 @@ export default function AgendaPicker({
           {blocks.map((t) => (
             <option key={t.id} value={t.id}>
               {t.name} · ${districtTake(t)}/wk
+            </option>
+          ))}
+        </select>
+      )}
+      {agenda === "liquor" && dry.length > 0 && (
+        <select
+          className="mt-1 w-full rounded border border-panel-border bg-panel/60 px-1 py-0.5 text-[10px]"
+          value={seed?.destTerritoryId ?? ""}
+          onChange={(e) => {
+            setSubject(e.target.value);
+            setOpening(null);
+          }}
+        >
+          {dry.map((d) => (
+            <option key={d.territory.id} value={d.territory.id}>
+              {d.territory.name} · {d.stock} crate{d.stock === 1 ? "" : "s"}
             </option>
           ))}
         </select>
@@ -391,7 +422,7 @@ export default function AgendaPicker({
               </span>
             </div>
           )}
-          {(agenda === "truce" || agenda === "alliance" || agenda === "racket") && (
+          {(agenda === "truce" || agenda === "alliance" || agenda === "racket" || agenda === "liquor") && (
             <div className="flex items-center justify-between">
               <span className="text-muted-foreground">{agenda === "alliance" ? "Deadline (weeks)" : "Weeks"}</span>
               <span className="flex items-center gap-1">

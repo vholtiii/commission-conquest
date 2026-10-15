@@ -33,6 +33,9 @@ import { applySuccession } from "./succession";
 import { territoryHops } from "./territoryHops";
 import { isDefunct, scatterFamily, settleRivalChair } from "./defection";
 import { declareMourning, handsDown } from "./mourning";
+import { pullForJob, releaseCrewHome } from "./jobReturn";
+import { noteErrandCasing, payCommissionKill } from "./commissionErrand";
+import { applyHitPractice } from "./practice";
 
 export { territoryHops };
 import {
@@ -562,8 +565,9 @@ function seatIds(seats: HitSeats): string[] {
 }
 
 /**
- * A boss, capo, or consigliere on the job brings his free crew. Empty single
- * seats fill first; anyone left rides as a shooter.
+ * A capo on the job brings his idle and garrisoned crew. Empty single
+ * seats fill first; anyone left rides as a shooter. The boss and the
+ * consigliere do not drag their men.
  */
 export function bringCrewOnHit(crew: CrewMember[], seats: HitSeats, approach: HitApproach): HitSeats {
   const spec = approachSpec(approach);
@@ -615,7 +619,8 @@ export function commitHitCrew(
   const ids = hitCrewIds(op);
   if (ids.length === 0) return state;
   const idSet = new Set(ids);
-  let crew = state.crew;
+  const staged = pullForJob(state, ids);
+  let crew = staged.crew;
   for (const id of ids) {
     crew = assignCrew(crew, id, {
       type: assignmentType,
@@ -623,14 +628,14 @@ export function commitHitCrew(
       territoryId: op.targetTerritoryId,
     });
   }
-  const territories = state.territories.map((t) => ({
+  const territories = staged.territories.map((t) => ({
     ...t,
     garrisonIds: t.garrisonIds.filter((id) => !idSet.has(id)),
     rackets: t.rackets.map((r) =>
       r.managerId && idSet.has(r.managerId) ? { ...r, managerId: null } : r,
     ),
   }));
-  return { ...state, crew, territories };
+  return { ...staged, crew, territories };
 }
 
 export function planHit(
@@ -762,6 +767,7 @@ export function resolveHit(
   const gRisk = getawayRisk(state, op, TRUTH);
   const tippedOff = !!op.tippedOff;
   const blind = !!op.blind;
+  const commissionHit = op.intent === "commission";
 
   // Blind: pick whoever is actually there (weighted)
   let workingOp = op;
@@ -810,6 +816,7 @@ export function resolveHit(
     !!plannedTarget &&
     !blind &&
     !bossBomb &&
+    !commissionHit &&
     isLaidLow(plannedTarget) &&
     !venueCasedBy(state, op.family, op.targetTerritoryId);
   const markMoved =
@@ -820,7 +827,7 @@ export function resolveHit(
       plannedTarget.status === "dead" ||
       plannedTarget.status === "jailed" ||
       plannedTarget.status === "held" ||
-      resolveCrewTerritoryId(state, plannedTarget.id) !== op.targetTerritoryId);
+      (!commissionHit && resolveCrewTerritoryId(state, plannedTarget.id) !== op.targetTerritoryId));
   const markAbsent = !emptyBlock && (markMoved || (tippedOff && rng.chance(0.35)));
 
   const copClues = copCluesFor(state, workingOp, TRUTH);
@@ -834,15 +841,18 @@ export function resolveHit(
 
   const target = workingOp.targetCrewId
     ? state.crew.find((c) => c.id === workingOp.targetCrewId)
-    : state.crew.find(
-        (c) => c.family === op.targetFamily && c.role === "boss" && c.status === "active",
-      );
+    : commissionHit
+      ? undefined
+      : state.crew.find(
+          (c) => c.family === op.targetFamily && c.role === "boss" && c.status === "active",
+        );
+  const commissionName = commissionHit ? state.commissionErrand?.targetName : undefined;
 
   const districtName =
     state.territories.find((t) => t.id === op.targetTerritoryId)?.name ?? "the district";
   const targetName = emptyBlock
     ? "nobody"
-    : (target?.name ?? `a ${op.targetFamily} soldier`);
+    : (commissionName ?? target?.name ?? `a ${op.targetFamily} soldier`);
 
   const casualties: string[] = [];
   const casualtyDetail: HitCasualtyDetail[] = [];
@@ -988,33 +998,26 @@ export function resolveHit(
       c.id === sid ? { ...c, hits: c.hits + 1 } : c,
     );
   }
+  const hitPractice = applyHitPractice(crew, op, outcome, state.turn, state.playerFamily);
+  crew = hitPractice.crew;
 
   // A message hit is a point made, not a war declared: half the standing lost.
   const isMessage = op.intent === "message";
-  let relations = setRelationDelta(
-    state.relations,
-    op.family,
-    op.targetFamily,
-    isMessage ? -12 : -25,
-  );
-  if (outcome === "clean_kill" || outcome === "messy_kill") {
-    relations = setRelationDelta(relations, op.family, op.targetFamily, isMessage ? -8 : -15);
+  let relations = state.relations;
+  if (!commissionHit && op.family !== op.targetFamily) {
+    relations = setRelationDelta(relations, op.family, op.targetFamily, isMessage ? -12 : -25);
+    if (outcome === "clean_kill" || outcome === "messy_kill") {
+      relations = setRelationDelta(relations, op.family, op.targetFamily, isMessage ? -8 : -15);
+    }
   }
 
   const operations = state.operations.map((o) =>
     o.id === op.id ? { ...o, resolved: true, pendingTurns: 0, resolvedTurn: state.turn } : o,
   );
 
-  // The job is done: everyone staged for it goes home. (Casualties keep their
-  // new status; only the stale operation assignment is cleared.)
+  // The job is done later, once `newState` exists: casualties keep their
+  // status, and anyone still on his feet walks back to the post he left.
   const staged = new Set(hitCrewIds(op));
-  crew = crew.map((c) =>
-    staged.has(c.id) &&
-    (c.assignment.type === "operation" || c.assignment.type === "surveillance") &&
-    (c.assignment.operationId === op.id || !c.assignment.operationId)
-      ? { ...c, assignment: { type: "idle" as const } }
-      : c,
-  );
 
   const door = getawayCover(state, op.family, workingOp.targetTerritoryId);
   const built = buildBeats(rng, approach, outcome, targetName, {
@@ -1119,11 +1122,12 @@ export function resolveHit(
       sources: ownHeat > 0 ? [...state.heat.sources, `hit:${op.id}`].slice(-20) : state.heat.sources,
     },
     vendettas:
-      isMessage || state.vendettas.includes(op.targetFamily)
+      isMessage || commissionHit || state.vendettas.includes(op.targetFamily)
         ? state.vendettas
         : [...state.vendettas, op.targetFamily],
     pendingHitResult: op.family === state.playerFamily ? result : state.pendingHitResult,
     hitFxTerritoryId: op.targetTerritoryId,
+    turnLog: [...state.turnLog, ...hitPractice.logs],
   };
 
   newState = recordIntel(newState, revealedIds, op.targetTerritoryId, "hit");
@@ -1240,7 +1244,8 @@ export function resolveHit(
     newState = noteMattressWindow(newState, op.targetFamily, op.family);
   }
 
-  return { state: newState, result: finalResult };
+  const paid = payCommissionKill(newState, op, finalResult.targetDead);
+  return { state: releaseCrewHome(paid, [...staged], op.id), result: finalResult };
 }
 
 function buildBeats(
@@ -1481,13 +1486,7 @@ function fizzleCarBomb(
   rng: Rng,
 ): GameState {
   const turn = state.turn;
-  let crew = state.crew.map((c) =>
-    hitCrewIds(op).includes(c.id) &&
-    (c.assignment.type === "operation" || c.assignment.type === "surveillance") &&
-    c.assignment.operationId === op.id
-      ? { ...c, assignment: { type: "idle" as const } }
-      : c,
-  );
+  let crew = state.crew;
 
   const planter = op.planterId ? crew.find((c) => c.id === op.planterId) : undefined;
   if (planter && planter.status === "active" && reason === "found") {
@@ -1514,9 +1513,9 @@ function fizzleCarBomb(
   const playerInvolved =
     op.family === state.playerFamily || op.targetFamily === state.playerFamily;
 
+  const home = releaseCrewHome({ ...state, crew }, hitCrewIds(op), op.id);
   return {
-    ...state,
-    crew,
+    ...home,
     intel,
     relations: setRelationDelta(state.relations, op.family, op.targetFamily, -10),
     heat: playerInvolved
@@ -1646,6 +1645,19 @@ export function resolvePendingOperations(
     (o) => !o.resolved && o.pendingTurns <= 1 && o.kind === "surveillance",
   );
   for (const op of pendingSurv) {
+    if (op.errandId) {
+      if (op.lookoutId) current = releaseCrewHome(current, [op.lookoutId], op.id);
+      const noted = noteErrandCasing(current, op);
+      current = noted.state;
+      if (noted.log) tipLogs.push(noted.log);
+      current = {
+        ...current,
+        operations: current.operations.map((o) =>
+          o.id === op.id ? { ...o, resolved: true, pendingTurns: 0, resolvedTurn: current.turn } : o,
+        ),
+      };
+      continue;
+    }
     if (isDefunct(current, op.targetFamily)) {
       const stopped = scatterFamily(current, op.targetFamily, rng);
       current = stopped.state;
@@ -1665,17 +1677,7 @@ export function resolvePendingOperations(
     const fallout = applyCasingFallout(current, op, casing);
     current = fallout.state;
 
-    // Free lookout assignment
-    if (op.lookoutId) {
-      current = {
-        ...current,
-        crew: current.crew.map((c) =>
-          c.id === op.lookoutId && c.assignment.operationId === op.id
-            ? { ...c, assignment: { type: "idle" as const } }
-            : c,
-        ),
-      };
-    }
+    if (op.lookoutId) current = releaseCrewHome(current, [op.lookoutId], op.id);
 
     const district =
       current.territories.find((t) => t.id === op.targetTerritoryId)?.name ?? "the district";
@@ -1817,7 +1819,7 @@ function applyCasingFallout(
   } else if (lookout && casing.roll.copTrouble === "arrested") {
     crew = jailInCrew(crew, lookout.id, turn).map((c) =>
       c.id === lookout.id
-        ? { ...c, wanted: lookout.wanted + 1, assignment: { type: "idle" as const } }
+        ? { ...c, wanted: lookout.wanted + 1 }
         : c,
     );
     consequences.push(`${lookoutName} was picked up loitering. He saw nothing.`);
@@ -1911,7 +1913,7 @@ function applyCasingFallout(
   if (rung === "grabbed" && lookout) {
     switch (casing.roll.grabbedFate) {
       case "killed":
-        setCrew(lookout.id, { status: "dead", assignment: { type: "idle" } });
+        setCrew(lookout.id, { status: "dead" });
         crew = funeralLoyaltyHit(crew, lookout.id);
         consequences.push(`${lookoutName} was found in the river.`);
         break;
@@ -1920,7 +1922,6 @@ function applyCasingFallout(
           status: "held",
           heldUntilTurn: turn + HELD_TURNS,
           heldBy: op.targetFamily,
-          assignment: { type: "idle" },
         });
         consequences.push(`${lookoutName} is being held by ${op.targetFamily}. ${HELD_TURNS} turns, if he's lucky.`);
         break;

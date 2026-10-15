@@ -243,6 +243,61 @@ export function ensureRacketSites<T extends { siteIndex?: number }>(rackets: T[]
   });
 }
 
+/**
+ * Districts whose blocks share a side on the city grid. The same nearest-center
+ * rule as `buildCityLayout`, so a border is two districts that actually touch.
+ * Water is nobody's block and does not bridge a gap. Every border runs both ways.
+ */
+export function districtsThatTouch(
+  territories: { id: string; x: number; y: number }[],
+): Map<string, string[]> {
+  const width = GRID_W * (BLOCK_SIZE + ROAD_GAP);
+  const depth = GRID_H * (BLOCK_SIZE + ROAD_GAP);
+  const centers = territories.map((t) => ({
+    id: t.id,
+    worldX: (t.x / 100) * width - width / 2,
+    worldZ: (t.y / 100) * depth - depth / 2,
+  }));
+  const owner: (string | null)[][] = Array.from({ length: GRID_H }, () =>
+    Array<string | null>(GRID_W).fill(null),
+  );
+  for (let gz = 0; gz < GRID_H; gz++) {
+    for (let gx = 0; gx < GRID_W; gx++) {
+      if (isWaterCell(gx, gz)) continue;
+      const worldX = gx * (BLOCK_SIZE + ROAD_GAP) - width / 2 + BLOCK_SIZE / 2;
+      const worldZ = gz * (BLOCK_SIZE + ROAD_GAP) - depth / 2 + BLOCK_SIZE / 2;
+      let best = Infinity;
+      let id: string | null = null;
+      for (const c of centers) {
+        const d = (c.worldX - worldX) ** 2 + (c.worldZ - worldZ) ** 2;
+        if (d < best) {
+          best = d;
+          id = c.id;
+        }
+      }
+      owner[gz]![gx] = id;
+    }
+  }
+  const adj = new Map<string, Set<string>>(territories.map((t) => [t.id, new Set()]));
+  const dirs = [
+    [1, 0],
+    [-1, 0],
+    [0, 1],
+    [0, -1],
+  ] as const;
+  for (let gz = 0; gz < GRID_H; gz++) {
+    for (let gx = 0; gx < GRID_W; gx++) {
+      const a = owner[gz]![gx];
+      if (!a) continue;
+      for (const [dx, dz] of dirs) {
+        const b = owner[gz + dz]?.[gx + dx];
+        if (b && b !== a) adj.get(a)!.add(b);
+      }
+    }
+  }
+  return new Map([...adj].map(([id, set]) => [id, [...set].sort()]));
+}
+
 /** Nearest road cell to a world position (for cinematic car pathing). */
 export function nearestRoadBlock(
   layout: CityLayout,

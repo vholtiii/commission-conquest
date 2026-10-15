@@ -42,6 +42,8 @@ Assignments: idle | garrison | racket | delivery | operation | surveillance.
 
 Sources: hit (+10 / +15 on kill), delivery complete (+5), per-turn assignment (garrison +2, racket manager +3, casing +2, delivery +2).
 
+Job practice sits beside that XP, for every family. A garrisoned week banks muscle and pays +1 at 8 weeks. Managing an unfrozen racket banks smarts and pays +1 at 4 weeks, or 3 with the bookkeeper trait. The week a racket freezes, its manager loses 2 smarts and that bank clears, and a frozen week pays nothing. A clean casing is +1 stealth for the lookout; a spotted casing pays nothing. A hit pays +2 in the seat's skill on a kill — muscle, driving, stealth, smarts, or charm — and −2 on a botch. An escape pays the seat nothing, except a hitman who rode still gains +1 muscle. A truck that arrives banks driving and pays +1 at 4 arrivals; a seized or hijacked run pays nothing. Taking a block gives the squad lead +1 muscle. A hitman who is matched or passed in muscle sours until he rides: loyalty −5 once, and the ride raises his muscle (+2 on a kill, +1 if the mark gets away). A family dinner he sits puts him one point above the man who passed him, and not past 100.
+
 ### Promotions (paid clean cash)
 
 | From | To | Cost | Gates |
@@ -170,14 +172,14 @@ Racket types: still, brewery, warehouse, speakeasy, gambling, brothel, loan_shar
 
 ### Liquor logistics
 
-Crates live in per-racket `stock` (level-scaled caps). The **Liquor** panel lists **warehouse districts only**. Global `liquorStock` is a derived total for compatibility.
+Crates live in per-racket `stock` (level-scaled caps). The **Liquor** panel lists **warehouse districts only**. Global `liquorStock` is a derived total for compatibility. On a block with a managed warehouse, that week's cook goes into the barn first, as green crates. Leftovers still in the barn at week's end are proofed.
 
 | Site | Cap/lvl | Role |
 |------|---------|------|
 | Still | 30 | Produces `5 + 3L` crates/turn into own stock; overflow spills to same-district warehouses |
 | Brewery | 50 | Produces `8 + 4L` |
-| Warehouse | 100 × manager cap mult | **Liquor hub.** Pure storage. Buy target, send/receive deliveries. Needs an assigned manager |
-| Speakeasy | 40 | Pulls from warehouses then producers (same district); sells `5 + 2L` at `$15 + 5L` (+`L` more with a managed warehouse on the block). Dry earns 25% base. Districts without local stock need a **supply route** |
+| Warehouse | 100 × manager cap mult | **The dock.** Trucks load only here, and only while it is managed. Crates that sit the week are proofed and worth $5 more next week. First 40 empty slots are free of the 10¢ rent |
+| Speakeasy | 40 | Pulls from warehouses then producers (same district), proofed crates first; sells `5 + 2L` at `$15 + 5L`, and proofed crates at $5 more (+`L` more with a managed warehouse on the block). Dry earns 25% base. Districts without local stock need a **supply route** |
 
 **Warehouse managers** (smarts + bookkeeper +20, score 0–100):
 - No manager: −12% stock/turn pilferage; cannot buy, send, or receive deliveries
@@ -187,7 +189,7 @@ Crates live in per-racket `stock` (level-scaled caps). The **Liquor** panel list
 Profit vs mismanagement:
 - **Backed up**: overflow dumped at $4/crate + 1 heat / 10 crates (no warehouse = dump)
 - **Pilferage**: unmanaged/weak managers lose crates every turn
-- **Idle capacity**: $0.10 per empty warehouse slot / turn
+- **Idle capacity**: $0.10 per empty warehouse slot past the first 40 / turn
 - **Exposed stash**: +1 heat / 100 crates above a 50-crate allowance (×2 if unguarded)
 - **Buy whisky**: dirty-first cash into a **managed** warehouse; arrives next turn; seizure chance 6% (+10% if heat > 50; bribes cut it). No refund on seize
 - **Deliveries** (one-off): source needs a managed warehouse; destination a managed warehouse **or a speakeasy**. Deposit warehouse-first, then bar; overflow street-sold at `$12–20`. Hijack/seize lose crates (+2/+4 heat). A hijacked player truck opens a case (`openIncidentFromHijack`) and the crates are fenced into the hijacker's treasury at `$12` each
@@ -195,7 +197,7 @@ Profit vs mismanagement:
 
 ### Supply routes & passage (`src/engine/supplyRoutes.ts`, `src/engine/passage.ts`)
 
-A **supply route** is a standing order: N crates a week from one of your districts (warehouse/still/brewery with stock) to another with a warehouse or speakeasy. Pick a driver (driving skill and the `wheelman` trait lower risk) and optionally an escort (×0.75 risk, exposed to the shooting). The Liquor panel offers up to four **roads**, least to most risk:
+A **supply route** is a standing order: N crates a week from a **managed warehouse** to another district with a warehouse or speakeasy. A still with no barn cannot ship, and a route whose barn is unmanaged waits that week. Proofed crates load first and stay proofed at the other end. Pick a driver (driving skill and the `wheelman` trait lower risk) and optionally an escort (×0.75 risk, exposed to the shooting). The Liquor panel offers up to four **roads**, least to most risk:
 
 | Hop | Base hijack | Notes |
 |-----|-------------|-------|
@@ -367,7 +369,7 @@ The Sit-down button asks what the meeting is **about** before where. "Ease off" 
 | A man held | either | Ransom `300 + 150×level + role bonus` (underboss/consigliere 700, capo/hitman 400, soldier 150). He's home, idle, the moment the deal strikes. |
 | End the vendetta | player | `600 + 150×your turf (+100 per hit they haven't landed, up to 3)` cash and 20 standing. The vendetta drops and relations lift to merely cold. |
 | A contract | either | Whoever does the job gets paid when a hit of theirs puts one of the target family down (`terms.obligor` is the shooter). When *they* ask, they pay `800 + 120×target turf` for a kill within 6 weeks. When *you* ask, you pick the mark from families neither of you is at peace with and pay 1.25× that, cash on delivery; a shorter deadline costs more. A contracted rival works the hit every week outside its normal action budget (`tryHit` with the contracted target first) unless it has since given that family its word. A contract that runs out is a breach by whoever owed the body; if they owed it, you pay nothing. |
-| Liquor | rival | A speakeasy of theirs under 3 crates while you hold 15+ in warehouses: 10 crates within 2 weeks at 1.5× street price. **Send the crates** on the deal card pulls them from your fullest warehouse; the cash lands then. |
+| Liquor | rival, or you | Their invitation is one delivery: a speakeasy of theirs under 3 crates while you hold 15+ in warehouses, 10 crates within 2 weeks at 1.5× street price. **Send the crates** on the deal card pulls them from your fullest warehouse; the cash lands then. With a managed warehouse of your own you can offer a standing sale to a dry bar: 4 crates a week for 6 weeks at $18, plus $5 on each proofed crate, paid out of their treasury each week it ships. A short week is a log line. If nothing has shipped when the weeks run out, it breaches; if they lose the bar, the order ends. |
 | A cut of the take | either | A share (10–50%, they open at 25%) of one district's weekly take (`baseIncome` + racket income) for 4–16 weeks (they open at 8), paid up front. Buying a cut of theirs costs `1.2 × take × share × weeks`; when they buy a cut of yours they offer 0.8×. Only blocks with rackets that you've discovered, one live cut per block. Each week the owner pays the cut out of the take (`weeklyCut`, at that week's take, so a racket built or lost mid-deal changes it). If you can't cover your week it's a breach; if the block changes hands the cut simply ends. |
 
 **Chips.** A counter can add up to 30 standing (+0.5% acceptance per point, spent only if it strikes), a district of yours thrown in (counts at its price), or a favor owed (+15%; recorded as a `favor` deal until called in). Acceptance is `0.55 + (offer − ask) / max(600, |ask|, |ask cash|)` plus relation status, respect/300, personality (economic +5%, volatile −10%), +5% with your consigliere at the table, +15% for a truce they need. Below 60% of the floor the number is an **insult**: −8 relation, and a volatile family gets up 25% of the time. Otherwise a refused counter pulls their ask 35% toward yours (cash, weeks, crates and share all blend).
@@ -382,7 +384,9 @@ The Sit-down button asks what the meeting is **about** before where. "Ease off" 
 
 **Settlement cards.** Every deal that closes queues a `DealSettlement` (`GameState.pendingDealSettlements`) and gets a card (`DealSettlementModal`) after the week's reels and sit-down results, before the digest: **Deal honored** (what moved, +10 relation), **Word broken** (who broke it, −25 relation, −20 standing when it was you), **Deal ran out** (truces and cuts), and **Favor called in** (what they want, and that it now sits on your books as an obligation). Player-side actions — Break it, Send the crates — show the card immediately. **See deals** opens the Commission panel.
 
-**Deals.** Truces, contracts, liquor orders, cuts and favors are recorded (`GameState.deals`) and listed in the Commission panel with weeks left. A truce makes rival AI skip you for hits, vendetta hits, message hits and captures, and your own hit planner and capture button refuse ("You gave your word") until you **Break it** from the deal card. Breaking any deal, by anyone: −20 standing, −25 relation with the wronged family, −10 with every other family. A hit that lands on a truce partner (even one planned before the handshake) is a breach by the shooter. Rivals tear up a truce at 1–5%/turn by temperament (volatile highest, doubled while in a vendetta). A job owed and not done by the deadline is a breach by whoever owed it.
+**Deals.** Truces, contracts, liquor orders, cuts and favors are recorded (`GameState.deals`) and listed in the Commission panel with weeks left. A standing liquor sale ships itself each week, before your own supply routes, and the deal card does not offer Send. A truce makes rival AI skip you for hits, vendetta hits, message hits and captures, and your own hit planner and capture button refuse ("You gave your word") until you **Break it** from the deal card. Breaking any deal, by anyone: −20 standing, −25 relation with the wronged family, −10 with every other family. A hit that lands on a truce partner (even one planned before the handshake) is a breach by the shooter. Rivals tear up a truce at 1–5%/turn by temperament (volatile highest, doubled while in a vendetta). A job owed and not done by the deadline is a breach by whoever owed it.
+
+**The table's manhunt** (`src/engine/commissionErrand.ts`). A new game hears nothing before turn 8. After that, and again after the 8 quiet weeks that follow a finished or refused job, each quiet week has a 25% chance the table asks you to find a man. The offer stays up for the week it arrives and the next. Take it and you have seven weeks. Let it sit and it leaves the table: one other family is asked, and silence costs nothing. Decline costs 2 Respect and asks that family the same week.
 
 ### The Commission's ruling (`src/engine/commission.ts`)
 

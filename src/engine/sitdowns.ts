@@ -1232,6 +1232,8 @@ function subjectNamed(agenda: SitdownAgenda, seed: Partial<AgendaTerms> | undefi
       return !!seed?.crewId;
     case "alliance":
       return !!seed?.targetFamily;
+    case "liquor":
+      return !!seed?.destTerritoryId;
     default:
       return true;
   }

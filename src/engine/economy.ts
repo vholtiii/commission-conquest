@@ -15,16 +15,18 @@ import type {
 import { RACKET_LABELS } from "@/types/game";
 import { ALL_FAMILY_NAMES, getFamilyDef } from "@/data/families";
 import { CRATE_STREET_VALUE } from "./passage";
-import { assessPath } from "./supplyRoutes";
+import { assessPath, roadCut, truckingLevel } from "./supplyRoutes";
 import type { Rng } from "./rng";
 import { createRng, hashString } from "./rng";
 import { aggregateTraitEffects, isUnmade, roleUpkeep } from "./crew";
+import { penalizeRacketFreeze } from "./practice";
 import { crewIncomeMult } from "./crews";
 import { BOSS_PRESENCE, bossPresenceDistrict } from "./bossPresence";
 import { DINNER_INCOME_MULT, dinnerActive } from "./dinner";
 import {
   applyWarehouseShrinkage,
   depositCrates,
+  depositTracked,
   dumpWarning,
   emptyLiquorLedger,
   hasManagedWarehouse,
@@ -39,6 +41,7 @@ import {
   supplySpeakeasies,
   totalCrates,
   withdrawCrates,
+  markWarehouseProof,
 } from "./liquor";
 import { isUnguarded } from "./territoryValue";
 
@@ -260,6 +263,60 @@ export function lawyerBlockReason(offer: LawyerQuote): string | null {
   if (offer.cooling) return `He won't take another call until week ${offer.readyTurn}.`;
   if (!offer.washFallsShort) return "The fronts can cover this hole. Wash it.";
   return "Nothing dirty to hand him.";
+}
+
+/** Dirty cash to take two points of wanted off one man. */
+export const QUIET_COST = 1200;
+export const QUIET_HEAT = 2;
+export const QUIET_WANTED = 2;
+
+/** Dirty cash to cut two weeks off the boss's sentence. */
+export const BOSS_PLEA_COST = 8000;
+export const BOSS_PLEA_HEAT = 8;
+export const BOSS_PLEA_WEEKS = 2;
+
+/** House counsel on a heat retainer. */
+export const COUNSEL_COST = 4800;
+export const COUNSEL_WEEKS = 4;
+export const COUNSEL_HEAT_DECAY = 3;
+
+/** Smallest pile he will rush into clean cash. */
+export const WASH_MIN = 2000;
+const WASH_FIRST = 5000;
+const WASH_FIRST_CUT = 0.35;
+const WASH_REST_CUT = 0.65;
+const WASH_HEAT_STEP = 4000;
+const WASH_HEAT_CAP = 5;
+const WASH_LOYALTY_AT = 8000;
+const WASH_LOYALTY_CAP = 6;
+
+export interface WashQuote {
+  pile: number;
+  cut: number;
+  clean: number;
+  heatOff: number;
+  /** Loyalty and street, both. 0 when the pile is under $8,000. */
+  loyalty: number;
+}
+
+/** What a rush wash of `amount` dirty cash gives back. Null when the pile is under $2,000. */
+export function washQuote(amount: number): WashQuote | null {
+  const pile = Math.floor(amount);
+  if (pile < WASH_MIN) return null;
+  const first = Math.min(pile, WASH_FIRST);
+  const rest = pile - first;
+  const cut = Math.floor(first * WASH_FIRST_CUT) + Math.floor(rest * WASH_REST_CUT);
+  const loyalty =
+    pile < WASH_LOYALTY_AT
+      ? 0
+      : Math.min(WASH_LOYALTY_CAP, 2 + Math.floor((pile - WASH_LOYALTY_AT) / WASH_LOYALTY_AT));
+  return {
+    pile,
+    cut,
+    clean: pile - cut,
+    heatOff: Math.min(WASH_HEAT_CAP, Math.floor(pile / WASH_HEAT_STEP)),
+    loyalty,
+  };
 }
 
 /** Dirty cash, up front, for four weeks on the street lawyer's books. */
@@ -824,7 +881,8 @@ export function processDeliveries(
       continue;
     }
 
-    if (rng.chance(state.heat.level > 50 ? 0.15 : 0.05)) {
+    const yard = 1 - roadCut(truckingLevel(state, route.family));
+    if (rng.chance((state.heat.level > 50 ? 0.15 : 0.05) * yard)) {
       routes.push({ ...route, status: "seized" });
       if (isPlayer) {
         heatDelta += 4;
@@ -845,7 +903,7 @@ export function processDeliveries(
     if (isPlayer) {
       const dest = territories.find((t) => t.id === route.destTerritoryId);
       if (dest) {
-        const dep = depositCrates(dest, route.cargo, "any", state.turn, lookup);
+        const dep = depositTracked(dest, route.cargo, route.proofed ?? 0, "any", state.turn, lookup);
         territories = territories.map((t) =>
           t.id === dest.id ? dep.territory : t,
         );
@@ -995,6 +1053,7 @@ export interface EconomyTurnResult {
   racketUpdates: Racket[];
   ledger: LiquorLedger;
   books: PlayerWeekParts | null;
+  crew: CrewMember[];
 }
 
 export interface LaunderAudit {
@@ -1254,6 +1313,7 @@ export function processEconomyTurn(
   const audits: LaunderAudit[] = [];
   let ledger = emptyLiquorLedger();
   const isPlayer = family === state.playerFamily;
+  let roster = state.crew;
   const racketLines: WeekBookRacket[] = [];
   let blockTake = 0;
   let dumpedCash = 0;
@@ -1280,7 +1340,7 @@ export function processEconomyTurn(
           return r;
         }
         sum += r.stock;
-        return { ...r, stock: 0 };
+        return { ...r, stock: 0, proofed: 0 };
       });
       pool += sum;
       return { ...produced, rackets: cleared };
@@ -1315,6 +1375,26 @@ export function processEconomyTurn(
     const bossHere = t.id === bossBlock;
 
     if (isPlayer) {
+      // Nothing walks out the back with the boss on the block.
+      // Shrinkage hits what sat the week, before the bar drinks it.
+      if (lookup && !bossHere) {
+        const shrink = applyWarehouseShrinkage(updated, lookup, state.turn);
+        updated = shrink.territory;
+        if (shrink.shrunk > 0) {
+          ledger = mergeLedger(ledger, { shrunk: shrink.shrunk });
+          const cause = shrink.byRacket[0]?.cause ?? "no manager";
+          logs.push({
+            id: `log_shrink_${state.turn}_${t.id}`,
+            turn: state.turn,
+            category: "economy",
+            text: `${t.name}: ${shrink.shrunk} crates walked out the back (${cause}).`,
+            family,
+          });
+        }
+      }
+
+      updated = supplySpeakeasies(updated, state.turn, lookup);
+
       const prod = produceAndStore(updated, state.turn, lookup, bossHere);
       updated = prod.territory;
       ledger = mergeLedger(ledger, {
@@ -1335,25 +1415,6 @@ export function processEconomyTurn(
           family,
         });
       }
-
-      // Nothing walks out the back with the boss on the block.
-      if (lookup && !bossHere) {
-        const shrink = applyWarehouseShrinkage(updated, lookup, state.turn);
-        updated = shrink.territory;
-        if (shrink.shrunk > 0) {
-          ledger = mergeLedger(ledger, { shrunk: shrink.shrunk });
-          const cause = shrink.byRacket[0]?.cause ?? "no manager";
-          logs.push({
-            id: `log_shrink_${state.turn}_${t.id}`,
-            turn: state.turn,
-            category: "economy",
-            text: `${t.name}: ${shrink.shrunk} crates walked out the back (${cause}).`,
-            family,
-          });
-        }
-      }
-
-      updated = supplySpeakeasies(updated, state.turn, lookup);
     }
 
     // Base racket income (speakeasy handled in sellSpeakeasies)
@@ -1469,6 +1530,8 @@ export function processEconomyTurn(
       if (idle > 0) ledger = mergeLedger(ledger, { cashOut: idle });
     }
 
+    if (isPlayer && lookup) updated = markWarehouseProof(updated, state.turn, lookup);
+
     return updated;
   });
 
@@ -1492,16 +1555,25 @@ export function processEconomyTurn(
     audits.push(...wash.audits);
 
     if (wash.racketUpdates.size > 0) {
+      const newlyFrozen: string[] = [];
       finalTerritories = territories.map((t) => ({
         ...t,
         rackets: t.rackets.map((r) => {
           const patch = wash.racketUpdates.get(r.id);
           if (!patch) return r;
+          if (patch.frozenUntil != null && (r.frozenUntil ?? 0) <= state.turn && r.managerId) {
+            newlyFrozen.push(r.managerId);
+          }
           const updated = { ...r, ...patch };
           racketUpdates.push(updated);
           return updated;
         }),
       }));
+      for (const id of newlyFrozen) {
+        const hit = penalizeRacketFreeze(roster, id, state.turn, state.playerFamily, id);
+        roster = hit.crew;
+        logs.push(...hit.logs);
+      }
     }
   }
 
@@ -1550,6 +1622,7 @@ export function processEconomyTurn(
           upkeep,
         }
       : null,
+    crew: roster,
   };
 }
 
@@ -1568,8 +1641,10 @@ export function processAllEconomy(
   audits: LaunderAudit[];
   ledger: LiquorLedger;
   books: PlayerWeekParts | null;
+  crew: CrewMember[];
 } {
   let territories = state.territories;
+  let roster = state.crew;
   let moneyDelta = 0;
   let dirtyDelta = 0;
   let heatDelta = 0;
@@ -1586,8 +1661,9 @@ export function processAllEconomy(
   const families = [...new Set(territories.map((t) => t.owner).filter(Boolean))] as FamilyName[];
 
   for (const family of families) {
-    const partial = processEconomyTurn({ ...state, territories }, family);
+    const partial = processEconomyTurn({ ...state, territories, crew: roster }, family);
     territories = partial.territories;
+    roster = partial.crew;
     // Heat is the player's problem: only the player's own rackets, dumps and
     // washes draw the law. Rival operations don't put cops on your door.
     if (family === state.playerFamily) heatDelta += partial.heatDelta;
@@ -1627,6 +1703,11 @@ export function processAllEconomy(
     const freezeUntil = state.turn + 2;
     const debit = launderCap(pick.r, null, state.turn) * 2;
     rivalTreasury[family] = Math.max(0, (rivalTreasury[family] ?? 0) - debit);
+    if (pick.r.managerId) {
+      const hit = penalizeRacketFreeze(roster, pick.r.managerId, state.turn, state.playerFamily, pick.r.id);
+      roster = hit.crew;
+      logs.push(...hit.logs);
+    }
     territories = territories.map((t) =>
       t.id !== pick.t.id
         ? t
@@ -1646,6 +1727,8 @@ export function processAllEconomy(
     });
   }
 
+  territories = tickDistrictHeat(territories);
+
   return {
     territories,
     moneyDelta,
@@ -1658,7 +1741,22 @@ export function processAllEconomy(
     audits,
     ledger,
     books: playerBooks,
+    crew: roster,
   };
+}
+
+/** A block's heat is the joints on it. A quiet block cools; a busy one climbs. */
+const DISTRICT_HEAT_CAP = 12;
+
+export function tickDistrictHeat(territories: Territory[]): Territory[] {
+  return territories.map((t) => {
+    let gen = 0;
+    for (const r of t.rackets) gen += r.heatGen;
+    const gain = Math.round(gen / 6);
+    const heatLevel = Math.max(0, Math.min(DISTRICT_HEAT_CAP, (t.heatLevel ?? 0) + gain - 1));
+    if (heatLevel === t.heatLevel) return t;
+    return { ...t, heatLevel };
+  });
 }
 
 export function mapBusinessTypeToRacket(businessType: string | null): RacketType | null {

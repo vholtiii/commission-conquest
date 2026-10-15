@@ -23,7 +23,8 @@ import { ALL_FAMILY_NAMES, getFamilyDef } from "@/data/families";
 import type { Rng } from "./rng";
 import { setRelationDelta } from "./relations";
 import { hasPact } from "./diplomacy";
-import { withdrawCrates } from "./liquor";
+import { withdrawCrates, withdrawFamilyWarehouses, depositTracked, PROOF_PREMIUM, makeManagerLookup } from "./liquor";
+import { CRATE_STREET_VALUE } from "./passage";
 import { racketIncome } from "./economy";
 import { HONOR_RESPECT } from "./standing";
 import { handsDown } from "./mourning";
@@ -409,6 +410,91 @@ export function contractedTargets(state: DealState, family: FamilyName): FamilyN
 }
 
 /**
+ * A standing liquor sale: crates leave your barns for their bar, and they
+ * pay for what actually arrives. A short week is only a line in the log.
+ */
+export function shipStandingLiquor(state: GameState): { state: GameState; logs: TurnLogEntry[] } {
+  const logs: TurnLogEntry[] = [];
+  const player = state.playerFamily;
+  if (!player) return { state, logs };
+  let next = state;
+  const lookup = makeManagerLookup(state.crew, player);
+  const price = Math.round(CRATE_STREET_VALUE * 1.5);
+
+  for (const deal of state.deals ?? []) {
+    if (deal.status !== "active" || deal.kind !== "liquor" || !deal.terms.weekly) continue;
+    if (!isLive(deal, next.turn)) continue;
+    const other = dealPartner(next, deal);
+    const dest = next.territories.find((t) => t.id === deal.terms.destTerritoryId);
+    const bar = dest?.rackets.some((r) => r.type === "speakeasy");
+    if (!dest || dest.owner !== other || !bar) {
+      const text = `${other} lost the bar. The standing order ends.`;
+      next = {
+        ...next,
+        deals: next.deals.map((d) =>
+          d.id === deal.id ? { ...d, status: "expired" as const, untilTurn: next.turn } : d,
+        ),
+      };
+      next = queueSettlement(next, deal, { outcome: "expired", cash: 0, relation: 0, standing: 0, text });
+      logs.push({
+        id: `log_liquor_end_${deal.id}`,
+        turn: next.turn,
+        category: "diplomacy",
+        text,
+        family: player,
+      });
+      continue;
+    }
+
+    const want = deal.terms.crates ?? 4;
+    const drawn = withdrawFamilyWarehouses(next.territories, player, want, next.turn, lookup);
+    let territories = drawn.territories;
+    const landed = depositTracked(dest, drawn.moved, drawn.proofed, "speakeasy", next.turn);
+    territories = territories.map((t) => (t.id === dest.id ? landed.territory : t));
+    let backN = landed.overflow;
+    let backProof = Math.max(0, drawn.proofed - landed.proofedLanded);
+    for (const t of territories) {
+      if (backN <= 0) break;
+      if (t.owner !== player) continue;
+      const back = depositTracked(t, backN, Math.min(backProof, backN), "warehouseOnly", next.turn, lookup);
+      territories = territories.map((x) => (x.id === t.id ? back.territory : x));
+      const returned = backN - back.overflow;
+      backProof = Math.max(0, backProof - Math.min(backProof, returned));
+      backN = back.overflow;
+    }
+
+    const moved = landed.moved;
+    const proofed = Math.min(drawn.proofed, landed.proofedLanded);
+    const per = Math.round(Math.abs(deal.terms.cash) / Math.max(1, want));
+    const bill = moved * (per || price) + proofed * PROOF_PREMIUM;
+    const have = Math.max(0, next.rivalTreasury?.[other] ?? 0);
+    const paid = Math.min(have, bill);
+    next = {
+      ...next,
+      territories,
+      money: next.money + paid,
+      rivalTreasury: { ...next.rivalTreasury, [other]: have - paid },
+      deals: next.deals.map((d) =>
+        d.id === deal.id ? { ...d, delivered: (d.delivered ?? 0) + moved } : d,
+      ),
+    };
+    const where = dest.name;
+    const text =
+      moved > 0
+        ? `Standing order: ${moved} crate${moved === 1 ? "" : "s"} to ${where}. ${other} paid $${paid.toLocaleString()}.`
+        : `Standing order: the barns were short. Nothing reached ${where} this week.`;
+    logs.push({
+      id: `log_liquor_week_${deal.id}_${next.turn}`,
+      turn: next.turn,
+      category: "delivery",
+      text,
+      family: player,
+    });
+  }
+  return { state: next, logs };
+}
+
+/**
  * Truces run out, deadlines pass, and once in a while a hot-headed family
  * decides the paper isn't worth keeping.
  */
@@ -442,7 +528,21 @@ export function tickDeals(
     const due = deal.untilTurn !== null && deal.untilTurn <= next.turn;
 
     if (due) {
-      if (deal.obligor && (deal.kind === "liquor" || deal.kind === "alliance")) {
+      if (deal.kind === "liquor" && deal.terms.weekly && (deal.delivered ?? 0) > 0) {
+        const text = `The standing order with ${other} ran its course.`;
+        next = {
+          ...next,
+          deals: next.deals.map((d) => (d.id === deal.id ? { ...d, status: "expired" as const } : d)),
+        };
+        next = queueSettlement(next, deal, { outcome: "expired", cash: 0, relation: 0, standing: 0, text });
+        logs.push({
+          id: `log_deal_liquor_done_${deal.id}`,
+          turn: next.turn,
+          category: "diplomacy",
+          text,
+          family: player,
+        });
+      } else if (deal.obligor && (deal.kind === "liquor" || deal.kind === "alliance")) {
         // A job owed and not done is a breach by whoever owed it.
         const text =
           deal.obligor === player

@@ -25,8 +25,9 @@ import {
   launderCap,
 } from "./economy";
 import { computeTerritorySlots, maxRacketsFor, allowedRacketTypes } from "./territoryValue";
-import { nextRacketSiteIndex } from "./cityLayout";
+import { districtsThatTouch, nextRacketSiteIndex } from "./cityLayout";
 import { emptyVictory, finalTurnFor } from "./victory";
+import { ERRAND_FIRST_TURN } from "./commissionErrand";
 
 interface TerritoryRaw {
   id: string;
@@ -107,8 +108,28 @@ function inferBorough(id: string): string {
   return BOROUGH_MAP[id] ?? "New York";
 }
 
+/**
+ * Pin every district to its map coordinate and rebuild borders from the blocks
+ * that share a side. Old saves keep their owners and rackets; a road follows
+ * the map, including a save written when two districts sat on one dot.
+ */
+export function alignTerritoriesToMap<T extends Territory>(territories: T[]): T[] {
+  const byRaw = new Map((territoriesRaw as TerritoryRaw[]).map((t) => [t.id, t]));
+  const placed = territories.map((t) => {
+    const raw = byRaw.get(t.id);
+    if (!raw || (t.x === raw.x && t.y === raw.y)) return t;
+    return { ...t, x: raw.x, y: raw.y };
+  });
+  const borders = districtsThatTouch(placed);
+  return placed.map((t) => {
+    const next = borders.get(t.id);
+    if (!next) return t;
+    return { ...t, adjacentTerritories: next };
+  });
+}
+
 function loadTerritories(rng: ReturnType<typeof createRng>): Territory[] {
-  return (territoriesRaw as TerritoryRaw[]).map((raw) => {
+  const built = (territoriesRaw as TerritoryRaw[]).map((raw) => {
     const rackets: Racket[] = [];
     const racketType = mapBusinessTypeToRacket(raw.businessType);
     if (racketType && raw.owner) {
@@ -146,6 +167,7 @@ function loadTerritories(rng: ReturnType<typeof createRng>): Territory[] {
       racketSlots: MAX_RACKETS_PER_DISTRICT,
     };
   });
+  return alignTerritoriesToMap(built);
 }
 
 function createFamilyRoster(
@@ -321,6 +343,8 @@ export function buildInitialState(
     passageLeverage: {},
     messageHitTurns: {},
     commissionCall: null,
+    commissionErrand: null,
+    commissionErrandReady: ERRAND_FIRST_TURN,
     familyDinner: null,
     mattresses: null,
     mattressReadyUntil: 0,
@@ -339,6 +363,10 @@ export function buildInitialState(
     lawyerReadyTurn: 0,
     streetLawyerUntil: 0,
     streetLawyerBailUsed: false,
+    counselUntil: 0,
+    lawyerWantedTurn: 0,
+    lawyerBossPleaUntil: 0,
+    lawyerWashTurn: 0,
     selectedTerritoryId: null,
     flyToTerritoryId: null,
     flyToFocus: null,

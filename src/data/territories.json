@@ -9,12 +9,13 @@
     "x": 35,
     "y": 45,
     "adjacentTerritories": [
-      "brooklyn",
-      "queens",
-      "bronx",
-      "little_italy",
       "chinatown",
-      "east_village"
+      "hoboken",
+      "little_italy",
+      "park_slope",
+      "st_george",
+      "staten",
+      "washington_heights"
     ],
     "businessType": null,
     "strategicBonus": {
@@ -33,10 +34,9 @@
     "x": 30,
     "y": 40,
     "adjacentTerritories": [
+      "inwood",
       "manhattan",
-      "chinatown",
-      "east_village",
-      "soho"
+      "washington_heights"
     ],
     "businessType": "loan_sharking",
     "strategicBonus": {
@@ -55,10 +55,14 @@
     "x": 40,
     "y": 35,
     "adjacentTerritories": [
-      "manhattan",
-      "little_italy",
+      "bronx",
       "east_village",
-      "lower_east_side"
+      "fordham",
+      "lower_east_side",
+      "manhattan",
+      "park_slope",
+      "tremont",
+      "washington_heights"
     ],
     "businessType": "gambling"
   },
@@ -73,11 +77,11 @@
     "y": 50,
     "emptyLot": true,
     "adjacentTerritories": [
-      "manhattan",
-      "little_italy",
+      "alphabet_city",
       "chinatown",
       "lower_east_side",
-      "alphabet_city"
+      "park_slope",
+      "prospect_heights"
     ],
     "businessType": "brothel"
   },
@@ -91,8 +95,10 @@
     "x": 25,
     "y": 35,
     "adjacentTerritories": [
-      "little_italy",
+      "financial_district",
+      "inwood",
       "tribeca",
+      "washington_heights",
       "west_village"
     ],
     "businessType": "store_front",
@@ -112,9 +118,11 @@
     "x": 20,
     "y": 30,
     "adjacentTerritories": [
+      "battery_park",
+      "chelsea",
+      "financial_district",
       "soho",
-      "west_village",
-      "financial_district"
+      "west_village"
     ],
     "businessType": "gambling"
   },
@@ -128,10 +136,11 @@
     "x": 15,
     "y": 40,
     "adjacentTerritories": [
-      "soho",
-      "tribeca",
       "chelsea",
-      "greenwich_village"
+      "greenwich_village",
+      "hoboken",
+      "soho",
+      "tribeca"
     ],
     "businessType": "loan_sharking"
   },
@@ -145,8 +154,12 @@
     "x": 25,
     "y": 25,
     "adjacentTerritories": [
+      "battery_park",
+      "soho",
+      "tremont",
       "tribeca",
-      "battery_park"
+      "washington_heights",
+      "yonkers"
     ],
     "businessType": "store_front",
     "strategicBonus": {
@@ -165,7 +178,10 @@
     "x": 20,
     "y": 20,
     "adjacentTerritories": [
-      "financial_district"
+      "chelsea",
+      "financial_district",
+      "tribeca",
+      "yonkers"
     ],
     "businessType": "gambling"
   },
@@ -179,9 +195,11 @@
     "x": 10,
     "y": 35,
     "adjacentTerritories": [
-      "west_village",
+      "battery_park",
       "greenwich_village",
-      "hells_kitchen"
+      "tribeca",
+      "union_city",
+      "west_village"
     ],
     "businessType": "brothel"
   },
@@ -195,10 +213,12 @@
     "x": 12,
     "y": 45,
     "adjacentTerritories": [
-      "west_village",
       "chelsea",
-      "hells_kitchen",
-      "alphabet_city"
+      "hoboken",
+      "jersey_city",
+      "newark",
+      "union_city",
+      "west_village"
     ],
     "businessType": "store_front"
   },
@@ -212,10 +232,9 @@
     "x": 8,
     "y": 50,
     "adjacentTerritories": [
-      "chelsea",
-      "greenwich_village",
-      "alphabet_city",
-      "upper_west_side"
+      "jersey_city",
+      "newark",
+      "union_city"
     ],
     "businessType": "loan_sharking"
   },
@@ -229,10 +248,12 @@
     "x": 50,
     "y": 55,
     "adjacentTerritories": [
+      "brooklyn",
+      "downtown_brooklyn",
       "east_village",
       "lower_east_side",
-      "greenwich_village",
-      "hells_kitchen"
+      "prospect_heights",
+      "williamsburg"
     ],
     "businessType": "gambling"
   },
@@ -246,9 +267,13 @@
     "x": 55,
     "y": 40,
     "adjacentTerritories": [
+      "alphabet_city",
+      "bronx",
+      "bushwick",
       "chinatown",
       "east_village",
-      "alphabet_city",
+      "long_island_city",
+      "south_bronx",
       "williamsburg"
     ],
     "businessType": "brothel"
@@ -263,11 +288,11 @@
     "x": 55,
     "y": 65,
     "adjacentTerritories": [
-      "manhattan",
-      "queens",
-      "staten",
+      "alphabet_city",
+      "bay_ridge",
+      "downtown_brooklyn",
       "williamsburg",
-      "downtown_brooklyn"
+      "woodside"
     ],
     "businessType": "mixed"
   },
@@ -281,10 +306,11 @@
     "x": 60,
     "y": 50,
     "adjacentTerritories": [
-      "lower_east_side",
+      "alphabet_city",
       "brooklyn",
-      "downtown_brooklyn",
-      "bushwick"
+      "bushwick",
+      "lower_east_side",
+      "woodside"
     ],
     "businessType": "store_front"
   },
@@ -298,9 +324,9 @@
     "x": 50,
     "y": 60,
     "adjacentTerritories": [
+      "alphabet_city",
+      "bay_ridge",
       "brooklyn",
-      "williamsburg",
-      "bushwick",
       "prospect_heights"
     ],
     "businessType": "gambling",
@@ -320,10 +346,12 @@
     "x": 65,
     "y": 45,
     "adjacentTerritories": [
+      "crown_heights",
+      "long_island_city",
+      "lower_east_side",
+      "queens",
       "williamsburg",
-      "downtown_brooklyn",
-      "prospect_heights",
-      "crown_heights"
+      "woodside"
     ],
     "businessType": "brothel"
   },
@@ -337,10 +365,12 @@
     "x": 45,
     "y": 55,
     "adjacentTerritories": [
+      "alphabet_city",
+      "bay_ridge",
       "downtown_brooklyn",
-      "bushwick",
-      "crown_heights",
-      "park_slope"
+      "east_village",
+      "park_slope",
+      "staten"
     ],
     "businessType": "loan_sharking"
   },
@@ -355,9 +385,9 @@
     "y": 40,
     "adjacentTerritories": [
       "bushwick",
-      "prospect_heights",
-      "park_slope",
-      "flatbush"
+      "flatbush",
+      "long_island_city",
+      "queens"
     ],
     "businessType": "gambling"
   },
@@ -371,10 +401,11 @@
     "x": 40,
     "y": 50,
     "adjacentTerritories": [
+      "chinatown",
+      "east_village",
+      "manhattan",
       "prospect_heights",
-      "crown_heights",
-      "flatbush",
-      "bay_ridge"
+      "staten"
     ],
     "businessType": "store_front"
   },
@@ -388,10 +419,13 @@
     "x": 75,
     "y": 35,
     "adjacentTerritories": [
+      "astoria",
+      "concourse",
+      "coney_island",
       "crown_heights",
-      "park_slope",
-      "bay_ridge",
-      "coney_island"
+      "elmhurst",
+      "long_island_city",
+      "queens"
     ],
     "businessType": "loan_sharking"
   },
@@ -406,9 +440,9 @@
     "y": 78,
     "emptyLot": true,
     "adjacentTerritories": [
-      "park_slope",
-      "flatbush",
-      "coney_island",
+      "brooklyn",
+      "downtown_brooklyn",
+      "prospect_heights",
       "staten"
     ],
     "businessType": "gambling"
@@ -423,9 +457,12 @@
     "x": 80,
     "y": 30,
     "adjacentTerritories": [
+      "concourse",
+      "corona",
+      "elmhurst",
       "flatbush",
-      "bay_ridge",
-      "staten"
+      "flushing",
+      "highbridge"
     ],
     "businessType": "brothel"
   },
@@ -436,14 +473,16 @@
     "baseIncome": 600,
     "defenseBonus": 0.1,
     "isStrategic": true,
-    "x": 70,
-    "y": 40,
+    "x": 82,
+    "y": 48,
     "adjacentTerritories": [
-      "manhattan",
-      "brooklyn",
-      "bronx",
-      "astoria",
-      "long_island_city"
+      "bushwick",
+      "crown_heights",
+      "elmhurst",
+      "flatbush",
+      "howard_beach",
+      "richmond_hill",
+      "woodside"
     ],
     "businessType": "gambling",
     "strategicBonus": {
@@ -459,13 +498,15 @@
     "baseIncome": 500,
     "defenseBonus": 0.1,
     "isStrategic": false,
-    "x": 75,
-    "y": 35,
+    "x": 68,
+    "y": 22,
     "adjacentTerritories": [
-      "queens",
+      "concourse",
+      "flatbush",
+      "hunts_point",
       "long_island_city",
-      "woodside",
-      "flushing"
+      "port_morris",
+      "yankee_stadium"
     ],
     "businessType": "store_front"
   },
@@ -479,10 +520,13 @@
     "x": 65,
     "y": 30,
     "adjacentTerritories": [
-      "queens",
       "astoria",
-      "woodside",
-      "hunters_point"
+      "bushwick",
+      "crown_heights",
+      "flatbush",
+      "hunts_point",
+      "lower_east_side",
+      "south_bronx"
     ],
     "businessType": "loan_sharking"
   },
@@ -497,10 +541,12 @@
     "y": 62,
     "emptyLot": true,
     "adjacentTerritories": [
-      "astoria",
-      "long_island_city",
-      "flushing",
-      "corona"
+      "brooklyn",
+      "bushwick",
+      "howard_beach",
+      "jfk_airport",
+      "queens",
+      "williamsburg"
     ],
     "businessType": "gambling"
   },
@@ -514,9 +560,9 @@
     "x": 85,
     "y": 25,
     "adjacentTerritories": [
-      "astoria",
-      "woodside",
+      "coney_island",
       "corona",
+      "highbridge",
       "jamaica"
     ],
     "businessType": "brothel"
@@ -531,10 +577,11 @@
     "x": 90,
     "y": 35,
     "adjacentTerritories": [
-      "woodside",
+      "coney_island",
+      "elmhurst",
       "flushing",
       "jamaica",
-      "elmhurst"
+      "st_albans"
     ],
     "businessType": "loan_sharking"
   },
@@ -548,10 +595,8 @@
     "x": 95,
     "y": 30,
     "adjacentTerritories": [
-      "flushing",
       "corona",
-      "elmhurst",
-      "st_albans"
+      "flushing"
     ],
     "businessType": "gambling"
   },
@@ -565,10 +610,12 @@
     "x": 88,
     "y": 40,
     "adjacentTerritories": [
+      "coney_island",
       "corona",
-      "jamaica",
-      "st_albans",
-      "richmond_hill"
+      "flatbush",
+      "queens",
+      "richmond_hill",
+      "st_albans"
     ],
     "businessType": "brothel"
   },
@@ -582,10 +629,10 @@
     "x": 92,
     "y": 45,
     "adjacentTerritories": [
-      "jamaica",
+      "corona",
       "elmhurst",
-      "richmond_hill",
-      "ozone_park"
+      "ozone_park",
+      "richmond_hill"
     ],
     "businessType": "store_front"
   },
@@ -600,9 +647,10 @@
     "y": 50,
     "adjacentTerritories": [
       "elmhurst",
-      "st_albans",
+      "howard_beach",
       "ozone_park",
-      "howard_beach"
+      "queens",
+      "st_albans"
     ],
     "businessType": "brothel"
   },
@@ -616,10 +664,10 @@
     "x": 90,
     "y": 55,
     "adjacentTerritories": [
-      "st_albans",
-      "richmond_hill",
       "howard_beach",
-      "jfk_airport"
+      "jfk_airport",
+      "richmond_hill",
+      "st_albans"
     ],
     "businessType": "gambling"
   },
@@ -633,10 +681,11 @@
     "x": 88,
     "y": 60,
     "adjacentTerritories": [
-      "richmond_hill",
-      "ozone_park",
       "jfk_airport",
-      "staten"
+      "ozone_park",
+      "queens",
+      "richmond_hill",
+      "woodside"
     ],
     "businessType": "loan_sharking"
   },
@@ -650,9 +699,9 @@
     "x": 95,
     "y": 65,
     "adjacentTerritories": [
-      "ozone_park",
       "howard_beach",
-      "staten"
+      "ozone_park",
+      "woodside"
     ],
     "businessType": "store_front",
     "strategicBonus": {
@@ -671,11 +720,11 @@
     "x": 45,
     "y": 20,
     "adjacentTerritories": [
-      "manhattan",
-      "queens",
-      "yonkers",
+      "chinatown",
+      "fordham",
+      "lower_east_side",
       "south_bronx",
-      "fordham"
+      "yonkers"
     ],
     "businessType": "brothel"
   },
@@ -690,9 +739,10 @@
     "y": 15,
     "adjacentTerritories": [
       "bronx",
-      "fordham",
       "hunts_point",
-      "mott_haven"
+      "long_island_city",
+      "lower_east_side",
+      "yonkers"
     ],
     "businessType": "gambling"
   },
@@ -707,9 +757,9 @@
     "y": 25,
     "adjacentTerritories": [
       "bronx",
-      "south_bronx",
-      "hunts_point",
-      "tremont"
+      "chinatown",
+      "tremont",
+      "yonkers"
     ],
     "businessType": "store_front"
   },
@@ -723,10 +773,11 @@
     "x": 55,
     "y": 10,
     "adjacentTerritories": [
-      "south_bronx",
-      "fordham",
+      "astoria",
+      "long_island_city",
       "mott_haven",
-      "port_morris"
+      "port_morris",
+      "south_bronx"
     ],
     "businessType": "loan_sharking"
   },
@@ -740,10 +791,8 @@
     "x": 60,
     "y": 5,
     "adjacentTerritories": [
-      "south_bronx",
       "hunts_point",
-      "port_morris",
-      "yankee_stadium"
+      "port_morris"
     ],
     "businessType": "brothel"
   },
@@ -757,10 +806,10 @@
     "x": 65,
     "y": 8,
     "adjacentTerritories": [
+      "astoria",
       "hunts_point",
       "mott_haven",
-      "yankee_stadium",
-      "concourse"
+      "yankee_stadium"
     ],
     "businessType": "gambling"
   },
@@ -774,10 +823,9 @@
     "x": 70,
     "y": 12,
     "adjacentTerritories": [
-      "mott_haven",
-      "port_morris",
+      "astoria",
       "concourse",
-      "highbridge"
+      "port_morris"
     ],
     "businessType": "store_front",
     "strategicBonus": {
@@ -796,10 +844,11 @@
     "x": 75,
     "y": 18,
     "adjacentTerritories": [
-      "port_morris",
-      "yankee_stadium",
+      "astoria",
+      "coney_island",
+      "flatbush",
       "highbridge",
-      "tremont"
+      "yankee_stadium"
     ],
     "businessType": "loan_sharking"
   },
@@ -813,10 +862,9 @@
     "x": 80,
     "y": 22,
     "adjacentTerritories": [
-      "yankee_stadium",
       "concourse",
-      "tremont",
-      "washington_heights"
+      "coney_island",
+      "flushing"
     ],
     "businessType": "gambling"
   },
@@ -830,10 +878,11 @@
     "x": 35,
     "y": 30,
     "adjacentTerritories": [
+      "chinatown",
+      "financial_district",
       "fordham",
-      "concourse",
-      "highbridge",
-      "washington_heights"
+      "washington_heights",
+      "yonkers"
     ],
     "businessType": "brothel"
   },
@@ -847,10 +896,12 @@
     "x": 30,
     "y": 35,
     "adjacentTerritories": [
-      "highbridge",
-      "tremont",
-      "yonkers",
-      "inwood"
+      "chinatown",
+      "financial_district",
+      "little_italy",
+      "manhattan",
+      "soho",
+      "tremont"
     ],
     "businessType": "store_front"
   },
@@ -864,9 +915,9 @@
     "x": 25,
     "y": 40,
     "adjacentTerritories": [
-      "washington_heights",
-      "yonkers",
-      "manhattan"
+      "hoboken",
+      "little_italy",
+      "soho"
     ],
     "businessType": "gambling"
   },
@@ -880,12 +931,12 @@
     "x": 25,
     "y": 75,
     "adjacentTerritories": [
-      "brooklyn",
       "bay_ridge",
-      "coney_island",
-      "howard_beach",
-      "jfk_airport",
-      "newark"
+      "manhattan",
+      "park_slope",
+      "prospect_heights",
+      "st_george",
+      "tottenville"
     ],
     "businessType": "gambling",
     "strategicBonus": {
@@ -904,9 +955,11 @@
     "x": 20,
     "y": 70,
     "adjacentTerritories": [
-      "staten",
+      "hoboken",
+      "manhattan",
       "newark",
-      "hoboken"
+      "staten",
+      "tottenville"
     ],
     "businessType": "store_front"
   },
@@ -920,8 +973,9 @@
     "x": 15,
     "y": 80,
     "adjacentTerritories": [
-      "staten",
-      "st_george"
+      "newark",
+      "st_george",
+      "staten"
     ],
     "businessType": "brothel"
   },
@@ -935,10 +989,12 @@
     "x": 15,
     "y": 55,
     "adjacentTerritories": [
-      "staten",
-      "st_george",
+      "greenwich_village",
+      "hells_kitchen",
       "hoboken",
-      "jersey_city"
+      "jersey_city",
+      "st_george",
+      "tottenville"
     ],
     "businessType": "loan_sharking",
     "strategicBonus": {
@@ -957,9 +1013,9 @@
     "x": 10,
     "y": 50,
     "adjacentTerritories": [
-      "newark",
-      "hoboken",
-      "union_city"
+      "greenwich_village",
+      "hells_kitchen",
+      "newark"
     ],
     "businessType": "gambling"
   },
@@ -973,8 +1029,9 @@
     "x": 5,
     "y": 45,
     "adjacentTerritories": [
-      "jersey_city",
-      "hoboken"
+      "chelsea",
+      "greenwich_village",
+      "hells_kitchen"
     ],
     "businessType": "store_front"
   },
@@ -988,11 +1045,12 @@
     "x": 20,
     "y": 45,
     "adjacentTerritories": [
+      "greenwich_village",
+      "inwood",
+      "manhattan",
       "newark",
-      "jersey_city",
-      "union_city",
-      "yonkers",
-      "washington_heights"
+      "st_george",
+      "west_village"
     ],
     "businessType": "brothel"
   },
@@ -1006,10 +1064,12 @@
     "x": 35,
     "y": 15,
     "adjacentTerritories": [
+      "battery_park",
       "bronx",
-      "hoboken",
-      "washington_heights",
-      "inwood"
+      "financial_district",
+      "fordham",
+      "south_bronx",
+      "tremont"
     ],
     "businessType": "gambling"
   }

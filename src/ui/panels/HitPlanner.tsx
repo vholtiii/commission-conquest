@@ -10,7 +10,8 @@ import { attributeCinematic, attributionLabel } from "@/engine/attribution";
 import { coverFire, getawayCover, isLaidLow, laidLowHouse, safehouseHitPenalty } from "@/engine/safehouse";
 import { dinnerActive } from "@/engine/dinner";
 import { handsDown } from "@/engine/mourning";
-import { canLeadCrew, freeCrewOf, unseatedCrew } from "@/engine/crews";
+import { freeCrewOf } from "@/engine/crews";
+import { canJoinHit } from "@/engine/jobReturn";
 import {
   approachSpec,
   exposedCrewIds,
@@ -72,16 +73,8 @@ export default function HitPlanner() {
   ]);
 
   const availableCrew = useMemo(
-    () =>
-      crew.filter(
-        (c) =>
-          c.family === playerFamily &&
-          c.status === "active" &&
-          (c.assignment.type === "idle" ||
-            c.assignment.type === "garrison" ||
-            c.role === "boss"),
-      ),
-    [crew, playerFamily],
+    () => crew.filter((c) => c.family === playerFamily && canJoinHit(c, state.operations)),
+    [crew, playerFamily, state.operations],
   );
 
   const [targetCrewId, setTargetCrewId] = useState<string>("");
@@ -139,34 +132,22 @@ export default function HitPlanner() {
     return s;
   }, [shooterIds, wheelmanId, lookoutId, bombMakerId, planterId, negotiatorId]);
 
-  const crewGap = useMemo(() => unseatedCrew(crew, [...usedIds]), [crew, usedIds]);
-  const roster = useMemo(() => {
-    const byId = new Map(availableCrew.map((c) => [c.id, c]));
-    for (const id of usedIds) {
-      const leader = crew.find((c) => c.id === id);
-      if (!leader || !canLeadCrew(leader)) continue;
-      for (const man of freeCrewOf(crew, leader.id)) byId.set(man.id, man);
-    }
-    return [...byId.values()];
-  }, [availableCrew, crew, usedIds]);
+  const roster = availableCrew;
 
   const rideAlong = useMemo(() => {
-    const singles = new Set(
-      [wheelmanId, lookoutId, bombMakerId, planterId, negotiatorId].filter(Boolean),
-    );
     const men: typeof crew = [];
     const seen = new Set<string>();
     for (const id of usedIds) {
       const leader = crew.find((c) => c.id === id);
-      if (!leader || !canLeadCrew(leader)) continue;
+      if (!leader || leader.role !== "capo") continue;
       for (const man of freeCrewOf(crew, leader.id)) {
-        if (singles.has(man.id) || seen.has(man.id)) continue;
+        if (usedIds.has(man.id) || seen.has(man.id)) continue;
         seen.add(man.id);
         men.push(man);
       }
     }
     return men;
-  }, [crew, usedIds, wheelmanId, lookoutId, bombMakerId, planterId, negotiatorId]);
+  }, [crew, usedIds]);
 
   const draftOp: Operation | null = useMemo(() => {
     if (!playerFamily || !territory || !rivalFamily) return null;
@@ -259,7 +240,6 @@ export default function HitPlanner() {
     !quiet &&
     !atTable &&
     missing.length === 0 &&
-    crewGap.length === 0 &&
     (blind || (!!targetCrewId && rivalTargets.length > 0));
   const spec = approachSpec(approach);
 
@@ -290,17 +270,21 @@ export default function HitPlanner() {
   }
 
   function candidatesFor(slot: HitRoleSlot, excludeSelf?: string): typeof availableCrew {
-    return roster.filter((c) => {
+    const picked = roster.filter((c) => {
       if (excludeSelf && c.id === excludeSelf) return true;
       if (slot.multi) {
         if (usedIds.has(c.id) && !shooterIds.includes(c.id)) return false;
-        if (c.role === "boss" && !slot.allowBoss) return false;
         return true;
       }
       if (usedIds.has(c.id) && c.id !== excludeSelf) return false;
-      if (c.role === "boss" && !slot.allowBoss) return false;
       return true;
     });
+    if (!slot.allowBoss || !playerFamily) return picked;
+    const boss = crew.find(
+      (c) => c.family === playerFamily && c.role === "boss" && canJoinHit(c, state.operations, true),
+    );
+    if (boss && !picked.some((c) => c.id === boss.id)) picked.push(boss);
+    return picked;
   }
 
   function setSingleRole(role: HitRole, id: string) {
@@ -486,7 +470,7 @@ export default function HitPlanner() {
                   </div>
                   <div className="max-h-28 space-y-1 overflow-y-auto scrollbar-thin">
                     {options.length === 0 && (
-                      <p className="text-[10px] text-muted-foreground">No available crew.</p>
+                      <p className="text-[10px] text-muted-foreground">Nobody is free for this seat.</p>
                     )}
                     {options.map((c) => (
                       <label
@@ -543,27 +527,18 @@ export default function HitPlanner() {
               </div>
             );
           })}
-          {!spec.roles.some((r) => r.multi) && rideAlong.length > 0 && (
+          {rideAlong.length > 0 && (
             <div>
-              <div className="mb-1 text-[11px] font-medium">
-                Ride along<span className="text-heat"> *</span>
-              </div>
+              <div className="mb-1 text-[11px] font-medium">Comes with him</div>
               <p className="mb-1 text-[10px] text-muted-foreground">
-                No gunner seat on this approach. Check them to come as shooters — the job gets louder.
+                Idle or garrisoned. An open seat fills first. Anyone left rides as a shooter.
               </p>
-              <div className="max-h-28 space-y-1 overflow-y-auto scrollbar-thin">
+              <div className="space-y-0.5">
                 {rideAlong.map((c) => (
-                  <label
-                    key={c.id}
-                    className="flex items-center gap-2 rounded-md px-1.5 py-1 hover:bg-panel-elevated"
-                  >
-                    <Checkbox
-                      checked={shooterIds.includes(c.id)}
-                      onCheckedChange={() => toggleShooter(c.id)}
-                    />
-                    <span className="text-xs">{c.name}</span>
-                    <span className="ml-auto text-[10px] text-muted-foreground">{c.role}</span>
-                  </label>
+                  <p key={c.id} className="text-xs">
+                    {c.name}
+                    <span className="ml-1 text-[10px] text-muted-foreground">{c.role}</span>
+                  </p>
                 ))}
               </div>
             </div>
@@ -672,8 +647,6 @@ export default function HitPlanner() {
               ? `The city is quiet for a funeral. ${quietWeeks} week${quietWeeks === 1 ? "" : "s"} left.`
               : atTable
               ? "The family is at the table"
-              : crewGap.length > 0
-                ? `His crew comes along — give a role to ${crewGap.flatMap((g) => g.men.map((m) => m.name)).join(", ")}`
               : missing.length > 0
               ? `Still need: ${missing.join(", ")}`
               : !blind && rivalTargets.length === 0

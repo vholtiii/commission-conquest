@@ -15,8 +15,13 @@ import { createRng, hashString } from "./rng";
 import { isUnguarded } from "./territoryValue";
 import { findDeliveryPath, hasSafehouse } from "./economy";
 import { BOSS_PRESENCE } from "./bossPresence";
+import { penalizeRacketFreeze } from "./practice";
 
 const SPEAKEASY_BASE_INCOME = 280;
+/** A crate that sat a week in a managed warehouse sells for this much more. */
+export const PROOF_PREMIUM = 5;
+/** Empty warehouse slots under this, per barn, pay no rent. */
+export const WAREHOUSE_FREE_EMPTY = 40;
 
 function frozen(r: Racket, turn: number): boolean {
   return (r.frozenUntil ?? 0) > turn;
@@ -152,6 +157,20 @@ function capOf(r: Racket, lookup?: ManagerLookup): number {
   return stockCap(r, lookup?.(r));
 }
 
+function proofCount(r: Racket): number {
+  return Math.max(0, Math.min(r.stock, r.proofed ?? 0));
+}
+
+/** Take crates, proofed ones first. Mutates the racket. */
+function pullFrom(r: Racket, n: number): { take: number; proofed: number } {
+  const take = Math.min(r.stock, Math.max(0, n));
+  const before = proofCount(r);
+  const proofed = Math.min(before, take);
+  r.stock -= take;
+  r.proofed = before - proofed;
+  return { take, proofed };
+}
+
 export function districtStorage(
   t: Territory,
   turn = 0,
@@ -262,7 +281,7 @@ export function planFeedSpeakeasy(
   const candidates = state.territories.filter((t) => {
     if (t.id === dest.id || t.owner !== family) return false;
     if (!hasManagedWarehouse(t, lookup, state.turn)) return false;
-    return withdrawCrates(t, 1_000_000, state.turn).moved > 0;
+    return withdrawWarehouse(t, 1_000_000, state.turn, lookup).moved > 0;
   });
   if (candidates.length === 0) {
     return { ok: false, reason: "No other district has a stocked, managed warehouse" };
@@ -274,7 +293,7 @@ export function planFeedSpeakeasy(
     const path = findDeliveryPath(state.territories, source.id, dest.id, family, true);
     if (!path || path.length < 2) continue;
     reachable = true;
-    const stock = withdrawCrates(source, 1_000_000, state.turn).moved;
+    const stock = withdrawWarehouse(source, 1_000_000, state.turn, lookup).moved;
     if (
       !best ||
       path.length < best.path.length ||
@@ -372,15 +391,153 @@ export function withdrawCrates(
       if (r.type !== type) continue;
       if (type === "warehouse" && frozen(r, turn)) continue;
       if (r.stock <= 0) continue;
-      const take = Math.min(r.stock, remaining);
-      r.stock -= take;
-      remaining -= take;
+      const got = pullFrom(r, remaining);
+      remaining -= got.take;
     }
   }
 
   return {
     territory: { ...t, rackets },
     moved: n - remaining,
+  };
+}
+
+type DepositPrefer = Prefer | "warehouseOnly";
+
+function trackedOrder(prefer: DepositPrefer): RacketType[] {
+  if (prefer === "warehouseOnly") return ["warehouse"];
+  return depositOrder(prefer);
+}
+
+/**
+ * Deposit crates, carrying a proofed count onto the racks that receive them.
+ * Proofed crates land first so overflow sold on the street is the green stuff.
+ */
+export function depositTracked(
+  t: Territory,
+  n: number,
+  proofed: number,
+  prefer: DepositPrefer = "any",
+  turn = 0,
+  lookup?: ManagerLookup,
+): { territory: Territory; moved: number; overflow: number; proofedLanded: number } {
+  if (n <= 0) return { territory: t, moved: 0, overflow: 0, proofedLanded: 0 };
+  let remaining = n;
+  let proofLeft = Math.max(0, Math.min(proofed, n));
+  const order = trackedOrder(prefer);
+  const rackets = t.rackets.map((r) => ({ ...r }));
+
+  const place = (wantProof: boolean) => {
+    for (const type of order) {
+      if (remaining <= 0) break;
+      if (wantProof && proofLeft <= 0) break;
+      for (const r of rackets) {
+        if (r.type !== type) continue;
+        if (type === "warehouse" && frozen(r, turn)) continue;
+        const free = Math.max(0, capOf(r, lookup) - r.stock);
+        if (free <= 0) continue;
+        const budget = wantProof ? proofLeft : remaining - proofLeft;
+        if (budget <= 0) continue;
+        const add = Math.min(free, budget);
+        r.stock += add;
+        if (wantProof) {
+          r.proofed = proofCount(r) + add;
+          proofLeft -= add;
+        }
+        remaining -= add;
+      }
+    }
+  };
+  place(true);
+  place(false);
+
+  return {
+    territory: { ...t, rackets },
+    moved: n - remaining,
+    overflow: remaining,
+    proofedLanded: Math.min(proofed, n) - proofLeft,
+  };
+}
+
+/**
+ * Draw crates from unfrozen warehouses only. With a lookup, only a managed
+ * barn loads. Proofed crates leave first.
+ */
+export function withdrawWarehouse(
+  t: Territory,
+  n: number,
+  turn = 0,
+  lookup?: ManagerLookup,
+): { territory: Territory; moved: number; proofed: number } {
+  if (n <= 0) return { territory: t, moved: 0, proofed: 0 };
+  let remaining = n;
+  let proofed = 0;
+  const rackets = t.rackets.map((r) => ({ ...r }));
+  for (const r of rackets) {
+    if (remaining <= 0) break;
+    if (r.type !== "warehouse" || frozen(r, turn) || r.stock <= 0) continue;
+    if (lookup && !warehouseManagerMods(lookup(r)).managed) continue;
+    const got = pullFrom(r, remaining);
+    remaining -= got.take;
+    proofed += got.proofed;
+  }
+  return { territory: { ...t, rackets }, moved: n - remaining, proofed };
+}
+
+/** Pull a standing sale or a split load across every managed barn, fullest first. */
+export function withdrawFamilyWarehouses(
+  territories: Territory[],
+  owner: FamilyName,
+  n: number,
+  turn: number,
+  lookup: ManagerLookup,
+): { territories: Territory[]; moved: number; proofed: number } {
+  const ranked = territories
+    .filter((t) => t.owner === owner)
+    .map((t) => ({
+      id: t.id,
+      stock: t.rackets.reduce((sum, r) => {
+        if (r.type !== "warehouse" || frozen(r, turn)) return sum;
+        if (!warehouseManagerMods(lookup(r)).managed) return sum;
+        return sum + r.stock;
+      }, 0),
+    }))
+    .filter((x) => x.stock > 0)
+    .sort((a, b) => b.stock - a.stock);
+
+  let next = territories;
+  let moved = 0;
+  let proofed = 0;
+  let need = n;
+  for (const src of ranked) {
+    if (need <= 0) break;
+    const current = next.find((t) => t.id === src.id);
+    if (!current) continue;
+    const wd = withdrawWarehouse(current, need, turn, lookup);
+    next = next.map((t) => (t.id === src.id ? wd.territory : t));
+    moved += wd.moved;
+    proofed += wd.proofed;
+    need -= wd.moved;
+  }
+  return { territories: next, moved, proofed };
+}
+
+/** Leftover stock in a managed, unfrozen warehouse has sat the week. It is proofed. */
+export function markWarehouseProof(
+  t: Territory,
+  turn: number,
+  lookup: ManagerLookup,
+): Territory {
+  return {
+    ...t,
+    rackets: t.rackets.map((r) => {
+      if (r.type !== "warehouse") return r;
+      const held = proofCount(r);
+      if (frozen(r, turn) || !warehouseManagerMods(lookup(r)).managed) {
+        return { ...r, proofed: held };
+      }
+      return { ...r, proofed: r.stock };
+    }),
   };
 }
 
@@ -404,17 +561,18 @@ export function applyWarehouseShrinkage(
     const mgr = lookup(r);
     const mods = warehouseManagerMods(mgr);
     if (mods.shrinkRate <= 0) return r;
-    const lost = Math.max(1, Math.ceil(r.stock * mods.shrinkRate));
-    const take = Math.min(r.stock, lost);
-    shrunk += take;
+    const next = { ...r };
+    const lost = Math.max(1, Math.ceil(next.stock * mods.shrinkRate));
+    const got = pullFrom(next, lost);
+    shrunk += got.take;
     byRacket.push({
       racketId: r.id,
-      lost: take,
+      lost: got.take,
       cause: mods.managed
         ? `weak manager: ${mgr?.name ?? "unknown"}`
         : "no manager",
     });
-    return { ...r, stock: r.stock - take };
+    return next;
   });
   return { territory: { ...t, rackets }, shrunk, byRacket };
 }
@@ -428,8 +586,9 @@ export function productionOutput(racket: Racket, bossHere = false): number {
 }
 
 /**
- * Produce into stills/breweries; spill overflow into same-district warehouses.
- * Leftover is dumped ($4/crate + heat).
+ * Produce into stills and breweries. A managed warehouse on the block takes
+ * the cook first, as green crates. What does not fit stays in the cooker,
+ * and anything past that cap spills to a warehouse or is dumped.
  */
 export function produceAndStore(
   t: Territory,
@@ -445,22 +604,31 @@ export function produceAndStore(
   backedUp: boolean;
 } {
   let produced = 0;
+  let territory: Territory = { ...t, rackets: t.rackets.map((r) => ({ ...r })) };
+  const intoBarn = !!lookup && hasManagedWarehouse(t, lookup, turn);
   let spill = 0;
-  let rackets = t.rackets.map((r) => {
-    if (!isProducerType(r.type)) return r;
+
+  for (const r of territory.rackets) {
+    if (!isProducerType(r.type)) continue;
     const out = productionOutput(r, bossHere);
     produced += out;
-    const cap = stockCap(r);
-    const room = Math.max(0, cap - r.stock);
-    const kept = Math.min(out, room);
-    spill += out - kept;
-    return { ...r, stock: r.stock + kept };
-  });
+    let left = out;
+    if (intoBarn && left > 0) {
+      const dep = depositTracked(territory, left, 0, "warehouseOnly", turn, lookup);
+      territory = dep.territory;
+      left -= dep.moved;
+    }
+    const cooker = territory.rackets.find((x) => x.id === r.id);
+    if (!cooker) continue;
+    const room = Math.max(0, stockCap(cooker) - cooker.stock);
+    const kept = Math.min(left, room);
+    cooker.stock += kept;
+    spill += left - kept;
+  }
 
-  let territory: Territory = { ...t, rackets };
   let dumped = 0;
   if (spill > 0) {
-    const dep = depositCrates(territory, spill, "warehouse", turn, lookup);
+    const dep = depositTracked(territory, spill, 0, "warehouseOnly", turn, lookup);
     territory = dep.territory;
     dumped = dep.overflow;
   }
@@ -492,20 +660,23 @@ export function supplySpeakeasies(
     if (need <= 0) continue;
     const rackets = territory.rackets.map((r) => ({ ...r }));
     let remaining = need;
+    let proofed = 0;
     for (const type of ["warehouse", "still", "brewery"] as RacketType[]) {
       if (remaining <= 0) break;
       for (const r of rackets) {
         if (r.type !== type) continue;
         if (type === "warehouse" && frozen(r, turn)) continue;
         if (r.stock <= 0) continue;
-        const take = Math.min(r.stock, remaining);
-        r.stock -= take;
-        remaining -= take;
+        const got = pullFrom(r, remaining);
+        remaining -= got.take;
+        proofed += got.proofed;
       }
     }
     const got = need - remaining;
     for (const r of rackets) {
-      if (r.id === speak.id) r.stock += got;
+      if (r.id !== speak.id) continue;
+      r.stock += got;
+      r.proofed = proofCount(r) + proofed;
     }
     territory = { ...territory, rackets };
   }
@@ -551,16 +722,19 @@ export function sellSpeakeasies(
       return r;
     }
     const amount = Math.min(r.stock, speakeasyPull(r.level, localWarehouse, bossHere));
+    const proofedSold = Math.min(amount, proofCount(r));
+    const greenSold = amount - proofedSold;
     const price = 15 + r.level * 5;
-    const crateDirty = amount * price;
-    const crateClean = Math.floor(amount * price * 0.3);
+    const crateDirty = greenSold * price + proofedSold * (price + PROOF_PREMIUM);
+    const crateClean =
+      Math.floor(greenSold * price * 0.3) + Math.floor(proofedSold * (price + PROOF_PREMIUM) * 0.3);
     const baseDirty = Math.floor(base * 0.7);
     const baseClean = Math.floor(base * 0.3);
     dirtyRevenue += crateDirty + baseDirty;
     revenue += crateClean + baseClean;
     byRacket.push({ id: r.id, clean: crateClean + baseClean, dirty: crateDirty + baseDirty });
     sold += amount;
-    return { ...r, stock: r.stock - amount };
+    return { ...r, stock: r.stock - amount, proofed: proofCount(r) - proofedSold };
   });
 
   return {
@@ -609,7 +783,8 @@ export function idleStorageCost(
   for (const r of t.rackets) {
     if (r.type !== "warehouse") continue;
     if (frozen(r, turn)) continue;
-    free += Math.max(0, capOf(r, lookup) - r.stock);
+    const empty = Math.max(0, capOf(r, lookup) - r.stock);
+    free += Math.max(0, empty - WAREHOUSE_FREE_EMPTY);
   }
   return Math.floor(free * 0.1);
 }
@@ -759,6 +934,7 @@ export interface StashRaidResult {
   heatDelta: number;
   logs: TurnLogEntry[];
   ledger: Partial<LiquorLedger>;
+  crew: CrewMember[];
 }
 
 export function processStashRaids(
@@ -771,7 +947,7 @@ export function processStashRaids(
   const ledger: Partial<LiquorLedger> = { seized: 0, heat: 0 };
 
   if (!state.playerFamily) {
-    return { territories, heatDelta, logs, ledger };
+    return { territories, heatDelta, logs, ledger, crew: state.crew };
   }
 
   const lookup = makeManagerLookup(state.crew, state.playerFamily);
@@ -803,7 +979,7 @@ export function processStashRaids(
     candidates.push({ t, crates: stored, unguarded, p });
   }
   if (candidates.length === 0) {
-    return { territories, heatDelta, logs, ledger };
+    return { territories, heatDelta, logs, ledger, crew: state.crew };
   }
 
   const totalW = candidates.reduce((s, c) => s + c.crates, 0);
@@ -818,7 +994,7 @@ export function processStashRaids(
   }
 
   if (!rng.chance(pick.p)) {
-    return { territories, heatDelta, logs, ledger };
+    return { territories, heatDelta, logs, ledger, crew: state.crew };
   }
 
   const seize = Math.ceil(pick.crates * 0.5);
@@ -847,7 +1023,20 @@ export function processStashRaids(
     family: state.playerFamily,
   });
 
-  return { territories, heatDelta, logs, ledger };
+  let crew = state.crew;
+  const frozenManagers = new Set<string>();
+  for (const r of pick.t.rackets) {
+    if (r.type === "warehouse" && r.managerId && (r.frozenUntil ?? 0) <= state.turn) {
+      frozenManagers.add(r.managerId);
+    }
+  }
+  for (const id of frozenManagers) {
+    const hit = penalizeRacketFreeze(crew, id, state.turn, state.playerFamily, id);
+    crew = hit.crew;
+    logs.push(...hit.logs);
+  }
+
+  return { territories, heatDelta, logs, ledger, crew };
 }
 
 /**

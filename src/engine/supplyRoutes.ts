@@ -12,6 +12,8 @@
  * road, and lands what's left in the destination's warehouse or speakeasy.
  */
 import type {
+  CrewMember,
+  CrewRequest,
   DeliveryRoute,
   FamilyName,
   GameState,
@@ -27,15 +29,16 @@ import type {
 } from "@/types/game";
 import { ALL_FAMILY_NAMES } from "@/data/families";
 import type { Rng } from "./rng";
-import { assignCrew, bumpLoyalty } from "./crew";
+import { assignCrew, bumpLoyalty, grantXpToCrew } from "./crew";
 import { crewPresentIn } from "./crewLocation";
 import { hasActiveIntel } from "./intel";
 import {
-  depositCrates,
+  depositTracked,
   emptyLiquorLedger,
+  hasManagedWarehouse,
   makeManagerLookup,
   mergeLedger,
-  withdrawCrates,
+  withdrawWarehouse,
 } from "./liquor";
 import { addEvidence, makeEvidence, openIncidentFromHijack } from "./incidents";
 import { seizureCover } from "./safehouse";
@@ -49,6 +52,7 @@ import {
   hasLeverage,
 } from "./passage";
 import { proposePassageSitdown } from "./sitdowns";
+import { noteDrivingArrival } from "./practice";
 
 /* ------------------------------------------------------------------ */
 /* Per-hop risk                                                        */
@@ -122,6 +126,83 @@ function combine(hops: RouteHop[], pick: (h: RouteHop) => number): number {
   return 1 - safe;
 }
 
+/** Left where he parked it. The route does not roll and nobody covers. */
+export const TRUCK_HELD = -1;
+/** He is home. The next supply pass buys the truck, or rolls it if a trucking company is waiting. */
+export const TRUCK_ARM = 0;
+
+/** Highest-level trucking company on a block this family holds. */
+export function truckingLevel(state: { territories: Territory[] }, family: FamilyName): number {
+  let best = 0;
+  for (const t of state.territories) {
+    if (t.owner !== family) continue;
+    for (const r of t.rackets) {
+      if (r.type === "trucking" && r.level > best) best = r.level;
+    }
+  }
+  return best;
+}
+
+/** Share taken off hijack, stop, and seizure odds. Level 1 is 20%, plus 10% a level, capped at 40%. */
+export function roadCut(level: number): number {
+  if (level <= 0) return 0;
+  return Math.min(0.4, 0.2 + 0.1 * (level - 1));
+}
+
+/** Extra crates a standing route loads, one per level, up to 3. */
+export function extraHaul(level: number): number {
+  return Math.min(3, Math.max(0, level));
+}
+
+/**
+ * A driver walked off the truck. The week's load is lifted off the back,
+ * and the route sits until he is done and a truck exists again.
+ */
+export function leaveTheTruck(state: GameState, man: CrewMember): GameState {
+  const back = man.returnTo;
+  if (back?.type !== "delivery" || !back.routeId) return state;
+  const route = state.supplyRoutes.find((r) => r.id === back.routeId);
+  if (!route) return state;
+  const truckHere =
+    route.truckReadyTurn == null || (route.truckReadyTurn > 0 && state.turn >= route.truckReadyTurn);
+  const src = state.territories.find((t) => t.id === route.sourceTerritoryId);
+  let territories = state.territories;
+  let taken = 0;
+  if (truckHere && src) {
+    const lookup = makeManagerLookup(state.crew, route.family);
+    const wd = withdrawWarehouse(src, route.cratesPerTurn, state.turn, lookup);
+    taken = wd.moved;
+    territories = territories.map((t) => (t.id === src.id ? wd.territory : t));
+  }
+  const place = src?.name ?? "the street";
+  const text = !truckHere
+    ? `${man.name} is off the route. The new truck is not here yet.`
+    : taken > 0
+      ? `${man.name} left the truck in ${place}. ${taken} crate${taken === 1 ? "" : "s"} were lifted off the back.`
+      : `${man.name} left the truck in ${place}. The back was empty.`;
+  const log =
+    man.family === state.playerFamily
+      ? [
+          ...state.turnLog,
+          {
+            id: `log_left_truck_${route.id}_${state.turn}`,
+            turn: state.turn,
+            category: "delivery" as const,
+            text,
+            family: man.family,
+          },
+        ]
+      : state.turnLog;
+  return {
+    ...state,
+    territories,
+    turnLog: log,
+    supplyRoutes: state.supplyRoutes.map((r) =>
+      r.id === route.id ? { ...r, truckReadyTurn: TRUCK_HELD } : r,
+    ),
+  };
+}
+
 /** Driver and escort take the edge off. */
 function crewMult(state: Pick<GameState, "crew">, driverId?: string, escortId?: string): number {
   let mult = 1;
@@ -129,6 +210,7 @@ function crewMult(state: Pick<GameState, "crew">, driverId?: string, escortId?: 
   if (driver) {
     mult *= 1 - Math.min(0.35, driver.skills.driving / 250);
     if (driver.traits.includes("wheelman")) mult *= 0.85;
+    else if (driver.role === "associate") mult *= 1.15;
   }
   if (escortId) mult *= 0.75;
   return mult;
@@ -153,7 +235,7 @@ export function assessPath(
   // The source block is ours and the truck is loading, not on the road.
   const road = path.slice(1);
   const hops = road.map((tid) => assessHop(state, tid, family));
-  const mult = crewMult(state, driverId, escortId);
+  const mult = crewMult(state, driverId, escortId) * (1 - roadCut(truckingLevel(state, family)));
   const clamp = (n: number) => Math.max(0.02, Math.min(0.75, n));
   const families = familiesOnPath(state, path, family);
   const needsDeal = families.filter((f) => !activeDeal(state as GameState, f));
@@ -224,6 +306,33 @@ function cheapestRoad(
     path.unshift(p);
   }
   return path;
+}
+
+function pathIsWalk(territories: Territory[], path: string[]): boolean {
+  if (path.length === 0) return false;
+  const byId = new Map(territories.map((t) => [t.id, t]));
+  for (let i = 0; i < path.length - 1; i++) {
+    const hop = byId.get(path[i]!);
+    if (!hop?.adjacentTerritories.includes(path[i + 1]!)) return false;
+  }
+  return true;
+}
+
+/** A saved road drawn on the old neighbor list is redrawn as the direct road. */
+export function repairRoutePaths<
+  T extends { sourceTerritoryId: string; destTerritoryId: string; path: string[] },
+>(territories: Territory[], routes: T[]): T[] {
+  return routes.map((route) => {
+    if (pathIsWalk(territories, route.path)) return route;
+    const path = cheapestRoad(
+      territories,
+      route.sourceTerritoryId,
+      route.destTerritoryId,
+      () => 1,
+    );
+    if (!path) return route;
+    return { ...route, path };
+  });
 }
 
 export const STRATEGY_LABEL: Record<RouteStrategy, string> = {
@@ -435,6 +544,10 @@ export function establishSupplyRoute(
   if (!src || src.owner !== player) return fail("Source must be your district.");
   if (!dest || dest.owner !== player) return fail("Destination must be your district.");
   if (src.id === dest.id) return fail("Pick two different districts.");
+  const lookup = makeManagerLookup(state.crew, player);
+  if (!hasManagedWarehouse(src, lookup, state.turn)) {
+    return fail("Source needs a managed warehouse. A still cannot ship on its own.");
+  }
   if (!dest.rackets.some((r) => r.type === "warehouse" || r.type === "speakeasy")) {
     return fail("Destination needs a warehouse or a speakeasy to take crates.");
   }
@@ -505,7 +618,7 @@ export function establishSupplyRoute(
 }
 
 function freeRouteCrew(state: GameState, route: SupplyRoute): GameState {
-  const ids = [route.driverId, route.escortId].filter((x): x is string => !!x);
+  const ids = [route.driverId, route.coverDriverId, route.escortId].filter((x): x is string => !!x);
   const crew = state.crew.map((c) =>
     ids.includes(c.id) && c.assignment.type === "delivery" && c.assignment.routeId === route.id
       ? { ...c, assignment: { type: "idle" as const } }
@@ -650,6 +763,403 @@ function pickHijacker(state: GameState, option: RouteOption, rng: Rng): FamilyNa
   return [...weights.keys()][0];
 }
 
+/** Loyalty an associate gains for being trusted with a truck. */
+const COVER_LOYALTY = 4;
+/** Loyalty a loose soldier loses when the boss puts him on a route. */
+const SOLDIER_RESENTMENT = 6;
+/** XP an associate earns each week he drives in someone else's place. */
+const COVER_XP = 5;
+/** A loose soldier speaks up about one week in five. */
+const SOLDIER_ASK_CHANCE = 0.2;
+/** Turns to wait before asking again after a refusal. */
+const COVER_ASK_GAP = 3;
+
+function shortName(name: string): string {
+  return name.replace(/"[^"]*"\s*/g, "").trim().split(/\s+/).pop() ?? name;
+}
+
+function byWheel(a: CrewMember, b: CrewMember): number {
+  const wheel = Number(b.traits.includes("wheelman")) - Number(a.traits.includes("wheelman"));
+  if (wheel !== 0) return wheel;
+  return b.skills.driving - a.skills.driving;
+}
+
+/** A hit or a casing that already went off this morning. */
+function outThisMorning(state: GameState, crewId: string): boolean {
+  const morning = state.turn - 1;
+  return (state.operations ?? []).some((op) => {
+    if (!op.resolved || op.resolvedTurn !== morning) return false;
+    return (
+      op.shooterIds.includes(crewId) ||
+      op.wheelmanId === crewId ||
+      op.lookoutId === crewId ||
+      op.bombMakerId === crewId ||
+      op.planterId === crewId ||
+      op.negotiatorId === crewId
+    );
+  });
+}
+
+function canTakeTheWheel(state: GameState, man: CrewMember | undefined, used: Set<string>): boolean {
+  if (!man || used.has(man.id)) return false;
+  if (man.status !== "active" || man.role === "boss") return false;
+  if (man.assignment.type === "operation" || man.assignment.type === "surveillance") return false;
+  if (outThisMorning(state, man.id)) return false;
+  return true;
+}
+
+function whyDown(state: GameState, man: CrewMember | undefined): string {
+  if (!man) return "No driver";
+  const who = shortName(man.name);
+  if (man.status === "dead") return `${who} is dead`;
+  if (man.status === "wounded") return `${who} is wounded`;
+  if (man.status === "jailed") return `${who} is in the Tombs`;
+  if (man.status === "held") return `${who} is being held`;
+  if (outThisMorning(state, man.id) || man.assignment.type === "operation") return `${who} is out on a job`;
+  if (man.assignment.type === "surveillance") return `${who} is casing a block`;
+  return `${who} can't drive`;
+}
+
+function postedAt(
+  state: GameState,
+  territoryId: string,
+  family: FamilyName,
+  used: Set<string>,
+  skipId?: string,
+): CrewMember[] {
+  return state.crew
+    .filter(
+      (c) =>
+        c.family === family &&
+        c.id !== skipId &&
+        c.assignment.type === "garrison" &&
+        c.assignment.territoryId === territoryId &&
+        canTakeTheWheel(state, c, used),
+    )
+    .sort(byWheel);
+}
+
+function idleOfRole(
+  state: GameState,
+  family: FamilyName,
+  role: "associate" | "soldier",
+  used: Set<string>,
+  looseOnly: boolean,
+): CrewMember[] {
+  return state.crew
+    .filter(
+      (c) =>
+        c.family === family &&
+        c.role === role &&
+        c.assignment.type === "idle" &&
+        (!looseOnly || !c.capoId) &&
+        canTakeTheWheel(state, c, used),
+    )
+    .sort(byWheel);
+}
+
+function releaseCover(state: GameState, route: SupplyRoute): { state: GameState; route: SupplyRoute } {
+  if (!route.coverDriverId) return { state, route };
+  const crew = state.crew.map((c) =>
+    c.id === route.coverDriverId && c.assignment.type === "delivery" && c.assignment.routeId === route.id
+      ? { ...c, assignment: { type: "idle" as const } }
+      : c,
+  );
+  const supplyRoutes = state.supplyRoutes.map((r) =>
+    r.id === route.id ? { ...r, coverDriverId: undefined } : r,
+  );
+  return {
+    state: { ...state, crew, supplyRoutes },
+    route: supplyRoutes.find((r) => r.id === route.id) ?? route,
+  };
+}
+
+function promoteDriver(
+  state: GameState,
+  route: SupplyRoute,
+  man: CrewMember,
+): { state: GameState; route: SupplyRoute } {
+  let crew = assignCrew(state.crew, man.id, {
+    type: "delivery",
+    routeId: route.id,
+    territoryId: route.sourceTerritoryId,
+  });
+  crew = crew.map((c) =>
+    c.id === route.driverId && c.assignment.type === "delivery" && c.assignment.routeId === route.id
+      ? { ...c, assignment: { type: "idle" as const } }
+      : c,
+  );
+  const territories = state.territories.map((t) => ({
+    ...t,
+    garrisonIds: t.garrisonIds.filter((id) => id !== man.id),
+  }));
+  const supplyRoutes = state.supplyRoutes.map((r) =>
+    r.id === route.id ? { ...r, driverId: man.id, coverDriverId: undefined } : r,
+  );
+  return {
+    state: { ...state, crew, territories, supplyRoutes },
+    route: supplyRoutes.find((r) => r.id === route.id) ?? { ...route, driverId: man.id, coverDriverId: undefined },
+  };
+}
+
+function acceptedCover(state: GameState, route: SupplyRoute, used: Set<string>): CrewMember | undefined {
+  const man = state.crew.find((c) => c.id === route.coverDriverId);
+  if (!man || !canTakeTheWheel(state, man, used)) return undefined;
+  if (man.assignment.type === "idle") return man;
+  if (man.assignment.type === "delivery" && man.assignment.routeId === route.id) return man;
+  return undefined;
+}
+
+function coverPending(state: GameState, routeId: string): boolean {
+  return (state.crewRequests ?? []).some(
+    (r) => r.kind === "cover" && r.routeId === routeId && r.status === "pending",
+  );
+}
+
+function askCooled(route: SupplyRoute, turn: number): boolean {
+  return route.coverAskedTurn == null || turn >= route.coverAskedTurn + COVER_ASK_GAP;
+}
+
+function queueAsk(
+  state: GameState,
+  route: SupplyRoute,
+  req: CrewRequest,
+): { state: GameState; route: SupplyRoute } {
+  const supplyRoutes = state.supplyRoutes.map((r) =>
+    r.id === route.id ? { ...r, coverAskedTurn: state.turn } : r,
+  );
+  return {
+    state: {
+      ...state,
+      supplyRoutes,
+      crewRequests: [...(state.crewRequests ?? []), req],
+    },
+    route: supplyRoutes.find((r) => r.id === route.id) ?? route,
+  };
+}
+
+/** XP for an associate driving in someone else's place. A made man gets none of it. */
+function paySubstitute(state: GameState, route: SupplyRoute, driver: CrewMember): GameState {
+  if (driver.role !== "associate" || route.coverDriverId !== driver.id) return state;
+  return { ...state, crew: grantXpToCrew(state.crew, driver.id, COVER_XP).crew };
+}
+
+interface Seat {
+  state: GameState;
+  route: SupplyRoute;
+  driver: CrewMember | null;
+  /** Prefixed onto the week's line when someone else took the truck. */
+  lead: string;
+  text: string;
+}
+
+/**
+ * The named driver, or a man garrisoned at the warehouse, or a cover the boss
+ * already accepted. With nobody posted, an associate always asks and a loose
+ * soldier rarely does.
+ */
+function seatForRoute(state: GameState, route: SupplyRoute, rng: Rng, used: Set<string>): Seat {
+  const family = route.family;
+  let named = state.crew.find((c) => c.id === route.driverId);
+  const down = whyDown(state, named);
+
+  if (canTakeTheWheel(state, named, used)) {
+    const released = releaseCover(state, route);
+    let next = released.state;
+    route = released.route;
+    const man = next.crew.find((c) => c.id === named!.id)!;
+    if (man.assignment.type !== "delivery") {
+      next = {
+        ...next,
+        crew: assignCrew(next.crew, man.id, {
+          type: "delivery",
+          routeId: route.id,
+          territoryId: route.sourceTerritoryId,
+        }),
+      };
+    }
+    return { state: next, route, driver: next.crew.find((c) => c.id === man.id) ?? man, lead: "", text: "" };
+  }
+
+  const cover = acceptedCover(state, route, used);
+  const posted = postedAt(state, route.sourceTerritoryId, family, used, route.escortId);
+  if (named?.status === "dead" && (cover || posted[0])) {
+    const man = cover ?? posted[0]!;
+    const promoted = promoteDriver(state, route, man);
+    return {
+      state: promoted.state,
+      route: promoted.route,
+      driver: promoted.state.crew.find((c) => c.id === man.id) ?? man,
+      lead: `${shortName(man.name)} has the route. ${down}. `,
+      text: "",
+    };
+  }
+
+  if (cover) {
+    return {
+      state,
+      route,
+      driver: cover,
+      lead: `${shortName(cover.name)} took the truck. ${down}. `,
+      text: "",
+    };
+  }
+
+  if (posted[0]) {
+    const man = posted[0];
+    return {
+      state,
+      route,
+      driver: man,
+      lead: `${shortName(man.name)} took the truck. ${down}. `,
+      text: "",
+    };
+  }
+
+  const waiting = coverPending(state, route.id);
+  if (waiting) {
+    return { state, route, driver: null, lead: "", text: `${down}. Waiting on you to name a cover.` };
+  }
+
+  const associates = idleOfRole(state, family, "associate", used, false).filter((c) => c.id !== route.escortId);
+  const soldiers = idleOfRole(state, family, "soldier", used, true).filter((c) => c.id !== route.escortId);
+  if (askCooled(route, state.turn) && associates[0]) {
+    const man = associates[0];
+    const asked = queueAsk(state, route, {
+      id: `cover_${route.id}_${state.turn}`,
+      turn: state.turn,
+      capoId: man.id,
+      candidateId: man.id,
+      pitch: `Boss, ${shortName(named?.name ?? "the driver")} can't take the truck. I'll run it until he's up.`,
+      status: "pending",
+      kind: "cover",
+      routeId: route.id,
+      volunteer: true,
+    });
+    return {
+      state: asked.state,
+      route: asked.route,
+      driver: null,
+      lead: "",
+      text: `${shortName(man.name)} asked to take the truck. ${down}.`,
+    };
+  }
+  if (askCooled(route, state.turn) && soldiers[0] && rng.chance(SOLDIER_ASK_CHANCE)) {
+    const man = soldiers[0];
+    const driverAsks = named?.status === "wounded" && rng.chance(0.5);
+    const asked = queueAsk(state, route, {
+      id: `cover_${route.id}_${state.turn}`,
+      turn: state.turn,
+      capoId: driverAsks && named ? named.id : man.id,
+      candidateId: man.id,
+      pitch:
+        driverAsks && named
+          ? `Boss, I can't hold the wheel. Send ${shortName(man.name)}. He won't like it.`
+          : `Boss, the truck's sitting. I'll drive it if you say so.`,
+      status: "pending",
+      kind: "cover",
+      routeId: route.id,
+      volunteer: !driverAsks,
+    });
+    const text =
+      driverAsks && named
+        ? `${shortName(named.name)} asked you to send ${shortName(man.name)}.`
+        : `${shortName(man.name)} asked to take the truck. He won't like it.`;
+    return { state: asked.state, route: asked.route, driver: null, lead: "", text };
+  }
+
+  return {
+    state,
+    route,
+    driver: null,
+    lead: "",
+    text: `${down}. Nobody at the warehouse to take the truck.`,
+  };
+}
+
+export type CoverAnswer = "approve" | "reject" | "later";
+
+/** The boss's answer to a man covering a truck. A refusal does not sting. */
+export function answerCoverRequest(
+  state: GameState,
+  requestId: string,
+  answer: CoverAnswer,
+): { state: GameState; message: string } {
+  const req = (state.crewRequests ?? []).find((r) => r.id === requestId);
+  if (!req || req.kind !== "cover" || req.status !== "pending") return { state, message: "" };
+  const setStatus = (status: CrewRequest["status"], patch: Partial<CrewRequest> = {}) =>
+    (state.crewRequests ?? []).map((r) => (r.id === requestId ? { ...r, status, ...patch } : r));
+  const man = state.crew.find((c) => c.id === req.candidateId);
+  const who = shortName(man?.name ?? "He");
+
+  if (answer === "later") {
+    return {
+      state: { ...state, crewRequests: setStatus("pending", { deferred: (req.deferred ?? 0) + 1 }) },
+      message: `${who} will ask again.`,
+    };
+  }
+
+  const route = (state.supplyRoutes ?? []).find((r) => r.id === req.routeId);
+  const free = !!man && man.status === "active" && man.assignment.type === "idle";
+  if (answer === "reject" || !route || !man || !free) {
+    return {
+      state: { ...state, crewRequests: setStatus(answer === "reject" ? "rejected" : "expired") },
+      message: answer === "reject" ? "The truck sits." : "He's not free anymore.",
+    };
+  }
+
+  const named = state.crew.find((c) => c.id === route.driverId);
+  let next = state;
+  let live = route;
+  if (named?.status === "dead") {
+    const promoted = promoteDriver(state, route, man);
+    next = promoted.state;
+    live = promoted.route;
+  } else {
+    const crew = assignCrew(state.crew, man.id, {
+      type: "delivery",
+      routeId: route.id,
+      territoryId: route.sourceTerritoryId,
+    });
+    const supplyRoutes = state.supplyRoutes.map((r) =>
+      r.id === route.id ? { ...r, coverDriverId: man.id } : r,
+    );
+    next = { ...state, crew, supplyRoutes };
+    live = supplyRoutes.find((r) => r.id === route.id) ?? route;
+  }
+
+  let crew = next.crew;
+  let message: string;
+  if (man.role === "associate") {
+    crew = bumpLoyalty(crew, [man.id], COVER_LOYALTY).crew;
+    message = `${who} has the truck until the driver is back. He won't forget it.`;
+  } else {
+    crew = crew.map((c) =>
+      c.id === man.id ? { ...c, loyalty: Math.max(0, c.loyalty - SOLDIER_RESENTMENT) } : c,
+    );
+    message = `${who} has the truck. He'll hold it against you.`;
+  }
+  const text = man.role === "associate"
+    ? `${man.name} took ${shortName(named?.name ?? "the route")}'s truck.`
+    : `${man.name} took the truck, and he doesn't care for it.`;
+  const log: TurnLogEntry = {
+    id: `log_cover_${live.id}_${state.turn}`,
+    turn: state.turn,
+    category: "delivery",
+    text,
+    family: state.playerFamily ?? undefined,
+  };
+  return {
+    state: {
+      ...next,
+      crew,
+      crewRequests: setStatus("approved"),
+      turnLog: [...next.turnLog, log].slice(-200),
+    },
+    message,
+  };
+}
+
 /**
  * Run every active player route for the week. Deals collect their tolls; hot
  * hops get the truck stopped; the road rolls for hijack and seizure; what's
@@ -667,7 +1177,9 @@ export function processSupplyRoutes(state: GameState, rng: Rng): SupplyRunResult
   const log = (id: string, text: string) =>
     logs.push({ id: `log_supply_${id}_${state.turn}`, turn: state.turn, category: "delivery", text, family: player });
 
-  for (const route of [...(state.supplyRoutes ?? [])]) {
+  const usedDrivers = new Set<string>();
+  for (const planned of [...(state.supplyRoutes ?? [])]) {
+    let route = planned;
     if (route.family !== player) continue;
     const src = next.territories.find((t) => t.id === route.sourceTerritoryId);
     const dest = next.territories.find((t) => t.id === route.destTerritoryId);
@@ -696,29 +1208,78 @@ export function processSupplyRoutes(state: GameState, rng: Rng): SupplyRunResult
     }
     if (route.status !== "active") continue;
 
-    const driver = next.crew.find((c) => c.id === route.driverId);
-    if (!driver || driver.status !== "active") {
+    if (route.truckReadyTurn === TRUCK_ARM) {
+      const ready = truckingLevel(next, route.family) > 0 ? state.turn : state.turn + 2;
+      route = { ...route, truckReadyTurn: ready };
+      next = {
+        ...next,
+        supplyRoutes: next.supplyRoutes.map((r) => (r.id === route.id ? route : r)),
+      };
+    }
+    const held = route.truckReadyTurn === TRUCK_HELD;
+    const buying =
+      route.truckReadyTurn != null && route.truckReadyTurn > 0 && state.turn < route.truckReadyTurn;
+    if (held || buying) {
+      const weeks = buying ? route.truckReadyTurn! - state.turn : 0;
+      const text = held
+        ? `The truck was left in ${srcName}. Nothing rolls.`
+        : `Buying a truck for ${srcName} → ${destName}. Rolls in ${weeks} week${weeks === 1 ? "" : "s"}.`;
+      next = markLast(next, route.id, { turn: state.turn, outcome: "waiting", text });
+      log(route.id, text);
+      continue;
+    }
+    if (route.truckReadyTurn != null && route.truckReadyTurn > 0) {
+      route = { ...route, truckReadyTurn: undefined };
+      next = {
+        ...next,
+        supplyRoutes: next.supplyRoutes.map((r) => (r.id === route.id ? route : r)),
+      };
+    }
+
+    const seated = seatForRoute(next, route, rng, usedDrivers);
+    next = seated.state;
+    route = seated.route;
+    if (!seated.driver) {
       next = markLast(next, route.id, {
         turn: state.turn,
         outcome: "no_driver",
-        text: driver ? `${driver.name} can't drive this week.` : "No driver.",
+        text: seated.text,
       });
+      log(route.id, seated.text);
       continue;
     }
+    usedDrivers.add(seated.driver.id);
+    const driver = seated.driver;
+    const lead = seated.lead;
     const escort = route.escortId ? next.crew.find((c) => c.id === route.escortId) : undefined;
-    const escortRides = !!escort && escort.status === "active";
+    const escortRides = !!escort && escort.status === "active" && escort.id !== driver.id;
 
-    const wd = withdrawCrates(src, route.cratesPerTurn, state.turn);
+    if (!hasManagedWarehouse(src, lookup, state.turn)) {
+      const text = `${lead}No managed warehouse in ${srcName}. The truck waits.`;
+      next = markLast(next, route.id, { turn: state.turn, outcome: "no_stock", text });
+      log(route.id, text);
+      continue;
+    }
+
+    const wd = withdrawWarehouse(
+      src,
+      route.cratesPerTurn + extraHaul(truckingLevel(next, route.family)),
+      state.turn,
+      lookup,
+    );
     if (wd.moved <= 0) {
+      const stockText = `${lead}${srcName} had nothing to load.`;
       next = markLast(next, route.id, {
         turn: state.turn,
         outcome: "no_stock",
-        text: `${srcName} had nothing to load.`,
+        text: stockText,
       });
+      log(route.id, stockText);
       continue;
     }
     next = { ...next, territories: next.territories.map((t) => (t.id === src.id ? wd.territory : t)) };
     let cargo = wd.moved;
+    let proofedCargo = wd.proofed;
 
     // Tolls and taxes on the road.
     const option = assessPath(next, route.path, player, driver.id, escortRides ? escort!.id : undefined);
@@ -766,6 +1327,8 @@ export function processSupplyRoutes(state: GameState, rng: Rng): SupplyRunResult
       if (hasLeverage(next, fam)) stopChance *= 0.5;
       const status = statusFromScore(getRelation(next.relations, player, fam));
       if (status === "war" || status === "hostile") stopChance *= 1.3;
+      if (driver.role === "associate" && !driver.traits.includes("wheelman")) stopChance *= 1.15;
+      stopChance *= 1 - roadCut(truckingLevel(next, route.family));
       const scene = option.hops.find((h) => h.owner === fam)?.territoryId ?? route.path[1]!;
       if (rng.chance(Math.min(0.85, stopChance))) {
         const take = Math.max(1, Math.ceil(cargo * (0.15 + rng.next() * 0.15)));
@@ -823,8 +1386,8 @@ export function processSupplyRoutes(state: GameState, rng: Rng): SupplyRunResult
       }
       next = { ...next, crew };
       const rode = bumpLoyalty(next.crew, [driver.id, escortRides ? escort!.id : ""], 1);
-      next = { ...next, crew: rode.crew };
-      const text = `Truck ${srcName} → ${destName} hijacked. Lost ${cargo} crates${hurt.length ? `; ${hurt.join(" and ")} wounded` : ""}.`;
+      next = paySubstitute({ ...next, crew: rode.crew }, route, driver);
+      const text = `${lead}Truck ${srcName} → ${destName} hijacked. Lost ${cargo} crates${hurt.length ? `; ${hurt.join(" and ")} wounded` : ""}.`;
       next = markLast(next, route.id, { turn: state.turn, outcome: "hijacked", text });
       log(route.id, text);
       continue;
@@ -832,7 +1395,7 @@ export function processSupplyRoutes(state: GameState, rng: Rng): SupplyRunResult
 
     // Police checkpoint. A safehouse along the road is a garage to duck into.
     if (cargo > 0) {
-      const checkpoint = next.heat.level > 50 ? 0.12 : 0.04;
+      const checkpoint = (next.heat.level > 50 ? 0.12 : 0.04) * (1 - roadCut(truckingLevel(next, route.family)));
       const garage = seizureCover(next, player, route.path);
       const roll = rng.next();
       if (roll < checkpoint) {
@@ -841,8 +1404,12 @@ export function processSupplyRoutes(state: GameState, rng: Rng): SupplyRunResult
         } else {
           heatDelta += 4;
           ledger = mergeLedger(ledger, { seized: cargo, heat: 4 });
-          const text = `Police seized the ${srcName} → ${destName} run (${cargo} crates).`;
-          next = { ...next, crew: bumpLoyalty(next.crew, [driver.id, escortRides ? escort!.id : ""], 1).crew };
+          const text = `${lead}Police seized the ${srcName} → ${destName} run (${cargo} crates).`;
+          next = paySubstitute(
+            { ...next, crew: bumpLoyalty(next.crew, [driver.id, escortRides ? escort!.id : ""], 1).crew },
+            route,
+            driver,
+          );
           next = markLast(next, route.id, { turn: state.turn, outcome: "seized", text });
           log(route.id, text);
           continue;
@@ -852,7 +1419,8 @@ export function processSupplyRoutes(state: GameState, rng: Rng): SupplyRunResult
 
     // Landed.
     const destNow = next.territories.find((t) => t.id === dest.id)!;
-    const dep = depositCrates(destNow, cargo, "any", state.turn, lookup);
+    proofedCargo = Math.min(proofedCargo, cargo);
+    const dep = depositTracked(destNow, cargo, proofedCargo, "any", state.turn, lookup);
     next = { ...next, territories: next.territories.map((t) => (t.id === dest.id ? dep.territory : t)) };
     ledger = mergeLedger(ledger, { delivered: dep.moved });
     let payout = 0;
@@ -863,9 +1431,11 @@ export function processSupplyRoutes(state: GameState, rng: Rng): SupplyRunResult
     }
     const outcome = stoppedBy ? "stopped" : "delivered";
     const rode = bumpLoyalty(next.crew, [driver.id, escortRides ? escort!.id : ""], 1);
-    next = { ...next, crew: rode.crew };
+    const drove = noteDrivingArrival(rode.crew, driver.id, state.turn, state.playerFamily);
+    logs.push(...drove.logs);
+    next = paySubstitute({ ...next, crew: drove.crew }, route, driver);
     const text =
-      `${dep.moved} crates landed in ${destName}` +
+      `${lead}${dep.moved} crates landed in ${destName}` +
       (dep.overflow > 0 ? `; ${dep.overflow} street-sold for $${payout}` : "") +
       (notes.length ? ` (${notes.join("; ")})` : "") +
       ".";

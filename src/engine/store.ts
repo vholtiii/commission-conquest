@@ -18,12 +18,19 @@ import type {
   RacketType,
 } from "@/types/game";
 import { RACKET_LABELS } from "@/types/game";
-import { buildInitialState, startGame } from "./initialState";
+import { alignTerritoriesToMap, buildInitialState, startGame } from "./initialState";
 import { endTurn, resolvePlayerHits } from "./turnPipeline";
-import { familyHeadless, releaseMember } from "./jail";
+import { familyHeadless, releaseBoss, releaseMember } from "./jail";
 import { emptyVictory, finalTurnFor, seedRivalInfluence } from "./victory";
 import { buildCityLayout, ensureRacketSites, nextRacketSiteIndex, racketBlockFor } from "./cityLayout";
-import { buildHitCinematic, commitHitCrew, planHit } from "./hitOps";
+import { bringCrewOnHit, buildHitCinematic, commitHitCrew, planHit } from "./hitOps";
+import {
+  acceptCommissionErrand as takeErrand,
+  canWorkErrand,
+  declineCommissionErrand as refuseErrand,
+  errandWeeksLeft,
+} from "./commissionErrand";
+import { canJoinHit, canSendOnHit, pullForJob } from "./jobReturn";
 import { createRng, hashString } from "./rng";
 import {
   assignCrew,
@@ -56,9 +63,18 @@ import {
   lawyerOffer,
   LAWYER_COOLDOWN_TURNS,
   LAWYER_HEAT,
+  QUIET_COST,
+  QUIET_HEAT,
+  QUIET_WANTED,
+  BOSS_PLEA_COST,
+  BOSS_PLEA_HEAT,
+  BOSS_PLEA_WEEKS,
+  COUNSEL_COST,
+  COUNSEL_WEEKS,
   STREET_LAWYER_BAIL_HEAT,
   STREET_LAWYER_COST,
   STREET_LAWYER_WEEKS,
+  washQuote,
   normalizeTerritoryRackets,
   pruneLaunderPlan,
   migrateLaunderSites,
@@ -71,11 +87,11 @@ import {
   shipmentSeizureChance,
   supplierPrice,
   totalCrates,
-  withdrawCrates,
+  withdrawWarehouse,
 } from "./liquor";
 import { ensureTerritorySlots, maxRacketsFor, allowedRacketTypes, lotTier, lotTierHint } from "./territoryValue";
 import { attemptBribe } from "./bribes";
-import { aggregateBribeEffects, applyHeat } from "./heat";
+import { aggregateBribeEffects, applyHeat, decayHeat } from "./heat";
 import { applyEventChoice } from "./events";
 import { beginMaking, commitBooks, sittingOut } from "./making";
 import { callInOwn as orderCallIn } from "./callIn";
@@ -97,7 +113,7 @@ import {
   joinCrew,
   leaveCrew,
   placeCrewAt,
-  unseatedCrew,
+  freeCrewOf,
   type CrewRequestAnswer,
 } from "./crews";
 import {
@@ -121,9 +137,11 @@ import { breakDeal, fulfilLiquorDeal, inTruce } from "./deals";
 import { handsDown } from "./mourning";
 import { answerRuling as settleRuling, lobbySeat as buySeat, openCommissionCall, openWarCall } from "./commission";
 import {
+  answerCoverRequest,
   cancelSupplyRoute,
   establishSupplyRoute,
   reopenPassageTalks,
+  repairRoutePaths,
   setRouteRunHot,
   toggleSupplyRoute,
 } from "./supplyRoutes";
@@ -287,6 +305,14 @@ interface GameStore extends GameState {
   callLawyer: () => void;
   hireStreetLawyer: () => void;
   streetLawyerBail: (crewId: string) => void;
+  /** Take two points of wanted off one man. Once a week. */
+  quietWanted: (crewId: string) => void;
+  /** Cut two weeks off the boss's sentence. Once per sentence. */
+  pleadBossCase: () => void;
+  /** Keep house counsel so heat falls an extra 3 a week. */
+  hireCounsel: () => void;
+  /** Turn a chosen pile of dirty cash into clean, at a bad rate. */
+  rushWash: (amount: number) => void;
   planPlayerHit: (args: {
     targetCrewId?: string;
     targetTerritoryId: string;
@@ -364,6 +390,21 @@ interface GameStore extends GameState {
   lobbySeat: (family: FamilyName, kind: "cash" | "influence") => void;
   /** Accept or refuse the ruling on the card. */
   answerRuling: (answer: "accept" | "refuse") => void;
+  /** Take the Commission's manhunt. The lead comes with it. */
+  acceptCommissionErrand: () => void;
+  /** Turn the manhunt down. Another family may take it. */
+  declineCommissionErrand: () => void;
+  /** Case the district the table last named. */
+  caseCommissionErrand: (crewId: string) => void;
+  /** Hit the mark once a report has placed him. */
+  orderCommissionHit: (args: {
+    approach: "ambush" | "drive_by" | "car_bomb";
+    shooterIds?: string[];
+    wheelmanId?: string;
+    lookoutId?: string;
+    bombMakerId?: string;
+    planterId?: string;
+  }) => void;
   /** Tear up a deal on purpose. Everyone hears. */
   breakDeal: (dealId: string) => void;
   /** Send the crates a liquor order calls for. */
@@ -659,11 +700,13 @@ export const useGameStore = create<GameStore>()(
         }
         get().assignMember(crewId, { type: "safehouse", territoryId });
         const block = s.territories.find((t) => t.id === territoryId);
-        toast.success(`${member.name} lies low`, {
+        toast.success(member.status === "wounded" ? `${member.name} goes in to heal` : `${member.name} lies low`, {
           description:
-            member.role === "boss"
-              ? `Inside the ${block?.name ?? "block"} safehouse. The family goes quiet while he's down.`
-              : `Inside the ${block?.name ?? "block"} safehouse. Off the street, off the blotter.`,
+            member.status === "wounded"
+              ? `Inside the ${block?.name ?? "block"} safehouse. A week in bed and he's on his feet.`
+              : member.role === "boss"
+                ? `Inside the ${block?.name ?? "block"} safehouse. The family goes quiet while he's down.`
+                : `Inside the ${block?.name ?? "block"} safehouse. Off the street, off the blotter.`,
         });
       },
 
@@ -949,7 +992,7 @@ export const useGameStore = create<GameStore>()(
           toast.error("Destination needs a managed warehouse or a speakeasy");
           return;
         }
-        const wd = withdrawCrates(src, cargo, s.turn);
+        const wd = withdrawWarehouse(src, cargo, s.turn, lookup);
         if (wd.moved < cargo) {
           toast.error(`Only ${wd.moved} crates available in ${src.name}`);
           return;
@@ -962,6 +1005,7 @@ export const useGameStore = create<GameStore>()(
           destTerritoryId: destId,
           path,
           cargo: wd.moved,
+          proofed: wd.proofed,
           status: "active" as const,
         };
         const destName = dest.name;
@@ -1267,6 +1311,176 @@ export const useGameStore = create<GameStore>()(
         });
       },
 
+      quietWanted: (crewId) => {
+        const s = get();
+        if (!s.playerFamily) return;
+        if ((s.lawyerWantedTurn ?? 0) === s.turn) {
+          toast.error("He already quieted a name this week.");
+          return;
+        }
+        if (s.dirtyMoney < QUIET_COST) {
+          toast.error("Not enough dirty cash.");
+          return;
+        }
+        const man = s.crew.find((c) => c.id === crewId && c.family === s.playerFamily && c.status !== "dead");
+        if (!man || man.wanted <= 0) {
+          toast.error("Nobody with a wanted sheet by that name.");
+          return;
+        }
+        const wanted = Math.max(0, man.wanted - QUIET_WANTED);
+        const bribeFx = aggregateBribeEffects(s.bribes);
+        set({
+          dirtyMoney: s.dirtyMoney - QUIET_COST,
+          lawyerWantedTurn: s.turn,
+          heat: applyHeat(s.heat, QUIET_HEAT, "lawyer", bribeFx.heatGenerationReduction),
+          crew: s.crew.map((c) => (c.id === man.id ? { ...c, wanted } : c)),
+          turnLog: [
+            ...s.turnLog,
+            {
+              id: `log_quiet_${s.turn}_${man.id}`,
+              turn: s.turn,
+              category: "heat" as const,
+              text: `House counsel quieted ${man.name}. Wanted ${man.wanted} → ${wanted}. $${QUIET_COST.toLocaleString()} dirty. Heat +${QUIET_HEAT}.`,
+              family: s.playerFamily,
+            },
+          ].slice(-200),
+        });
+        toast.success(`${man.name} is quieter`, {
+          description: `Wanted ${man.wanted} → ${wanted}. Heat +${QUIET_HEAT}.`,
+        });
+      },
+
+      pleadBossCase: () => {
+        const s = get();
+        if (!s.playerFamily) return;
+        const boss = s.crew.find((c) => c.family === s.playerFamily && c.role === "boss" && c.status === "jailed");
+        if (!boss) {
+          toast.error("The boss is not inside.");
+          return;
+        }
+        const original = boss.jailedUntilTurn ?? s.turn;
+        const spent = (s.lawyerBossPleaUntil ?? 0) > 0 && original <= (s.lawyerBossPleaUntil ?? 0) && original >= (s.lawyerBossPleaUntil ?? 0) - BOSS_PLEA_WEEKS;
+        if (spent) {
+          toast.error("That sentence already had its plea.");
+          return;
+        }
+        if (s.dirtyMoney < BOSS_PLEA_COST) {
+          toast.error("Not enough dirty cash.");
+          return;
+        }
+        const bribeFx = aggregateBribeEffects(s.bribes);
+        const shaved = original - BOSS_PLEA_WEEKS;
+        const heat = applyHeat(s.heat, BOSS_PLEA_HEAT, "lawyer", bribeFx.heatGenerationReduction);
+        const walks = s.turn >= shaved;
+        const crew = walks
+          ? releaseBoss({ ...s, dirtyMoney: s.dirtyMoney - BOSS_PLEA_COST, heat }, s.playerFamily).crew
+          : s.crew.map((c) => (c.id === boss.id ? { ...c, jailedUntilTurn: shaved } : c));
+        const text = walks
+          ? `House counsel cut the boss's sentence and walked him out. $${BOSS_PLEA_COST.toLocaleString()} dirty. Heat +${BOSS_PLEA_HEAT}.`
+          : `House counsel cut two weeks off the boss's sentence. He is inside until week ${shaved}. $${BOSS_PLEA_COST.toLocaleString()} dirty. Heat +${BOSS_PLEA_HEAT}.`;
+        set({
+          dirtyMoney: s.dirtyMoney - BOSS_PLEA_COST,
+          heat,
+          crew,
+          lawyerBossPleaUntil: walks ? 0 : original,
+          turnLog: [
+            ...s.turnLog,
+            {
+              id: `log_boss_plea_${s.turn}`,
+              turn: s.turn,
+              category: "heat" as const,
+              text,
+              family: s.playerFamily,
+            },
+          ].slice(-200),
+        });
+        toast.success(walks ? "The boss walks" : "Two weeks off", { description: text });
+      },
+
+      hireCounsel: () => {
+        const s = get();
+        if (!s.playerFamily) return;
+        const until = s.counselUntil ?? 0;
+        if (s.turn < until) {
+          toast.error(`Counsel is already retained through week ${until - 1}.`);
+          return;
+        }
+        if (s.dirtyMoney < COUNSEL_COST) {
+          toast.error("Not enough dirty cash.");
+          return;
+        }
+        const ready = s.turn + COUNSEL_WEEKS;
+        set({
+          dirtyMoney: s.dirtyMoney - COUNSEL_COST,
+          counselUntil: ready,
+          turnLog: [
+            ...s.turnLog,
+            {
+              id: `log_counsel_${s.turn}`,
+              turn: s.turn,
+              category: "economy" as const,
+              text: `House counsel is on retainer through week ${ready - 1}. $${COUNSEL_COST.toLocaleString()} dirty. Heat falls 3 a week.`,
+              family: s.playerFamily,
+            },
+          ].slice(-200),
+        });
+        toast.success("Counsel is on retainer", {
+          description: `$${COUNSEL_COST.toLocaleString()} dirty. Heat falls 3 a week through week ${ready - 1}.`,
+        });
+      },
+
+      rushWash: (amount) => {
+        const s = get();
+        if (!s.playerFamily) return;
+        if ((s.lawyerWashTurn ?? 0) === s.turn) {
+          toast.error("He already washed a pile this week.");
+          return;
+        }
+        const quote = washQuote(amount);
+        if (!quote) {
+          toast.error("He won't touch a pile under $2,000.");
+          return;
+        }
+        if (s.dirtyMoney < quote.pile) {
+          toast.error("Not enough dirty cash.");
+          return;
+        }
+        const crew =
+          quote.loyalty > 0
+            ? s.crew.map((c) =>
+                c.family === s.playerFamily && c.status !== "dead"
+                  ? { ...c, loyalty: Math.max(0, c.loyalty - quote.loyalty) }
+                  : c,
+              )
+            : s.crew;
+        const street = Math.max(0, s.reputation.streetInfluence - quote.loyalty);
+        const sting =
+          quote.loyalty > 0
+            ? ` Loyalty −${quote.loyalty} across the family. Street −${quote.loyalty}.`
+            : "";
+        set({
+          dirtyMoney: s.dirtyMoney - quote.pile,
+          money: s.money + quote.clean,
+          heat: decayHeat(s.heat, quote.heatOff),
+          lawyerWashTurn: s.turn,
+          crew,
+          reputation: { ...s.reputation, streetInfluence: street },
+          turnLog: [
+            ...s.turnLog,
+            {
+              id: `log_rush_wash_${s.turn}`,
+              turn: s.turn,
+              category: "economy" as const,
+              text: `House counsel washed $${quote.pile.toLocaleString()} dirty. He kept $${quote.cut.toLocaleString()} and sent back $${quote.clean.toLocaleString()}.${quote.heatOff > 0 ? ` Heat −${quote.heatOff}.` : ""}${sting}`,
+              family: s.playerFamily,
+            },
+          ].slice(-200),
+        });
+        toast.success("Clean cash, in a hurry", {
+          description: `$${quote.clean.toLocaleString()} back. He kept $${quote.cut.toLocaleString()}.${quote.heatOff > 0 ? ` Heat −${quote.heatOff}.` : ""}${sting}`,
+        });
+      },
+
       planPlayerHit: (args) => {
         const s = get();
         if (!s.playerFamily) return;
@@ -1325,6 +1539,18 @@ export const useGameStore = create<GameStore>()(
           }
         }
 
+        const filled = bringCrewOnHit(
+          s.crew,
+          {
+            shooterIds: args.shooterIds,
+            wheelmanId: args.wheelmanId,
+            lookoutId: args.lookoutId,
+            bombMakerId: args.bombMakerId,
+            planterId: args.planterId,
+            negotiatorId: args.negotiatorId,
+          },
+          args.approach,
+        );
         const assignedIds = hitCrewIds({
           id: "draft",
           family: s.playerFamily,
@@ -1332,12 +1558,12 @@ export const useGameStore = create<GameStore>()(
           targetTerritoryId: args.targetTerritoryId,
           targetFamily: rivalFamily,
           approach: args.approach,
-          shooterIds: args.shooterIds,
-          wheelmanId: args.wheelmanId,
-          lookoutId: args.lookoutId,
-          bombMakerId: args.bombMakerId,
-          planterId: args.planterId,
-          negotiatorId: args.negotiatorId,
+          shooterIds: filled.shooterIds,
+          wheelmanId: filled.wheelmanId,
+          lookoutId: filled.lookoutId,
+          bombMakerId: filled.bombMakerId,
+          planterId: filled.planterId,
+          negotiatorId: filled.negotiatorId,
           surveilled: false,
           pendingTurns: 1,
           resolved: false,
@@ -1355,12 +1581,17 @@ export const useGameStore = create<GameStore>()(
         const rng = createRng(
           s.seed + s.turn * 77 + (args.targetCrewId?.length ?? territory?.name.length ?? 3),
         );
-        const gaps = unseatedCrew(s.crew, assignedIds);
-        if (gaps.length > 0) {
-          const names = gaps.flatMap((g) => g.men.map((m) => m.name)).join(", ");
-          toast.error("His crew comes with him", {
-            description: `Give a role to ${names} before the hit can go.`,
-          });
+        const capoIds = assignedIds.filter((id) => s.crew.find((c) => c.id === id)?.role === "capo");
+        if (assignedIds.some((id) => {
+          const man = s.crew.find((c) => c.id === id);
+          if (!man) return true;
+          const withCapo = capoIds.some(
+            (capoId) => capoId !== id && freeCrewOf(s.crew, capoId).some((m) => m.id === id),
+          );
+          if (withCapo) return false;
+          return !canJoinHit(man, s.operations, id === filled.negotiatorId);
+        })) {
+          toast.error("He isn't free for this job.");
           return;
         }
 
@@ -1373,12 +1604,12 @@ export const useGameStore = create<GameStore>()(
             originTerritoryId,
             targetFamily: rivalFamily,
             approach: args.approach,
-            shooterIds: args.shooterIds,
-            wheelmanId: args.wheelmanId,
-            lookoutId: args.lookoutId,
-            bombMakerId: args.bombMakerId,
-            planterId: args.planterId,
-            negotiatorId: args.negotiatorId,
+            shooterIds: filled.shooterIds,
+            wheelmanId: filled.wheelmanId,
+            lookoutId: filled.lookoutId,
+            bombMakerId: filled.bombMakerId,
+            planterId: filled.planterId,
+            negotiatorId: filled.negotiatorId,
             surveilled: false,
             pendingTurns: args.surveilFirst ? 2 : 1,
             blind: !!args.blind,
@@ -1397,15 +1628,18 @@ export const useGameStore = create<GameStore>()(
           : target?.name ?? "target";
         const brokePact = hasPact(s, s.playerFamily, rivalFamily);
         const committed = brokePact ? breakPact(s, rivalFamily) : s;
+        const truckNotes = onJob.turnLog.filter((n) => n.id.startsWith("log_left_truck_"));
         set({
           ...committed,
           operations: [...committed.operations, op],
           crew: onJob.crew,
           territories: onJob.territories,
+          supplyRoutes: onJob.supplyRoutes,
           activePanel: "none",
           hitTargetPreviewId: null,
           turnLog: [
             ...committed.turnLog,
+            ...truckNotes.filter((n) => !committed.turnLog.some((l) => l.id === n.id)),
             {
               id: `log_plan_${op.id}`,
               turn: s.turn,
@@ -1419,6 +1653,9 @@ export const useGameStore = create<GameStore>()(
             },
           ],
         });
+        for (const note of truckNotes) {
+          toast.warning("Truck left behind", { description: note.text });
+        }
         toast.message(
           args.intent === "message"
             ? "Message ordered"
@@ -1541,11 +1778,13 @@ export const useGameStore = create<GameStore>()(
             c.status === "active",
         );
         if (!lookout) return;
+        const hitmanFree = canSendOnHit(lookout, s.operations);
         const managing = s.territories.some((t) => t.rackets.some((r) => r.managerId === lookout.id));
         if (
-          managing ||
-          lookout.assignment.type === "racket" ||
-          (lookout.assignment.type !== "idle" && lookout.assignment.type !== "garrison")
+          !hitmanFree &&
+          (managing ||
+            lookout.assignment.type === "racket" ||
+            (lookout.assignment.type !== "idle" && lookout.assignment.type !== "garrison"))
         ) {
           toast.error(`${lookout.name} can't case a block`, {
             description: managing || lookout.assignment.type === "racket"
@@ -1570,15 +1809,29 @@ export const useGameStore = create<GameStore>()(
           pendingTurns: 1,
           resolved: false,
         };
+        const pulled = hitmanFree ? pullForJob(s, [crewId]) : s;
+        const idSet = new Set([crewId]);
+        const territories = hitmanFree
+          ? pulled.territories.map((t) => ({
+              ...t,
+              garrisonIds: t.garrisonIds.filter((id) => id !== crewId),
+              rackets: t.rackets.map((r) =>
+                r.managerId && idSet.has(r.managerId) ? { ...r, managerId: null } : r,
+              ),
+            }))
+          : pulled.territories;
+        const truckNotes = pulled.turnLog.filter((n) => n.id.startsWith("log_left_truck_") && !s.turnLog.some((l) => l.id === n.id));
         set({
-          operations: [...s.operations, op],
-          crew: assignCrew(s.crew, crewId, {
+          operations: [...pulled.operations, op],
+          crew: assignCrew(pulled.crew, crewId, {
             type: "surveillance",
             operationId: opId,
             territoryId,
           }),
+          territories,
+          supplyRoutes: pulled.supplyRoutes,
           turnLog: [
-            ...s.turnLog,
+            ...pulled.turnLog,
             {
               id: `log_case_${opId}`,
               turn: s.turn,
@@ -1588,6 +1841,9 @@ export const useGameStore = create<GameStore>()(
             },
           ],
         });
+        for (const note of truckNotes) {
+          toast.warning("Truck left behind", { description: note.text });
+        }
         toast.message("Surveillance ordered", {
           description: `${territory.name} — report next turn`,
         });
@@ -1718,7 +1974,11 @@ export const useGameStore = create<GameStore>()(
 
       answerCrewRequest: (requestId, answer) => {
         const s = get();
-        const { state: next, message } = answerCrewRequest(s, requestId, answer);
+        const req = (s.crewRequests ?? []).find((r) => r.id === requestId);
+        const { state: next, message } =
+          req?.kind === "cover"
+            ? answerCoverRequest(s, requestId, answer)
+            : answerCrewRequest(s, requestId, answer);
         if (next === s) return;
         set(next);
         if (message) {
@@ -1900,6 +2160,235 @@ export const useGameStore = create<GameStore>()(
             announce.warning(entry.text);
           }
         }
+      },
+
+      acceptCommissionErrand: () => {
+        const result = takeErrand(get());
+        if (result.error) {
+          toast.error(result.error);
+          return;
+        }
+        const errand = result.state.commissionErrand;
+        const where =
+          result.state.territories.find((t) => t.id === errand?.path[errand.leadIndex])?.name ?? "the block";
+        set(result.state);
+        toast.message("The table gave you a lead", {
+          description: `${errand?.targetName ?? "The mark"} — start in ${where}. ${errand?.detail ?? ""}`,
+        });
+      },
+
+      declineCommissionErrand: () => {
+        const s = get();
+        const rng = createRng(s.seed + s.turn * 17 + (s.commissionErrand?.id.length ?? 3));
+        const result = refuseErrand(s, rng);
+        if (result.error) {
+          toast.error(result.error);
+          return;
+        }
+        set(result.state);
+        if (result.log) toast.message(result.log.text);
+      },
+
+      caseCommissionErrand: (crewId) => {
+        const s = get();
+        if (!s.playerFamily) return;
+        const errand = s.commissionErrand;
+        if (!errand || errand.phase !== "hunting" || errand.found) {
+          toast.error("There is nothing to case.");
+          return;
+        }
+        if (errandWeeksLeft(s.turn, errand.untilTurn) <= 0) {
+          toast.error("Too late to case", { description: "A report would come back after the seven weeks." });
+          return;
+        }
+        if (handsDown(s)) {
+          toast.error("The city is quiet", { description: "A funeral holds the families. Nobody goes out." });
+          return;
+        }
+        if (dinnerActive(s)) {
+          toast.error("The family is at the table");
+          return;
+        }
+        if (refuseSitting(s, crewId)) return;
+        if (s.operations.some((o) => !o.resolved && o.errandId === errand.id && o.kind === "surveillance")) {
+          toast.error("Someone is already casing that lead.");
+          return;
+        }
+        const man = s.crew.find((c) => c.id === crewId && c.family === s.playerFamily);
+        if (!man || !canWorkErrand(man, s.operations)) {
+          toast.error("He can't take this.");
+          return;
+        }
+        const territoryId = errand.path[errand.leadIndex];
+        const territory = territoryId ? s.territories.find((t) => t.id === territoryId) : undefined;
+        if (!territory || !territoryId) return;
+        const rng = createRng(s.seed + s.turn * 91 + territoryId.length);
+        const opId = `op_errand_${rng.int(10000, 99999)}`;
+        const op = {
+          id: opId,
+          family: s.playerFamily,
+          kind: "surveillance" as const,
+          targetTerritoryId: territoryId,
+          targetFamily: territory.owner && territory.owner !== s.playerFamily ? territory.owner : s.playerFamily,
+          shooterIds: [] as string[],
+          lookoutId: crewId,
+          surveilled: false,
+          tippedOff: false,
+          pendingTurns: 1,
+          resolved: false,
+          errandId: errand.id,
+        };
+        const pulled = pullForJob(s, [crewId]);
+        const territories = pulled.territories.map((t) => ({
+          ...t,
+          garrisonIds: t.garrisonIds.filter((id) => id !== crewId),
+          rackets: t.rackets.map((r) => (r.managerId === crewId ? { ...r, managerId: null } : r)),
+        }));
+        const truckNotes = pulled.turnLog.filter(
+          (n) => n.id.startsWith("log_left_truck_") && !s.turnLog.some((l) => l.id === n.id),
+        );
+        set({
+          operations: [...pulled.operations, op],
+          crew: assignCrew(pulled.crew, crewId, {
+            type: "surveillance",
+            operationId: opId,
+            territoryId,
+          }),
+          territories,
+          supplyRoutes: pulled.supplyRoutes,
+          turnLog: [
+            ...pulled.turnLog,
+            {
+              id: `log_case_${opId}`,
+              turn: s.turn,
+              category: "hit" as const,
+              text: `${man.name} is casing ${territory.name} for the table.`,
+              family: s.playerFamily,
+            },
+          ],
+        });
+        for (const note of truckNotes) {
+          toast.warning("Truck left behind", { description: note.text });
+        }
+        toast.message("Casing the lead", { description: `${territory.name} — report next week` });
+      },
+
+      orderCommissionHit: (args) => {
+        const s = get();
+        if (!s.playerFamily) return;
+        const errand = s.commissionErrand;
+        if (!errand || errand.phase !== "hunting" || !errand.found) {
+          toast.error("You have not found him yet.");
+          return;
+        }
+        if (s.turn > (errand.untilTurn ?? s.turn)) {
+          toast.error("The seven weeks are up.");
+          return;
+        }
+        if (s.operations.some((o) => !o.resolved && o.kind === "hit" && o.errandId === errand.id)) {
+          toast.error("The hit is already out.");
+          return;
+        }
+        if (handsDown(s)) {
+          toast.error("The city is quiet", { description: "A funeral holds the families. Nobody gets shot." });
+          return;
+        }
+        if (dinnerActive(s)) {
+          toast.error("The family is at the table");
+          return;
+        }
+        const seats = {
+          shooterIds: args.shooterIds ?? [],
+          wheelmanId: args.wheelmanId,
+          lookoutId: args.lookoutId,
+          bombMakerId: args.bombMakerId,
+          planterId: args.planterId,
+        };
+        const ids = [
+          ...seats.shooterIds,
+          seats.wheelmanId,
+          seats.lookoutId,
+          seats.bombMakerId,
+          seats.planterId,
+        ].filter((id): id is string => !!id);
+        if (new Set(ids).size !== ids.length) {
+          toast.error("The same man can't sit two seats.");
+          return;
+        }
+        if (args.approach === "ambush" && seats.shooterIds.length === 0) {
+          toast.error("An ambush needs a shooter.");
+          return;
+        }
+        if (args.approach === "drive_by" && (!seats.wheelmanId || seats.shooterIds.length === 0)) {
+          toast.error("A drive-by needs a wheelman and a shooter.");
+          return;
+        }
+        if (args.approach === "car_bomb" && (!seats.bombMakerId || !seats.planterId)) {
+          toast.error("A car bomb needs a maker and a planter.");
+          return;
+        }
+        for (const id of ids) {
+          if (refuseSitting(s, id)) return;
+          const man = s.crew.find((c) => c.id === id && c.family === s.playerFamily);
+          if (!man || !canWorkErrand(man, s.operations)) {
+            toast.error(man ? `${man.name} can't take this.` : "He can't take this.");
+            return;
+          }
+        }
+        const territoryId = errand.path[errand.path.length - 1];
+        const territory = territoryId ? s.territories.find((t) => t.id === territoryId) : undefined;
+        if (!territory || !territoryId) return;
+        const targetFamily = errand.markFamily ?? territory.owner ?? s.playerFamily;
+        const originLead = s.crew.find((c) => c.id === ids[0]);
+        const originTerritoryId =
+          (originLead && resolveCrewTerritoryId(s, originLead.id)) ||
+          s.territories.find((t) => t.owner === s.playerFamily)?.id ||
+          territoryId;
+        const rng = createRng(s.seed + s.turn * 77 + errand.id.length);
+        const op = {
+          ...planHit(
+            s,
+            {
+              family: s.playerFamily,
+              targetCrewId: errand.targetCrewId,
+              targetTerritoryId: territoryId,
+              originTerritoryId,
+              targetFamily,
+              approach: args.approach,
+              shooterIds: seats.shooterIds,
+              wheelmanId: seats.wheelmanId,
+              lookoutId: seats.lookoutId,
+              bombMakerId: seats.bombMakerId,
+              planterId: seats.planterId,
+              pendingTurns: 1,
+              intent: "commission",
+            },
+            rng,
+          ),
+          errandId: errand.id,
+        };
+        const committed = commitHitCrew(s, op);
+        const truckNotes = committed.turnLog.filter(
+          (n) => n.id.startsWith("log_left_truck_") && !s.turnLog.some((l) => l.id === n.id),
+        );
+        set({
+          ...committed,
+          operations: [...committed.operations, op],
+          turnLog: [
+            ...committed.turnLog,
+            {
+              id: `log_errand_hit_${op.id}`,
+              turn: s.turn,
+              category: "hit" as const,
+              text: `The crew is going after ${errand.targetName} in ${territory.name}.`,
+              family: s.playerFamily,
+            },
+          ],
+        });
+        for (const note of truckNotes) {
+          toast.warning("Truck left behind", { description: note.text });
+        }
+        toast.message("Hit ordered", { description: errand.targetName });
       },
 
       breakDeal: (dealId) => {
@@ -2257,10 +2746,8 @@ export const useGameStore = create<GameStore>()(
               loaded.seed ?? defaultSettings.seed,
             ),
           ).map((t) => ({ ...t, rackets: ensureRacketSites(t.rackets) }));
-          territories = migrateLaunderSites(
-            territories,
-            plan,
-            loaded.playerFamily ?? null,
+          territories = alignTerritoriesToMap(
+            migrateLaunderSites(territories, plan, loaded.playerFamily ?? null),
           );
           set({
             ...loaded,
@@ -2276,6 +2763,10 @@ export const useGameStore = create<GameStore>()(
             lawyerReadyTurn: loaded.lawyerReadyTurn ?? 0,
             streetLawyerUntil: loaded.streetLawyerUntil ?? 0,
             streetLawyerBailUsed: loaded.streetLawyerBailUsed ?? false,
+            counselUntil: loaded.counselUntil ?? 0,
+            lawyerWantedTurn: loaded.lawyerWantedTurn ?? 0,
+            lawyerBossPleaUntil: loaded.lawyerBossPleaUntil ?? 0,
+            lawyerWashTurn: loaded.lawyerWashTurn ?? 0,
             pendingShipments: loaded.pendingShipments ?? [],
             liquorLedger: loaded.liquorLedger
               ? { ...emptyLiquorLedger(), ...loaded.liquorLedger }
@@ -2312,7 +2803,8 @@ export const useGameStore = create<GameStore>()(
             sitdownPhase: null,
             deals: loaded.deals ?? [],
             pendingDealSettlements: loaded.pendingDealSettlements ?? [],
-            supplyRoutes: loaded.supplyRoutes ?? [],
+            supplyRoutes: repairRoutePaths(territories, loaded.supplyRoutes ?? []),
+            routes: repairRoutePaths(territories, loaded.routes ?? []),
             passageDeals: loaded.passageDeals ?? [],
             passageLeverage: loaded.passageLeverage ?? {},
             messageHitTurns: loaded.messageHitTurns ?? {},
@@ -2350,6 +2842,8 @@ export const useGameStore = create<GameStore>()(
               refusals: loaded.diplomacy?.refusals ?? 0,
             },
             commissionCall: loaded.commissionCall ?? null,
+            commissionErrand: loaded.commissionErrand ?? null,
+            commissionErrandReady: loaded.commissionErrandReady ?? 0,
             commissionHistory: loaded.commissionHistory ?? [],
             pendingRulings: loaded.pendingRulings ?? [],
             familyDinner: loaded.familyDinner ?? null,
@@ -2400,6 +2894,10 @@ export const useGameStore = create<GameStore>()(
           "callLawyer",
           "hireStreetLawyer",
           "streetLawyerBail",
+          "quietWanted",
+          "pleadBossCase",
+          "hireCounsel",
+          "rushWash",
           "planPlayerHit",
           "establishSupplyRoute",
           "cancelSupplyRoute",
@@ -2450,10 +2948,12 @@ export const useGameStore = create<GameStore>()(
             seed,
           ),
         ).map((t) => ({ ...t, rackets: ensureRacketSites(t.rackets) }));
-        territories = migrateLaunderSites(
-          territories,
-          plan,
-          p.playerFamily ?? current.playerFamily ?? null,
+        territories = alignTerritoriesToMap(
+          migrateLaunderSites(
+            territories,
+            plan,
+            p.playerFamily ?? current.playerFamily ?? null,
+          ),
         );
         return {
           ...current,
@@ -2470,6 +2970,10 @@ export const useGameStore = create<GameStore>()(
           lawyerReadyTurn: p.lawyerReadyTurn ?? 0,
           streetLawyerUntil: p.streetLawyerUntil ?? 0,
           streetLawyerBailUsed: p.streetLawyerBailUsed ?? false,
+          counselUntil: p.counselUntil ?? 0,
+          lawyerWantedTurn: p.lawyerWantedTurn ?? 0,
+          lawyerBossPleaUntil: p.lawyerBossPleaUntil ?? 0,
+          lawyerWashTurn: p.lawyerWashTurn ?? 0,
           pendingShipments: p.pendingShipments ?? current.pendingShipments ?? [],
           liquorLedger: p.liquorLedger
             ? { ...emptyLiquorLedger(), ...p.liquorLedger }
@@ -2509,6 +3013,8 @@ export const useGameStore = create<GameStore>()(
             refusals: p.diplomacy?.refusals ?? current.diplomacy?.refusals ?? 0,
           },
           commissionCall: p.commissionCall ?? null,
+          commissionErrand: p.commissionErrand ?? null,
+          commissionErrandReady: p.commissionErrandReady ?? 0,
           ratAffair: p.ratAffair ?? null,
           commissionHistory: p.commissionHistory ?? current.commissionHistory ?? [],
           pendingRulings: p.pendingRulings ?? [],
@@ -2516,7 +3022,11 @@ export const useGameStore = create<GameStore>()(
           mattresses: p.mattresses ?? null,
           mattressReadyUntil: p.mattressReadyUntil ?? 0,
           mourningUntil: p.mourningUntil ?? 0,
-          supplyRoutes: p.supplyRoutes ?? current.supplyRoutes ?? [],
+          supplyRoutes: repairRoutePaths(
+            territories,
+            p.supplyRoutes ?? current.supplyRoutes ?? [],
+          ),
+          routes: repairRoutePaths(territories, p.routes ?? current.routes ?? []),
           passageDeals: p.passageDeals ?? current.passageDeals ?? [],
           passageLeverage: p.passageLeverage ?? current.passageLeverage ?? {},
           messageHitTurns: p.messageHitTurns ?? current.messageHitTurns ?? {},

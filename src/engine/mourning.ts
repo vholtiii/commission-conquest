@@ -1,5 +1,6 @@
 import type { GameState, TurnLogEntry } from "@/types/game";
 import { hitCrewIds } from "@/data/hitApproaches";
+import { releaseCrewHome } from "./jobReturn";
 
 /** Weeks the city stays quiet after a boss is killed, counting the week he dies. */
 export const MOURNING_WEEKS = 6;
@@ -38,16 +39,8 @@ export function declareMourning(state: GameState): { state: GameState; logs: Tur
   }
 
   const dropped = state.operations.filter((o) => !o.resolved && o.kind === "hit");
-  const home = new Set(dropped.flatMap((o) => hitCrewIds(o)));
-  const crew =
-    home.size === 0
-      ? state.crew
-      : state.crew.map((c) =>
-          home.has(c.id) &&
-          (c.assignment.type === "operation" || c.assignment.type === "surveillance")
-            ? { ...c, assignment: { type: "idle" as const } }
-            : c,
-        );
+  let returned = state;
+  for (const o of dropped) returned = releaseCrewHome(returned, hitCrewIds(o), o.id);
   const operations =
     dropped.length === 0
       ? state.operations
@@ -57,5 +50,5 @@ export function declareMourning(state: GameState): { state: GameState; logs: Tur
             : o,
         );
 
-  return { state: { ...state, mourningUntil: until, crew, operations }, logs };
+  return { state: { ...returned, mourningUntil: until, operations }, logs };
 }

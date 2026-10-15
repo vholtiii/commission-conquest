@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
-import { ArrowUpCircle, Eye, Shield } from "lucide-react";
+import { ArrowUpCircle, Eye, House, Shield } from "lucide-react";
 import { useGameStore } from "@/engine/store";
 import { canLeadCrew, crewOf, crewSlots, isSettling } from "@/engine/crews";
 import { canPromote, pathsFromRole } from "@/engine/crew";
@@ -50,8 +50,17 @@ function promotionState(
 
 /** A man's current job, for the mark beside his name. Other jobs stay unmarked. */
 function dutyMark(member: CrewMember, territories: Territory[]): { tip: string; node: ReactNode } | null {
-  if (member.status !== "active") return null;
   const a = member.assignment;
+  if (a.type === "safehouse") {
+    const place = territories.find((t) => t.id === a.territoryId)?.name;
+    const healing = member.status === "wounded";
+    const where = place ? ` in ${place}` : "";
+    return {
+      tip: healing ? `Healing${where}` : `Lying low${where}`,
+      node: <House className="h-3.5 w-3.5 shrink-0 text-steel-light" aria-label={healing ? "Healing" : "Lying low"} />,
+    };
+  }
+  if (member.status !== "active") return null;
   if (a.type === "idle") {
     return {
       tip: "Idle",

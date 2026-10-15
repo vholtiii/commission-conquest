@@ -7,6 +7,7 @@ import { familyInfluence } from "./victory";
 import { territoryHops } from "./territoryHops";
 import { resolveCrewTerritoryId } from "./crewLocation";
 import { hitCrewIds } from "@/data/hitApproaches";
+import { releaseCrewHome } from "./jobReturn";
 import { promoteToBoss, readyRivalHeir } from "./succession";
 
 /**
@@ -181,18 +182,14 @@ function dropJobs(state: GameState, family: FamilyName): { state: GameState; cal
     (o) => !o.resolved && o.targetFamily === family && (o.kind === "hit" || o.kind === "surveillance"),
   );
   if (dropped.length === 0) return { state, calledOff: 0 };
-  const home = new Set(dropped.flatMap((o) => hitCrewIds(o)));
-  const crew = state.crew.map((c) =>
-    home.has(c.id) && (c.assignment.type === "operation" || c.assignment.type === "surveillance")
-      ? { ...c, assignment: { type: "idle" as const } }
-      : c,
-  );
-  const operations = state.operations.map((o) =>
+  let returned = state;
+  for (const o of dropped) returned = releaseCrewHome(returned, hitCrewIds(o), o.id);
+  const operations = returned.operations.map((o) =>
     !o.resolved && o.targetFamily === family && (o.kind === "hit" || o.kind === "surveillance")
       ? { ...o, resolved: true, pendingTurns: 0, resolvedTurn: state.turn }
       : o,
   );
-  return { state: { ...state, crew, operations }, calledOff: dropped.length };
+  return { state: { ...returned, operations }, calledOff: dropped.length };
 }
 
 /**

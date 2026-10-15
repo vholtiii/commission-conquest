@@ -222,15 +222,16 @@ export function captureOdds(atk: number, def: number): number {
 
 const CAPTURE_MUSCLE = 1;
 
-/** Taking a block by force hardens the men who did it. */
+/** Taking a block by force hardens the man who led it. */
 function hardenFromCapture(
   crew: CrewMember[],
   ids: string[],
 ): { crew: CrewMember[]; gained: string[] } {
-  const set = new Set(ids);
+  const lead = ids[0];
+  if (!lead) return { crew, gained: [] };
   const gained: string[] = [];
   const next = crew.map((c) => {
-    if (!set.has(c.id) || c.status === "dead" || c.skills.muscle >= 100) return c;
+    if (c.id !== lead || c.status === "dead" || c.skills.muscle >= 100) return c;
     gained.push(c.name.split(" ").slice(-1)[0] ?? c.name);
     return { ...c, skills: { ...c.skills, muscle: c.skills.muscle + CAPTURE_MUSCLE } };
   });

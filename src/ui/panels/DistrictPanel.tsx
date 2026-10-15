@@ -8,6 +8,7 @@ import { isProducerType, isStorageType, planFeedSpeakeasy, stockCap, warehouseMa
 import { activeCrewIds, isUnguarded, maxRacketsFor, lotTier, lotTierHint, lotTierLabel, allowedRacketTypes } from "@/engine/territoryValue";
 import { RACKET_VISUALS } from "@/data/racketVisuals";
 import { emptyIntel, hiddenCountIn, hasFreshCasing, spottedThisTurn, visibleCrewIn } from "@/engine/intel";
+import { canSendOnHit } from "@/engine/jobReturn";
 import { LOCATION_REASON_LABEL, familyHq, isBossUnderground, resolveCrewLocation, resolveCrewTerritoryId } from "@/engine/crewLocation";
 import {
   BOSS_PRESENCE,
@@ -99,8 +100,9 @@ export default function DistrictPanel() {
   const heat = useGameStore((s) => s.heat);
   const bribes = useGameStore((s) => s.bribes);
   const streetLawyerUntil = useGameStore((s) => s.streetLawyerUntil ?? 0);
+  const counselUntil = useGameStore((s) => s.counselUntil ?? 0);
   const [caseLookoutId, setCaseLookoutId] = useState("");
-  const riskState = { heat, bribes, territories, turn, playerFamily, streetLawyerUntil };
+  const riskState = { heat, bribes, territories, turn, playerFamily, streetLawyerUntil, counselUntil };
 
   const territory = territories.find((t) => t.id === selectedTerritoryId);
   if (!territory || !playerFamily) return null;
@@ -140,13 +142,13 @@ export default function DistrictPanel() {
   const managingIds = new Set(
     territories.flatMap((t) => t.rackets.map((r) => r.managerId).filter((id): id is string => !!id)),
   );
-  const lookouts = crew.filter(
-    (c) =>
-      c.family === playerFamily &&
-      c.status === "active" &&
-      (c.assignment.type === "idle" || c.assignment.type === "garrison") &&
-      !managingIds.has(c.id),
-  );
+  const lookouts = crew.filter((c) => {
+    if (c.family !== playerFamily || c.status !== "active") return false;
+    if (canSendOnHit(c, operations)) return true;
+    return (
+      (c.assignment.type === "idle" || c.assignment.type === "garrison") && !managingIds.has(c.id)
+    );
+  });
   const managersFor = (type: RacketType) => crew.filter((c) => canManageRacket(c, playerFamily, type));
   // Men who could drive over and garrison this block.
   const sendable = crew.filter(
@@ -409,6 +411,7 @@ export default function DistrictPanel() {
                   {couldLieLow.map((c) => (
                     <option key={c.id} value={c.id}>
                       {c.name} · {c.role}
+                      {c.status === "wounded" ? " · wounded" : ""}
                       {c.wanted > 0 ? ` · wanted ${c.wanted} (${riskPct(arrestRisk(riskState, c))})` : ""}
                     </option>
                   ))}

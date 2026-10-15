@@ -55,13 +55,15 @@ import { openIncidentFromHijack } from "./incidents";
 import { processSupplyRoutes } from "./supplyRoutes";
 import { ambushRivalTraffic, tickMattresses } from "./mattresses";
 import { tickPassageDeals } from "./passage";
-import { settleDealsAfterHits, tickDeals } from "./deals";
+import { settleDealsAfterHits, shipStandingLiquor, tickDeals } from "./deals";
 import { callInFavors } from "./favors";
 import { walkIns } from "./recruiting";
+import { noteDrivingArrival, noteHitmanPride, tickJobPractice } from "./practice";
 import { expireFreeAgents, settleRivalChair } from "./defection";
 import { handsDown } from "./mourning";
 import { applyWeeklyStreet } from "./standing";
 import { expireDinner } from "./dinner";
+import { tickCommissionErrand } from "./commissionErrand";
 
 export interface PlayerHit {
   op: Operation;
@@ -344,6 +346,11 @@ export function endTurn(state: GameState, rng?: Rng): GameState {
     current = openIncidentFromHijack(current, h.route, h.hijacker, random).state;
   }
 
+  // A promised sale leaves the barns before your own trucks.
+  const standingSale = shipStandingLiquor(current);
+  current = standingSale.state;
+  logs.push(...standingSale.logs);
+
   // Standing orders roll after the one-off runs: tolls, hot stops, the road, the landing.
   const moneyBeforeSupply = current.money;
   const dirtyBeforeSupply = current.dirtyMoney;
@@ -398,7 +405,10 @@ export function endTurn(state: GameState, rng?: Rng): GameState {
   for (const route of deliveries.routes) {
     if (route.status === "complete") {
       const xp = grantXpToCrew(current.crew, route.driverId, 5);
-      current.crew = bumpLoyalty(xp.crew, [route.driverId], 1).crew;
+      const loyal = bumpLoyalty(xp.crew, [route.driverId], 1);
+      const drove = noteDrivingArrival(loyal.crew, route.driverId, current.turn, current.playerFamily);
+      current.crew = drove.crew;
+      logs.push(...drove.logs);
       if (xp.leveled && xp.name && current.playerFamily) {
         const driver = current.crew.find((c) => c.id === route.driverId);
         if (driver?.family === current.playerFamily) {
@@ -433,6 +443,7 @@ export function endTurn(state: GameState, rng?: Rng): GameState {
   const weekParts = economy.books ?? emptyPlayerWeekParts();
   current = {
     ...current,
+    crew: economy.crew,
     territories: economy.territories,
     money: current.money + scaleIncome(economy.moneyDelta),
     dirtyMoney: current.dirtyMoney + scaleIncome(economy.dirtyDelta),
@@ -514,6 +525,7 @@ export function endTurn(state: GameState, rng?: Rng): GameState {
   turnLedger = mergeLedger(turnLedger, raids.ledger);
   current = {
     ...current,
+    crew: raids.crew,
     territories: raids.territories,
   };
   current = applyHeatToState(current, raids.heatDelta, "raid");
@@ -606,6 +618,10 @@ export function endTurn(state: GameState, rng?: Rng): GameState {
   }
   current.rivalInfluence = rivalInfluence;
 
+  const errandWeek = tickCommissionErrand(current, random);
+  current = errandWeek.state;
+  logs.push(...errandWeek.logs);
+
   // Scattered men you never hired stop waiting.
   const gaveUp = expireFreeAgents(current, random);
   current = gaveUp.state;
@@ -646,6 +662,14 @@ export function endTurn(state: GameState, rng?: Rng): GameState {
     current.turn,
   );
   current.crew = xpTick.crew;
+  const practiced = tickJobPractice(
+    current.crew,
+    current.territories,
+    current.turn,
+    current.playerFamily,
+  );
+  current.crew = practiced.crew;
+  logs.push(...practiced.logs);
   for (const lvl of xpTick.logs) {
     logs.push({
       id: `log_xp_tick_${lvl.name}_${current.turn}`,
@@ -659,6 +683,9 @@ export function endTurn(state: GameState, rng?: Rng): GameState {
   // Crews: mentoring, the management drip, loyalty drift; then capos ask for men.
   const mentoring = tickCrewMentoring(current.crew, current.turn, random, current.playerFamily, current);
   current.crew = mentoring.crew;
+  const pride = noteHitmanPride(current.crew, current.turn, current.playerFamily);
+  current.crew = pride.crew;
+  logs.push(...pride.logs);
   const learned = new Map<string, string[]>();
   for (const m of mentoring.logs) {
     const list = learned.get(m.name) ?? [];

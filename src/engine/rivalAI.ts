@@ -26,6 +26,7 @@ import { captureAllowance, recordCapture } from "./capture";
 import { aiFillCrews, canLeadCrew, freeCrewOf, isHeldOff, placeCrewAt } from "./crews";
 import { AI_SITDOWN_CHANCE, AI_SITDOWN_TRAP_CHANCE, aiProposeSitdown, hasArmedBombOnPlayerBoss } from "./sitdowns";
 import { bringCrewOnHit, commitHitCrew, planHit } from "./hitOps";
+import { canJoinHit } from "./jobReturn";
 import { dinnerActive } from "./dinner";
 import { mattressDistrict, MATTRESS_DEFENCE } from "./mattresses";
 import { familyHq, isBossUnderground, resolveCrewTerritoryId } from "./crewLocation";
@@ -392,61 +393,67 @@ function tryHit(
   // to wire, so they lie in wait for him instead — and find an empty chair.
   if (badAddress && approach === "car_bomb") approach = "ambush";
 
-  const pool = rng.shuffle([...crew]);
+  const pool = rng.shuffle(crew.filter((c) => canJoinHit(c, state.operations)));
+  const boss = getBoss(state.crew, family);
+  if (approach === "sitdown_betrayal" && boss && canJoinHit(boss, state.operations, true)) {
+    pool.unshift(boss);
+  }
+  if (pool.length === 0) return { state };
+
+  const bySkill = (skill: "driving" | "smarts" | "stealth" | "charm", men = pool) =>
+    [...men].sort((a, b) => b.skills[skill] - a.skills[skill]);
   let shooterIds: string[] = [];
   let wheelmanId: string | undefined;
   let lookoutId: string | undefined;
   let bombMakerId: string | undefined;
   let planterId: string | undefined;
   let negotiatorId: string | undefined;
-
-  if (approach === "ambush") {
-    shooterIds = pool
-      .filter((c) => c.role !== "boss")
-      .slice(0, Math.min(2, pool.length))
-      .map((c) => c.id);
-    lookoutId = pool.find((c) => !shooterIds.includes(c.id) && c.role !== "boss")?.id;
-  } else if (approach === "drive_by") {
-    wheelmanId =
-      pool.find((c) => c.traits.includes("wheelman"))?.id ??
-      [...pool].sort((a, b) => b.skills.driving - a.skills.driving)[0]?.id;
-    shooterIds = pool
-      .filter((c) => c.id !== wheelmanId && c.role !== "boss")
-      .slice(0, Math.min(2, pool.length))
-      .map((c) => c.id);
+  const hands = pool.filter((c) => c.role !== "boss");
+  if (approach === "drive_by") {
+    wheelmanId = bySkill("driving", hands)[0]?.id;
+    shooterIds = hands.filter((c) => c.id !== wheelmanId).slice(0, 2).map((c) => c.id);
   } else if (approach === "car_bomb") {
-    bombMakerId = [...pool]
-      .filter((c) => c.role !== "boss")
-      .sort((a, b) => b.skills.smarts - a.skills.smarts)[0]?.id;
-    planterId = [...pool]
-      .filter((c) => c.id !== bombMakerId && c.role !== "boss")
-      .sort((a, b) => b.skills.stealth - a.skills.stealth)[0]?.id;
-    lookoutId = pool.find(
-      (c) => c.id !== bombMakerId && c.id !== planterId && c.role !== "boss",
-    )?.id;
+    bombMakerId = bySkill("smarts", hands)[0]?.id;
+    planterId = bySkill("stealth", hands).find((c) => c.id !== bombMakerId)?.id;
+    lookoutId = hands.find((c) => c.id !== bombMakerId && c.id !== planterId)?.id;
+  } else if (approach === "sitdown_betrayal") {
+    negotiatorId = bySkill("charm")[0]?.id;
+    shooterIds = hands.filter((c) => c.id !== negotiatorId).slice(0, 1).map((c) => c.id);
   } else {
-    negotiatorId =
-      getBoss(state.crew, family)?.id ??
-      [...pool].sort((a, b) => b.skills.charm - a.skills.charm)[0]?.id;
-    shooterIds = pool
-      .filter((c) => c.id !== negotiatorId && c.role !== "boss")
-      .slice(0, 1)
-      .map((c) => c.id);
+    shooterIds = hands.slice(0, Math.min(2, hands.length)).map((c) => c.id);
+    lookoutId = hands.find((c) => !shooterIds.includes(c.id))?.id;
   }
 
-  if (
-    (approach === "ambush" || approach === "drive_by") && shooterIds.length < 1
-  ) {
-    return { state };
-  }
-  if (approach === "car_bomb" && (!bombMakerId || !planterId)) return { state };
-  if (approach === "sitdown_betrayal" && !negotiatorId) return { state };
-
-  const seated = bringCrewOnHit(
+  let seated = bringCrewOnHit(
     state.crew,
     { shooterIds, wheelmanId, lookoutId, bombMakerId, planterId, negotiatorId },
     approach,
   );
+  const seatedCount = [
+    ...seated.shooterIds,
+    seated.wheelmanId,
+    seated.lookoutId,
+    seated.bombMakerId,
+    seated.planterId,
+    seated.negotiatorId,
+  ].filter(Boolean).length;
+  if ((approach === "drive_by" || approach === "car_bomb") && seatedCount < 2 && hands.length > 0) {
+    approach = "ambush";
+    shooterIds = hands.slice(0, Math.min(2, hands.length)).map((c) => c.id);
+    wheelmanId = undefined;
+    lookoutId = hands.find((c) => !shooterIds.includes(c.id))?.id;
+    bombMakerId = undefined;
+    planterId = undefined;
+    negotiatorId = undefined;
+    seated = bringCrewOnHit(
+      state.crew,
+      { shooterIds, wheelmanId, lookoutId, bombMakerId, planterId, negotiatorId },
+      approach,
+    );
+  }
+  if ((approach === "ambush" || approach === "drive_by") && seated.shooterIds.length < 1) return { state };
+  if (approach === "car_bomb" && (!seated.bombMakerId || !seated.planterId)) return { state };
+  if (approach === "sitdown_betrayal" && !seated.negotiatorId) return { state };
 
   const op = planHit(
     state,
@@ -650,12 +657,12 @@ function tryMessageHit(
   const where = resolveCrewTerritoryId(state, target.id);
   if (!where) return { state };
 
-  const pool = rng
-    .shuffle(getActiveCrew(state.crew, family).filter((c) => c.role !== "boss"))
-    .sort((a, b) => b.skills.muscle - a.skills.muscle);
-  if (pool.length < 2) return { state };
-  const wheelman = pool.find((c) => c.traits.includes("wheelman")) ?? [...pool].sort((a, b) => b.skills.driving - a.skills.driving)[0];
-  const approach: HitApproach = wheelman && rng.chance(0.6) ? "drive_by" : "ambush";
+  const pool = rng.shuffle(
+    getActiveCrew(state.crew, family).filter((c) => canJoinHit(c, state.operations)),
+  );
+  if (pool.length < 1) return { state };
+  const wheelman = [...pool].sort((a, b) => b.skills.driving - a.skills.driving)[0];
+  const approach: HitApproach = pool.length >= 2 && wheelman && rng.chance(0.6) ? "drive_by" : "ambush";
   const shooters = pool
     .filter((c) => approach !== "drive_by" || c.id !== wheelman?.id)
     .slice(0, 2)

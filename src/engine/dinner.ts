@@ -9,6 +9,7 @@ import { safehouseLevel } from "./economy";
 import { livingBoss } from "./jail";
 import { isDefunct } from "./defection";
 import { getRelation, statusFromScore } from "./relations";
+import { liftSeatedHitmen } from "./practice";
 
 export const DINNER_TURNS = 2;
 export const DINNER_COOLDOWN = 8;
@@ -182,7 +183,7 @@ export function callFamilyDinner(state: GameState, rng: Rng): { state: GameState
 
   const until = dinnerUntil(state.turn);
   const seated = new Set(table.seated.map((c) => c.id));
-  const crew = state.crew.map((c) =>
+  const fed = state.crew.map((c) =>
     seated.has(c.id)
       ? {
           ...c,
@@ -191,6 +192,9 @@ export function callFamilyDinner(state: GameState, rng: Rng): { state: GameState
         }
       : c,
   );
+  const lifted = liftSeatedHitmen(fed, seated, state.playerFamily, state.turn);
+  const crew = lifted.crew;
+  logs.push(...lifted.logs);
 
   const knownBy: FamilyName[] = [];
   for (const family of ALL_FAMILY_NAMES) {

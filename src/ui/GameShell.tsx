@@ -9,6 +9,7 @@ import DistrictPanel from "./panels/DistrictPanel";
 import RacketBuildPanel from "./panels/RacketBuildPanel";
 import CapturePanel from "./panels/CapturePanel";
 import LaunderingPanel from "./panels/LaunderingPanel";
+import LawyerPanel from "./panels/LawyerPanel";
 import WarehousePanel from "./panels/WarehousePanel";
 import HitPlanner, { HitResultModal } from "./panels/HitPlanner";
 import LookoutReportModal from "./panels/LookoutReportModal";
@@ -321,6 +322,8 @@ function ActivePanel() {
       return <RacketsOverviewPanel />;
     case "laundering":
       return <LaunderingPanel />;
+    case "lawyer":
+      return <LawyerPanel />;
     case "warehouse":
       return <WarehousePanel />;
     case "operations":

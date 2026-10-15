@@ -13,8 +13,9 @@ export function useArrestRisk(member: CrewMember): ArrestRisk {
   const ratLeakTurn = useGameStore((s) => s.ratLeakTurn);
   const ratLeakWeeks = useGameStore((s) => s.ratLeakWeeks);
   const streetLawyerUntil = useGameStore((s) => s.streetLawyerUntil ?? 0);
+  const counselUntil = useGameStore((s) => s.counselUntil ?? 0);
   return arrestRisk(
-    { heat, bribes, territories, turn, playerFamily, ratLeakTurn, ratLeakWeeks, streetLawyerUntil },
+    { heat, bribes, territories, turn, playerFamily, ratLeakTurn, ratLeakWeeks, streetLawyerUntil, counselUntil },
     member,
   );
 }
