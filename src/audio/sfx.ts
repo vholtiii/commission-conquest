@@ -613,6 +613,129 @@ export function typewriter(): void {
   }
 }
 
+/** A car door: the panel, then the latch. */
+export function doorSlam(): void {
+  const r = ready();
+  if (!r) return;
+  const at = r.audio.currentTime + 0.01;
+  const out = voice(r, "street", 0.25, 0.85);
+  const thud = tone(r, "sine", 95, at, at + 0.22);
+  thud.frequency.exponentialRampToValueAtTime(38, at + 0.14);
+  chain(thud, env(r, at, 0.002, 0.9, 0.16), out);
+  chain(noise(r, at, 0.04), filter(r, "lowpass", 900), env(r, at, 0, 0.45, 0.05), out);
+  const latch = at + 0.07;
+  chain(noise(r, latch, 0.012), filter(r, "bandpass", 2400, 3), env(r, latch, 0, 0.28, 0.02), out);
+}
+
+/** Rain for the length of a reel. Loops, and stopAll cuts it. */
+export function rainBed(seconds: number, intensity = 0.5): void {
+  const r = ready();
+  if (!r || seconds <= 0.2) return;
+  const at = r.audio.currentTime;
+  const src = r.audio.createBufferSource();
+  src.buffer = r.white;
+  src.loop = true;
+  src.start(at);
+  src.stop(at + seconds);
+  track(src);
+  const level = 0.08 + intensity * 0.22;
+  const g = contour(r, [
+    [at, FLOOR],
+    [at + 0.45, level],
+    [at + Math.max(0.5, seconds - 0.4), level],
+    [at + seconds, FLOOR],
+  ]);
+  chain(src, filter(r, "bandpass", 1500, 0.45), g, voice(r, "street", 0.2, 1));
+}
+
+/** A back room full of people: a muffled bed and the odd glass. */
+export function murmur(seconds: number): void {
+  const r = ready();
+  if (!r || seconds <= 0.2) return;
+  const at = r.audio.currentTime;
+  const src = r.audio.createBufferSource();
+  src.buffer = r.brown;
+  src.loop = true;
+  src.start(at);
+  src.stop(at + seconds);
+  track(src);
+  const g = contour(r, [
+    [at, FLOOR],
+    [at + 0.6, 0.07],
+    [at + Math.max(0.7, seconds - 0.4), 0.07],
+    [at + seconds, FLOOR],
+  ]);
+  chain(src, filter(r, "bandpass", 420, 0.7), g, voice(r, "room", 0.55, 1));
+  for (let i = 0; i < 4; i++) {
+    const t = at + 1.5 + Math.random() * Math.max(1, seconds - 2);
+    if (t >= at + seconds) continue;
+    const ping = tone(r, "sine", 900 + i * 140, t, t + 0.12);
+    chain(ping, env(r, t, 0.002, 0.05, 0.1), voice(r, "room", 0.4, 1));
+  }
+}
+
+/** Tyres grabbing wet pavement as a car leaves. */
+export function tyreSqueal(): void {
+  const r = ready();
+  if (!r) return;
+  const at = r.audio.currentTime + 0.01;
+  const out = voice(r, "street", 0.15, 0.7);
+  const band = filter(r, "bandpass", 700, 4);
+  band.frequency.exponentialRampToValueAtTime(1800, at + 0.35);
+  band.frequency.exponentialRampToValueAtTime(500, at + 0.7);
+  chain(noise(r, at, 0.75), band, env(r, at, 0.04, 0.35, 0.6), out);
+}
+
+/** A wreck burning out. */
+export function fire(seconds: number): void {
+  const r = ready();
+  if (!r || seconds <= 0.2) return;
+  const at = r.audio.currentTime;
+  const out = voice(r, "street", 0.2, 0.6);
+  const src = r.audio.createBufferSource();
+  src.buffer = r.white;
+  src.loop = true;
+  src.start(at);
+  src.stop(at + seconds);
+  track(src);
+  const crackle = r.audio.createGain();
+  crackle.gain.setValueAtTime(0.04, at);
+  let level = 0.08;
+  const step = 0.05;
+  for (let t = at; t < at + seconds; t += step) {
+    level = Math.max(0.02, Math.min(0.22, level + (Math.random() - 0.45) * 0.12));
+    crackle.gain.linearRampToValueAtTime(level, t + step);
+  }
+  chain(src, filter(r, "bandpass", 1800, 0.6), crackle, out);
+}
+
+/** A body meeting the pavement. */
+export function thud(): void {
+  const r = ready();
+  if (!r) return;
+  const at = r.audio.currentTime + 0.04;
+  const out = voice(r, "street", 0.2, 0.8);
+  const body = tone(r, "sine", 70, at, at + 0.28);
+  body.frequency.exponentialRampToValueAtTime(32, at + 0.2);
+  chain(body, env(r, at, 0.004, 0.8, 0.22), out);
+  chain(noise(r, at, 0.06, true), filter(r, "lowpass", 240), env(r, at, 0, 0.4, 0.08), out);
+}
+
+/** One or two rounds skipping off brick. */
+export function ricochet(): void {
+  const r = ready();
+  if (!r) return;
+  const at = r.audio.currentTime + 0.05;
+  const out = voice(r, "street", 0.35, 0.45);
+  const count = 1 + (Math.random() > 0.45 ? 1 : 0);
+  for (let i = 0; i < count; i++) {
+    const t = at + i * (0.12 + Math.random() * 0.1);
+    const ping = tone(r, "sine", 1800 + Math.random() * 1400, t, t + 0.16);
+    ping.frequency.exponentialRampToValueAtTime(500 + Math.random() * 200, t + 0.14);
+    chain(ping, env(r, t, 0.001, 0.35, 0.12), out);
+  }
+}
+
 /** A handful of coins when the week closed in the black. */
 export function coins(): void {
   const r = ready();

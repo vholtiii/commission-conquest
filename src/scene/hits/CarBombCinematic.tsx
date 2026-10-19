@@ -7,7 +7,10 @@ import Goon from "./props/Goon";
 import Explosion from "./props/Explosion";
 import Smoke from "./props/Smoke";
 import { PaddyWagon, PoliceLights } from "./props/PoliceLights";
-import { coverageShot, moveCam, type Coverage } from "./cameraRig";
+import { coverageShot, handheld, moveCam, reelSide, type Coverage } from "./cameraRig";
+import Blood from "./props/Blood";
+import Bystanders from "./props/Bystanders";
+import Fire from "./props/Fire";
 import type { SceneProps } from "./sceneProps";
 
 function paint(family: FamilyName): string {
@@ -67,8 +70,12 @@ export default function CarBombCinematic({ cinematic, site, phase, local, shake 
     const coverage: Coverage =
       phase === "plant" || phase === "abort" ? "wide" : phase === "wait" ? "medium" : phase === "detonate" ? "close" : "pull";
     const focus = phase === "detonate" || phase === "aftermath" ? mark : carPos;
-    const shot = coverageShot(focus, site.facing, coverage);
+    const shot = coverageShot(focus, site.facing, coverage, {
+      drift: local,
+      side: reelSide(cinematic.operationId),
+    });
     moveCam(camera, controls, shot.pos, shot.look, phase === "detonate" ? 0.5 : 0.1);
+    if (phase === "wait") handheld(camera, 0.01);
     if (blast) shake.current = Math.max(shake.current, messy ? 0.45 : 0.28);
   });
 
@@ -101,8 +108,11 @@ export default function CarBombCinematic({ cinematic, site, phase, local, shake 
       {c === "cop_on_fender" && phase !== "plant" && (
         <Goon position={[carPos.x + 0.4, 0, carPos.z + 0.7]} rot={site.facing} color="#1a2740" />
       )}
+      <Bystanders at={[site.road.x, 0, site.road.z]} facing={site.facing} flee={phase === "detonate" || phase === "aftermath"} />
+      <Blood active={killed && (phase === "detonate" || phase === "aftermath")} at={[mark.x, 0, mark.z]} />
       <Explosion active={blast} at={blastAt} secondary={messy} />
-      <Smoke active={(fizzle && phase === "detonate") || (killed && phase === "aftermath")} at={blastAt} loop={phase === "aftermath"} />
+      <Fire active={(blast && local > 0.2) || (phase === "aftermath" && !fizzle && c !== "cop_on_fender")} at={blastAt} />
+      <Smoke active={fizzle && phase === "detonate"} at={blastAt} />
       <PoliceLights active={police && phase === "aftermath"} at={[site.road.x, 0.4, site.road.z]} />
       <PaddyWagon
         active={police && phase === "aftermath"}

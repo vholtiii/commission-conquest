@@ -39,7 +39,11 @@ export default function Person({
   const leftArm = useRef<THREE.Group>(null);
   const rightArm = useRef<THREE.Group>(null);
   const torso = useRef<THREE.Group>(null);
+  const hat = useRef<THREE.Group>(null);
   const fall = useRef(pose === "down" ? 1 : 0);
+  const hitAt = useRef<number | null>(null);
+  const hatDrop = useRef(pose === "down" ? 1 : 0);
+  const bornDown = useRef(pose === "down");
 
   const boss = role === "boss";
   const hatted = role !== "associate";
@@ -49,19 +53,35 @@ export default function Person({
 
   useFrame(({ clock }, delta) => {
     const down = pose === "down";
+    if (down && hitAt.current === null) {
+      hitAt.current = bornDown.current ? clock.elapsedTime - 1 : clock.elapsedTime;
+    }
+    if (!down) hitAt.current = null;
+    const since = hitAt.current === null ? 0 : clock.elapsedTime - hitAt.current;
+    const stagger = down && since < 0.25;
     const speed = pose === "run" ? 14 : 8;
     const swing = moving && !down ? Math.sin(clock.elapsedTime * speed) * 0.55 : 0;
-    fall.current = THREE.MathUtils.damp(fall.current, down ? 1 : 0, 5, delta);
+    fall.current = THREE.MathUtils.damp(fall.current, down && !stagger ? 1 : 0, 5, delta);
     const f = fall.current;
     const knee = (pose === "crouch" ? 0.7 : 0) + Math.min(1, f / 0.4) * 1.15;
     const pitch = Math.max(0, (f - 0.22) / 0.78) * (Math.PI / 2.15);
     if (leftLeg.current) leftLeg.current.rotation.x = swing + knee;
     if (rightLeg.current) rightLeg.current.rotation.x = -swing + knee * 0.65;
-    if (leftArm.current) leftArm.current.rotation.x = -swing;
-    if (rightArm.current) rightArm.current.rotation.x = swing * 0.6;
+    if (leftArm.current) leftArm.current.rotation.x = stagger ? -1.5 : -swing;
+    if (rightArm.current) rightArm.current.rotation.x = stagger ? -0.4 : swing * 0.6;
     if (torso.current) {
       torso.current.rotation.x = pitch;
+      torso.current.rotation.z = stagger ? Math.sin(since * 28) * 0.28 : 0;
+      torso.current.rotation.y = stagger ? 0.45 : 0;
       torso.current.position.y = hip - (pose === "crouch" ? 0.1 : 0) - f * 0.16;
+    }
+    if (hat.current) {
+      if (down && since > 0.18) hatDrop.current = Math.min(1, hatDrop.current + delta * 3.2);
+      else if (!down) hatDrop.current = 0;
+      const d = hatDrop.current;
+      const restY = hip + coatH + 0.2;
+      hat.current.position.set(0.28 * d, restY * (1 - d) + 0.04 * d, 0.22 * d);
+      hat.current.rotation.z = d * 1.15;
     }
   });
 
@@ -121,19 +141,19 @@ export default function Person({
           <sphereGeometry args={[0.09, 12, 10]} />
           <meshStandardMaterial color={SKIN} roughness={0.55} />
         </mesh>
-        {hatted && (
-          <>
-            <mesh position={[0, coatH + 0.2, 0]}>
-              <boxGeometry args={[0.22, 0.02, 0.22]} />
-              <meshStandardMaterial color={HAT} />
-            </mesh>
-            <mesh position={[0, coatH + (boss ? 0.26 : 0.24), 0]}>
-              <boxGeometry args={[0.13, boss ? 0.08 : 0.055, 0.13]} />
-              <meshStandardMaterial color={HAT} />
-            </mesh>
-          </>
-        )}
       </group>
+      {hatted && (
+        <group ref={hat} position={[0, hip + coatH + 0.2, 0]}>
+          <mesh>
+            <boxGeometry args={[0.22, 0.02, 0.22]} />
+            <meshStandardMaterial color={HAT} />
+          </mesh>
+          <mesh position={[0, boss ? 0.06 : 0.04, 0]}>
+            <boxGeometry args={[0.13, boss ? 0.08 : 0.055, 0.13]} />
+            <meshStandardMaterial color={HAT} />
+          </mesh>
+        </group>
+      )}
     </group>
   );
 }

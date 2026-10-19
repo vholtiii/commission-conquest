@@ -18,6 +18,7 @@ import {
 } from "@/engine/intel";
 import { activeCrewIds, isUnguarded, maxRacketsFor, lotTier } from "@/engine/territoryValue";
 import { useMapView } from "@/engine/mapView";
+import { districtShapes } from "./districtShapes";
 
 interface Props {
   layout: CityLayout;
@@ -569,6 +570,7 @@ function TerritoryMarker({ territory, cx, cz }: { territory: Territory; cx: numb
 export default function Markers({ layout, territories }: Props) {
   const routes = useGameStore((s) => s.routes);
   const byId = useMemo(() => new Map(territories.map((t) => [t.id, t])), [territories]);
+  const shapes = useMemo(() => districtShapes(layout), [layout]);
   const centerById = useMemo(
     () => new Map(layout.centers.map((c) => [c.territoryId, c])),
     [layout],
@@ -579,7 +581,15 @@ export default function Markers({ layout, territories }: Props) {
       {layout.centers.map((c) => {
         const t = byId.get(c.territoryId);
         if (!t || !t.discovered) return null;
-        return <TerritoryMarker key={c.territoryId} territory={t} cx={c.worldX} cz={c.worldZ} />;
+        const anchor = shapes.get(c.territoryId)?.anchor;
+        return (
+          <TerritoryMarker
+            key={c.territoryId}
+            territory={t}
+            cx={anchor?.x ?? c.worldX}
+            cz={anchor?.z ?? c.worldZ}
+          />
+        );
       })}
 
       {routes

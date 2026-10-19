@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { Html } from "@react-three/drei";
-import { Crown } from "lucide-react";
 import * as THREE from "three";
+import { Crown } from "lucide-react";
 import type { CityLayout } from "@/engine/cityLayout";
 import { familyHq, resolveCrewLocation } from "@/engine/crewLocation";
 import { isCrewVisible, normalizeIntel } from "@/engine/intel";
@@ -10,94 +10,16 @@ import { useGameStore } from "@/engine/store";
 import { ALL_FAMILY_NAMES, getFamilyDef } from "@/data/families";
 import type { FamilyName, Territory } from "@/types/game";
 import { FAMILY_HEX, MAP_STATUS } from "@/types/game";
-import { makeSquareRingGeometry } from "./DistrictOverlay";
+import { districtShapes, getDistrictHatch, type DistrictShape } from "./districtShapes";
 
 interface Props {
   layout: CityLayout;
   territories: Territory[];
 }
 
-const TILE = 7.6;
-
 /** The wash is paint. The district plate underneath takes the click. */
 function ignoreRaycast() {
   return null;
-}
-
-function makeHatchGeometry(size: number, stripes = 5): THREE.ShapeGeometry {
-  const shapes: THREE.Shape[] = [];
-  const half = size / 2;
-  const step = size / (stripes + 1);
-  const thick = 0.22;
-  for (let i = 1; i <= stripes; i++) {
-    const s = new THREE.Shape();
-    // Diagonal bands across the square (local XY before rotation to XZ)
-    const o = -half + i * step;
-    s.moveTo(-half, o - thick);
-    s.lineTo(half, o + size * 0.55 - thick);
-    s.lineTo(half, o + size * 0.55 + thick);
-    s.lineTo(-half, o + thick);
-    s.closePath();
-    shapes.push(s);
-  }
-  return new THREE.ShapeGeometry(shapes);
-}
-
-function makeDashedRingGeometry(size: number, segments = 8): THREE.ShapeGeometry {
-  const shapes: THREE.Shape[] = [];
-  const half = size / 2;
-  const outer = half;
-  const inner = half - 0.28;
-  const gap = 0.18;
-  // Top / bottom / left / right mid-segments (simplified dashed look)
-  const edges: Array<[number, number, number, number]> = [
-    [-outer + gap, outer, outer - gap, outer],
-    [-outer + gap, -outer, outer - gap, -outer],
-    [-outer, -outer + gap, -outer, outer - gap],
-    [outer, -outer + gap, outer, outer - gap],
-  ];
-  // Also add corner stubs for more "dashed" feel
-  const corners: Array<[number, number, number, number]> = [
-    [-outer, outer - 0.9, -outer, outer],
-    [-outer, outer, -outer + 0.9, outer],
-    [outer - 0.9, outer, outer, outer],
-    [outer, outer, outer, outer - 0.9],
-    [-outer, -outer, -outer, -outer + 0.9],
-    [-outer, -outer, -outer + 0.9, -outer],
-    [outer - 0.9, -outer, outer, -outer],
-    [outer, -outer, outer, -outer + 0.9],
-  ];
-  void segments;
-  for (const [x0, z0, x1, z1] of [...edges, ...corners]) {
-    const s = new THREE.Shape();
-    const dx = Math.sign(x1 - x0) || 0;
-    const dz = Math.sign(z1 - z0) || 0;
-    const t = 0.22;
-    if (Math.abs(x1 - x0) > Math.abs(z1 - z0)) {
-      // horizontal
-      const y = z0;
-      const xa = Math.min(x0, x1);
-      const xb = Math.max(x0, x1);
-      s.moveTo(xa, y - t);
-      s.lineTo(xb, y - t);
-      s.lineTo(xb, y + t);
-      s.lineTo(xa, y + t);
-    } else {
-      const x = x0;
-      const za = Math.min(z0, z1);
-      const zb = Math.max(z0, z1);
-      s.moveTo(x - t, za);
-      s.lineTo(x + t, za);
-      s.lineTo(x + t, zb);
-      s.lineTo(x - t, zb);
-    }
-    void dx;
-    void dz;
-    void inner;
-    s.closePath();
-    shapes.push(s);
-  }
-  return new THREE.ShapeGeometry(shapes);
 }
 
 interface CrownInfo {
@@ -108,24 +30,18 @@ interface CrownInfo {
 
 function StrategicTile({
   territory,
-  cx,
-  cz,
+  shape,
   blend,
   crown,
 }: {
   territory: Territory;
-  cx: number;
-  cz: number;
+  shape: DistrictShape;
   blend: number;
   crown: CrownInfo | null;
 }) {
   const selectTerritory = useGameStore((s) => s.selectTerritory);
   const playerFamily = useGameStore((s) => s.playerFamily);
-
-  const outlineGeo = useMemo(() => makeSquareRingGeometry(TILE, TILE - 0.45), []);
-  const innerRingGeo = useMemo(() => makeSquareRingGeometry(TILE - 0.9, TILE - 1.2), []);
-  const hatchGeo = useMemo(() => makeHatchGeometry(TILE - 0.6), []);
-  const dashedGeo = useMemo(() => makeDashedRingGeometry(TILE), []);
+  const hatch = useMemo(() => (territory.discovered && !territory.owner ? getDistrictHatch() : null), [territory.discovered, territory.owner]);
 
   const discovered = territory.discovered;
   const unclaimed = !territory.owner;
@@ -135,87 +51,65 @@ function StrategicTile({
     : territory.owner
       ? FAMILY_HEX[territory.owner]
       : MAP_STATUS.neutral;
+  const borderColor = !discovered ? "#3a3d44" : unclaimed ? MAP_STATUS.neutral : baseColor;
 
   const fillOp = (!discovered ? 0.8 : unclaimed ? 0.22 : 0.55) * blend;
   const ringOp = (!discovered ? 0.55 : unclaimed ? 0.4 : 0.95) * blend;
 
   return (
-    <group position={[cx, 0.5, cz]} raycast={() => null}>
-      <mesh raycast={ignoreRaycast} rotation={[-Math.PI / 2, 0, 0]} renderOrder={20}>
-        <planeGeometry args={[TILE, TILE]} />
+    <group position={[0, 0.5, 0]} raycast={() => null}>
+      <mesh raycast={ignoreRaycast} geometry={shape.fill} renderOrder={20}>
         <meshBasicMaterial
           color={baseColor}
           transparent
           opacity={fillOp}
           depthTest={false}
           depthWrite={false}
+          side={THREE.DoubleSide}
         />
       </mesh>
 
-      {!discovered ? (
-        <mesh raycast={ignoreRaycast} geometry={outlineGeo} rotation={[-Math.PI / 2, 0, 0]} renderOrder={21}>
+      {hatch && (
+        <mesh raycast={ignoreRaycast} geometry={shape.fill} position={[0, 0.002, 0]} renderOrder={21}>
           <meshBasicMaterial
-            color="#3a3d44"
+            map={hatch}
+            color="#9aa0a8"
             transparent
-            opacity={ringOp}
+            opacity={0.35 * blend}
             depthTest={false}
             depthWrite={false}
             side={THREE.DoubleSide}
           />
         </mesh>
-      ) : unclaimed ? (
-        <>
-          <mesh raycast={ignoreRaycast} geometry={hatchGeo} rotation={[-Math.PI / 2, 0, 0]} renderOrder={21}>
-            <meshBasicMaterial
-              color="#9aa0a8"
-              transparent
-              opacity={0.35 * blend}
-              depthTest={false}
-              depthWrite={false}
-              side={THREE.DoubleSide}
-            />
-          </mesh>
-          <mesh raycast={ignoreRaycast} geometry={dashedGeo} rotation={[-Math.PI / 2, 0, 0]} renderOrder={22}>
-            <meshBasicMaterial
-              color={MAP_STATUS.neutral}
-              transparent
-              opacity={0.55 * blend}
-              depthTest={false}
-              depthWrite={false}
-              side={THREE.DoubleSide}
-            />
-          </mesh>
-        </>
-      ) : (
-        <>
-          <mesh raycast={ignoreRaycast} geometry={outlineGeo} rotation={[-Math.PI / 2, 0, 0]} renderOrder={21}>
-            <meshBasicMaterial
-              color={baseColor}
-              transparent
-              opacity={ringOp}
-              depthTest={false}
-              depthWrite={false}
-              side={THREE.DoubleSide}
-            />
-          </mesh>
-          {ownedByPlayer && (
-            <mesh raycast={ignoreRaycast} geometry={innerRingGeo} rotation={[-Math.PI / 2, 0, 0]} renderOrder={22}>
-              <meshBasicMaterial
-                color="#ffffff"
-                transparent
-                opacity={0.6 * blend}
-                depthTest={false}
-                depthWrite={false}
-                side={THREE.DoubleSide}
-              />
-            </mesh>
-          )}
-        </>
+      )}
+
+      <mesh raycast={ignoreRaycast} geometry={shape.border} position={[0, 0.004, 0]} renderOrder={22}>
+        <meshBasicMaterial
+          color={borderColor}
+          transparent
+          opacity={ringOp}
+          depthTest={false}
+          depthWrite={false}
+          side={THREE.DoubleSide}
+        />
+      </mesh>
+
+      {ownedByPlayer && (
+        <mesh raycast={ignoreRaycast} geometry={shape.inner} position={[0, 0.006, 0]} renderOrder={23}>
+          <meshBasicMaterial
+            color="#ffffff"
+            transparent
+            opacity={0.6 * blend}
+            depthTest={false}
+            depthWrite={false}
+            side={THREE.DoubleSide}
+          />
+        </mesh>
       )}
 
       {discovered && (
         <Html
-          position={[0, 0.02, 0]}
+          position={[shape.anchor.x, 0.02, shape.anchor.z]}
           center
           occlude={false}
           zIndexRange={[6, 2]}
@@ -266,6 +160,7 @@ function StrategicTile({
 export default function StrategicOverlay({ layout, territories }: Props) {
   const blend = useMapView((s) => s.blend);
   const overview = useMapView((s) => s.overview);
+  const shapes = useMemo(() => districtShapes(layout), [layout]);
   const crew = useGameStore((s) => s.crew);
   const playerFamily = useGameStore((s) => s.playerFamily);
   const routes = useGameStore((s) => s.routes);
@@ -322,13 +217,13 @@ export default function StrategicOverlay({ layout, territories }: Props) {
     <group>
       {layout.centers.map((c) => {
         const t = byId.get(c.territoryId);
-        if (!t) return null;
+        const shape = shapes.get(c.territoryId);
+        if (!t || !shape) return null;
         return (
           <StrategicTile
             key={c.territoryId}
             territory={t}
-            cx={c.worldX}
-            cz={c.worldZ}
+            shape={shape}
             blend={blend}
             crown={crownsByTerritory.get(c.territoryId) ?? null}
           />

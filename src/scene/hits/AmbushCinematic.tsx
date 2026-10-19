@@ -5,7 +5,11 @@ import { SedanFleet } from "@/scene/Sedan";
 import Goon from "./props/Goon";
 import MuzzleFlash from "./props/MuzzleFlash";
 import { PaddyWagon, PoliceLights } from "./props/PoliceLights";
-import { coverageShot, moveCam, type Coverage } from "./cameraRig";
+import { coverageShot, handheld, moveCam, reelSide, type Coverage } from "./cameraRig";
+import Headlamps from "./props/Headlamps";
+import Blood from "./props/Blood";
+import Bystanders from "./props/Bystanders";
+import Smoke from "./props/Smoke";
 import type { SceneProps } from "./sceneProps";
 
 function paint(family: FamilyName): string {
@@ -47,8 +51,12 @@ export default function AmbushCinematic({ cinematic, site, phase, local, shake }
     const coverage: Coverage =
       phase === "position" ? "wide" : phase === "wait" ? "medium" : phase === "strike" ? "close" : "pull";
     const focus = phase === "strike" || phase === "melt" ? mark : alley;
-    const shot = coverageShot(focus, site.facing, coverage);
+    const shot = coverageShot(focus, site.facing, coverage, {
+      drift: local,
+      side: reelSide(cinematic.operationId),
+    });
     moveCam(camera, controls, shot.pos, shot.look, phase === "strike" ? 0.5 : 0.12);
+    if (phase === "wait") handheld(camera, 0.01);
     if (phase === "strike" && !freeze) shake.current = Math.max(shake.current, 0.06);
   });
 
@@ -101,6 +109,17 @@ export default function AmbushCinematic({ cinematic, site, phase, local, shake }
           cars={[{ x: site.road.x + 1.8, z: site.road.z + 1.2, rot: site.facing, color: paint(cinematic.attackerFamily), lamps: phase === "melt" }]}
         />
       )}
+      {phase === "melt" && (
+        <Headlamps cars={[{ x: site.road.x + 1.8, z: site.road.z + 1.2, rot: site.facing }]} />
+      )}
+      <Bystanders at={[site.road.x, 0, site.road.z]} facing={site.facing} flee={phase === "strike" || phase === "melt"} />
+      <Blood active={killed && (phase === "strike" || phase === "melt")} at={[mark.x, 0, mark.z]} />
+      <Smoke
+        active={phase === "melt" && !police && !freeze}
+        at={[site.road.x + 1.2, 0.15, site.road.z + 0.8]}
+        loop
+        size={0.65}
+      />
       {c === "patrol" && phase !== "position" && (
         <pointLight position={[site.road.x, 1.2, site.road.z]} color="#fff3c4" intensity={phase === "wait" ? 2 + local : 1.2} distance={8} />
       )}

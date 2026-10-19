@@ -4,7 +4,8 @@ import { FAMILY_HEX, type FamilyName } from "@/types/game";
 import { SedanFleet, type SedanSpec } from "@/scene/Sedan";
 import Goon from "./props/Goon";
 import MuzzleFlash from "./props/MuzzleFlash";
-import { coverageShot, moveCam, type Coverage } from "./cameraRig";
+import { coverageShot, moveCam, reelSide, type Coverage } from "./cameraRig";
+import Headlamps from "./props/Headlamps";
 import type { SceneProps } from "./sceneProps";
 
 function paint(family: FamilyName): string {
@@ -44,9 +45,16 @@ export default function SummonsCinematic({ cinematic, site, phase, local, shake 
   const glow = phase === "back_room" ? 1 - local * 0.7 : phase === "drive_off" ? 0.1 : 0.85;
 
   useFrame(() => {
-    const coverage: Coverage =
-      phase === "call" || phase === "drive" ? "wide" : phase === "back_room" ? "close" : "pull";
-    const shot = coverageShot(phase === "drive" ? manAt : door, site.facing, coverage);
+    if (phase === "drive") {
+      const behind = manAt.clone().add(new THREE.Vector3(-Math.sin(site.facing) * 1.6, 1.55, -Math.cos(site.facing) * 1.6));
+      moveCam(camera, controls, behind, door, 0.18);
+      return;
+    }
+    const coverage: Coverage = phase === "call" ? "wide" : phase === "back_room" ? "close" : "pull";
+    const shot = coverageShot(door, site.facing, coverage, {
+      drift: local,
+      side: reelSide(cinematic.operationId),
+    });
     moveCam(camera, controls, shot.pos, shot.look, phase === "back_room" ? 0.5 : 0.1);
     if (phase === "back_room") shake.current = Math.max(shake.current, 0.05);
   });
@@ -56,6 +64,13 @@ export default function SummonsCinematic({ cinematic, site, phase, local, shake 
   return (
     <group>
       <SedanFleet cars={cars} />
+      {(phase === "drive" || phase === "drive_off") && (
+        <Headlamps cars={[{ x: carAt.x, z: carAt.z, rot: site.facing + (depart > 0 ? Math.PI : 0) }]} />
+      )}
+      <pointLight position={[door.x, 1.3, door.z]} color="#ffb060" intensity={glow * 2.4} distance={6} />
+      {phase !== "call" && (
+        <Goon position={[door.x + 0.45, 0, door.z - 0.15]} rot={site.facing + Math.PI} role="associate" color="#2a2420" />
+      )}
       <mesh position={[site.building.x, 1.15, site.building.z]}>
         <boxGeometry args={[0.7, 0.45, 0.08]} />
         <meshStandardMaterial color="#e0b070" emissive="#e0b070" emissiveIntensity={glow} />

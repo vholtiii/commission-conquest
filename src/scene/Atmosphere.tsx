@@ -2,6 +2,7 @@ import { memo, useRef } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
 import { useGameStore } from "@/engine/store";
+import { useReelLook } from "./hits/reelLook";
 import { seasonPalette, type SeasonLook } from "./sceneTheme";
 
 const SETTLE_SECONDS = 0.45;
@@ -19,6 +20,8 @@ function Atmosphere() {
   const snapped = useRef(false);
   const keyRef = useRef("");
   const targetRef = useRef<SeasonLook>(seasonPalette({ month: 1, day: 1 }));
+  const night = useRef(0);
+  const grade = useReelLook((s) => s.grade);
 
   useFrame((_, dt) => {
     const date = useGameStore.getState().date;
@@ -30,6 +33,8 @@ function Atmosphere() {
     const target = targetRef.current;
     const k = snapped.current ? 1 - Math.exp(-dt / SETTLE_SECONDS) : 1;
     snapped.current = true;
+    night.current += (grade - night.current) * (1 - Math.exp(-dt / 0.6));
+    const dim = 1 - night.current * 0.7;
 
     const bg = scene.background;
     if (bg instanceof THREE.Color) {
@@ -42,11 +47,11 @@ function Atmosphere() {
       hemiRef.current.groundColor.lerp(target.groundColor, k);
     }
     if (ambRef.current) {
-      ambRef.current.intensity += (target.ambient - ambRef.current.intensity) * k;
+      ambRef.current.intensity += (target.ambient * dim - ambRef.current.intensity) * k;
     }
     if (sunRef.current) {
       sunRef.current.color.lerp(target.sunColor, k);
-      sunRef.current.intensity += (target.sunIntensity - sunRef.current.intensity) * k;
+      sunRef.current.intensity += (target.sunIntensity * dim - sunRef.current.intensity) * k;
       const y = sunRef.current.position.y + (target.sunElevation - sunRef.current.position.y) * k;
       sunRef.current.position.set(30, y, 20);
     }

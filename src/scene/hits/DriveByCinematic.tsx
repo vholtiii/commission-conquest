@@ -7,7 +7,10 @@ import MuzzleFlash from "./props/MuzzleFlash";
 import GlassShards from "./props/GlassShards";
 import Smoke from "./props/Smoke";
 import { PaddyWagon, PoliceLights } from "./props/PoliceLights";
-import { coverageShot, moveCam, type Coverage } from "./cameraRig";
+import { coverageShot, handheld, moveCam, reelSide, type Coverage } from "./cameraRig";
+import Headlamps from "./props/Headlamps";
+import Blood from "./props/Blood";
+import Bystanders from "./props/Bystanders";
 import type { SceneProps } from "./sceneProps";
 
 function paint(family: FamilyName): string {
@@ -76,14 +79,25 @@ export default function DriveByCinematic({ cinematic, site, phase, local, shake 
     const coverage: Coverage =
       phase === "roll" ? "wide" : phase === "pass" ? "medium" : phase === "spray" ? "close" : "pull";
     const focus = phase === "spray" ? new THREE.Vector3(markSpot[0], 0, markSpot[2]) : phase === "pass" ? site.building.clone() : pos.clone();
-    const shot = coverageShot(focus, phase === "spray" ? site.facing : rot, coverage);
+    const shot = coverageShot(focus, phase === "spray" ? site.facing : rot, coverage, {
+      drift: local,
+      side: reelSide(cinematic.operationId),
+    });
     moveCam(camera, controls, shot.pos, shot.look, phase === "spray" ? 0.5 : 0.12);
+    if (phase === "pass") handheld(camera, 0.01);
     if (phase === "spray") shake.current = Math.max(shake.current, 0.08);
   });
 
   return (
     <group>
       <SedanFleet cars={cars} />
+      <Headlamps cars={cars.filter((car) => car.lamps).map((car) => ({ x: car.x, z: car.z, rot: car.rot, y: car.y }))} />
+      <Bystanders
+        at={[site.road.x, 0, site.road.z]}
+        facing={site.facing}
+        flee={phase === "spray" || phase === "getaway"}
+      />
+      <Blood active={markDown} at={markSpot} />
       <Goon
         position={markSpot}
         rot={site.facing}
@@ -103,6 +117,12 @@ export default function DriveByCinematic({ cinematic, site, phase, local, shake 
       )}
       <GlassShards active={phase === "spray"} at={[site.building.x, 0, site.building.z]} />
       <Smoke active={returnFire && phase === "getaway"} at={[pos.x, 0.4, pos.z]} loop />
+      <Smoke
+        active={phase === "getaway" && !stalled}
+        at={[pos.x - tangent.x * 0.9, 0.15, pos.z - tangent.z * 0.9]}
+        loop
+        size={0.65}
+      />
       <PoliceLights active={stalled} at={[pos.x, 0.5, pos.z]} />
       <PaddyWagon active={police && phase === "getaway"} x={site.road.x + 2} z={site.road.z - 1.5} rot={rot + Math.PI / 2} />
     </group>

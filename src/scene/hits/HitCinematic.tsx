@@ -5,11 +5,28 @@ import type { CityLayout } from "@/engine/cityLayout";
 import type { HitApproach, HitCinematic as HitCinematicData, HitResult } from "@/types/game";
 import { useGameStore } from "@/engine/store";
 import { useTurnTransition } from "@/ui/turnTransition";
-import { burst, engine, explosion, fizzle, footsteps, glass, mutedShot, setSfxVolume, siren } from "@/audio/sfx";
+import {
+  burst,
+  engine,
+  explosion,
+  fire,
+  fizzle,
+  footsteps,
+  glass,
+  mutedShot,
+  rainBed,
+  ricochet,
+  setSfxVolume,
+  siren,
+  thud,
+  tyreSqueal,
+} from "@/audio/sfx";
 import { applyShake } from "./cameraRig";
 import { phaseAt, timelineFor, totalDuration, type PhaseDef } from "./timeline";
 import { siteFor } from "./site";
 import { useReelHold } from "./reelHold";
+import { reelRain } from "./reelLook";
+import ReelAtmosphere from "./props/ReelAtmosphere";
 import CarBombCinematic from "./CarBombCinematic";
 import DriveByCinematic from "./DriveByCinematic";
 import AmbushCinematic from "./AmbushCinematic";
@@ -37,14 +54,41 @@ function playCue(approach: HitApproach, phase: string, result: HitResult): void 
   }
   if (phase === "detonate") {
     if (result.complication === "dud" || result.complication === "rain") fizzle();
-    else explosion();
+    else {
+      explosion();
+      if (result.targetDead) thud();
+    }
   }
   if (phase === "abort") footsteps(5, 0.3);
   if (phase === "spray") {
     burst(result.defenders > 0 ? 8 : 5, 0.08);
+    ricochet();
     glass();
+    footsteps(7, 0.2);
+    if (result.targetDead) thud();
   }
-  if (phase === "strike" && result.complication !== "patrol" && !result.markAbsent) burst(3, 0.12);
+  if (phase === "strike" && result.complication !== "patrol" && !result.markAbsent) {
+    burst(3, 0.12);
+    ricochet();
+    footsteps(6, 0.22);
+    if (result.targetDead) thud();
+  }
+  if (
+    phase === "aftermath" &&
+    approach === "car_bomb" &&
+    result.complication !== "dud" &&
+    result.complication !== "rain" &&
+    result.complication !== "cop_on_fender"
+  ) {
+    fire(2.6);
+  }
+  if (
+    (phase === "getaway" || phase === "drive_off") &&
+    result.outcome !== "botched_arrested" &&
+    result.outcome !== "botched_killed"
+  ) {
+    tyreSqueal();
+  }
   if (
     (phase === "handshake" || phase === "back_room") &&
     !result.markAbsent &&
@@ -52,6 +96,7 @@ function playCue(approach: HitApproach, phase: string, result: HitResult): void 
     result.complication !== "toast"
   ) {
     mutedShot();
+    if (result.targetDead) thud();
     if (result.outcome === "messy_kill" || result.complication === "witness" || result.complication === "kitchen_backup") {
       glass();
     }
@@ -144,8 +189,12 @@ export default function HitCinematic({ layout, controlsRef }: Props) {
     const total = totalDuration(phases);
     const at = phaseAt(phases, elapsed);
     if (lastCue.current !== at.phase.name) {
+      const first = lastCue.current === "";
       lastCue.current = at.phase.name;
       setSfxVolume(sfxVolume);
+      if (first) {
+        rainBed(total, reelRain(useGameStore.getState().date.month, current.result.complication));
+      }
       playCue(current.approach, at.phase.name, current.result);
     }
     setLive((prev) =>
@@ -169,7 +218,17 @@ export default function HitCinematic({ layout, controlsRef }: Props) {
 
   if (!current || !site || !live) return null;
   const Scene = SCENES[current.approach];
-  return <Scene cinematic={current} site={site} phase={live.phase.name} local={live.local} shake={shake} />;
+  const month = useGameStore.getState().date.month;
+  return (
+    <group>
+      <ReelAtmosphere
+        center={site.road}
+        facing={site.facing}
+        amount={reelRain(month, current.result.complication)}
+      />
+      <Scene cinematic={current} site={site} phase={live.phase.name} local={live.local} shake={shake} />
+    </group>
+  );
 }
 
 export function useHitCinematicPhase(): {

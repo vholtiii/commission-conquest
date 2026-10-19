@@ -9,46 +9,11 @@ import { FAMILY_HEX, MAP_STATUS } from "@/types/game";
 import { useGameStore } from "@/engine/store";
 import { useMapView } from "@/engine/mapView";
 import { lotTier } from "@/engine/territoryValue";
+import { districtShapes, getDistrictHatch, getHatchTexture, type DistrictShape as DistrictGeo } from "./districtShapes";
 
 interface Props {
   layout: CityLayout;
   territories: Territory[];
-}
-
-let hatchTexture: THREE.Texture | null = null;
-
-/**
- * Thin diagonal lines on a transparent ground — the survey-map mark for an
- * unclaimed empty lot, so it reads as "open ground, nobody's" rather than a
- * district that simply hasn't been built up yet.
- */
-function getHatchTexture(): THREE.Texture {
-  if (hatchTexture) return hatchTexture;
-  const size = 128;
-  const canvas = document.createElement("canvas");
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext("2d")!;
-  ctx.clearRect(0, 0, size, size);
-  ctx.strokeStyle = "rgba(226, 230, 236, 0.9)";
-  ctx.lineWidth = 3;
-  ctx.lineCap = "butt";
-  const step = 16;
-  // Lines running bottom-left → top-right, wrapped so the tile repeats seamlessly.
-  for (let d = -size; d < size * 2; d += step) {
-    ctx.beginPath();
-    ctx.moveTo(d, size);
-    ctx.lineTo(d + size, 0);
-    ctx.stroke();
-  }
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.wrapS = THREE.RepeatWrapping;
-  tex.wrapT = THREE.RepeatWrapping;
-  tex.repeat.set(3, 3);
-  tex.anisotropy = 4;
-  tex.colorSpace = THREE.SRGBColorSpace;
-  hatchTexture = tex;
-  return tex;
 }
 
 /** Flat square ring (outer square with square hole) for area outlines / pulses. */
@@ -73,36 +38,8 @@ export function makeSquareRingGeometry(outer: number, inner: number): THREE.Shap
   return new THREE.ShapeGeometry(shape);
 }
 
-/**
- * Four L-shaped corner brackets — vendetta "marked" turf.
- * Cyan (not a family color) so it never reads as ownership or a hit.
- */
-function makeCornerBracketGeometry(size: number, arm: number, thick: number): THREE.ShapeGeometry {
-  const h = size / 2;
-  const shapes: THREE.Shape[] = [];
-  const corners: [number, number][] = [
-    [-1, -1],
-    [1, -1],
-    [-1, 1],
-    [1, 1],
-  ];
-  for (const [sx, sz] of corners) {
-    const s = new THREE.Shape();
-    const x0 = sx * h;
-    const z0 = sz * h;
-    s.moveTo(x0, z0);
-    s.lineTo(x0 - sx * arm, z0);
-    s.lineTo(x0 - sx * arm, z0 - sz * thick);
-    s.lineTo(x0 - sx * thick, z0 - sz * thick);
-    s.lineTo(x0 - sx * thick, z0 - sz * arm);
-    s.lineTo(x0, z0 - sz * arm);
-    s.closePath();
-    shapes.push(s);
-  }
-  return new THREE.ShapeGeometry(shapes);
-}
-
-function DistrictSquare({ territory, cx, cz }: { territory: Territory; cx: number; cz: number }) {
+/** The district's real footprint: a tint over its cells and a border along the streets. */
+function DistrictShape({ territory, shape }: { territory: Territory; shape: DistrictGeo }) {
   const selectTerritory = useGameStore((s) => s.selectTerritory);
   const selectedId = useGameStore((s) => s.selectedTerritoryId);
   const selectedCrewId = useGameStore((s) => s.selectedCrewId);
@@ -117,24 +54,21 @@ function DistrictSquare({ territory, cx, cz }: { territory: Territory; cx: numbe
   const unclaimed = !territory.owner;
   const openLot = unclaimed && lotTier(territory) === "empty";
   const baseColor = territory.owner ? FAMILY_HEX[territory.owner] : MAP_STATUS.neutral;
-  const size = 7.2;
-  const hatch = useMemo(() => (openLot ? getHatchTexture() : null), [openLot]);
+  const hatch = useMemo(() => (openLot ? getDistrictHatch() : null), [openLot]);
 
-  const outlineGeo = useMemo(() => makeSquareRingGeometry(size, size - 0.4), [size]);
-  const pulseGeo = useMemo(() => makeSquareRingGeometry(size + 1.1, size + 0.25), [size]);
-  const vendettaGeo = useMemo(() => makeCornerBracketGeometry(size + 1.8, 2.1, 0.48), [size]);
+  const pick = (e: { stopPropagation: () => void }) => {
+    e.stopPropagation();
+    selectTerritory(territory.id);
+  };
 
   useFrame(({ clock }) => {
     if (isSelected && pulseRef.current) {
       const t = clock.getElapsedTime();
-      const pulse = 1 + Math.sin(t * 3.2) * 0.12;
-      pulseRef.current.scale.setScalar(pulse);
       const mat = pulseRef.current.material as THREE.MeshBasicMaterial;
       mat.opacity = 0.45 + Math.abs(Math.sin(t * 3.2)) * 0.35;
       invalidate();
     }
     if (isVendetta && flashRef.current) {
-      // Slow breathe, no scale: "marked feud", not "incoming hit"
       const t = clock.getElapsedTime();
       const mat = flashRef.current.material as THREE.MeshBasicMaterial;
       mat.opacity = 0.55 + (Math.sin(t * 1.4) + 1) * 0.18;
@@ -143,23 +77,18 @@ function DistrictSquare({ territory, cx, cz }: { territory: Territory; cx: numbe
   });
 
   return (
-    <group position={[cx, 0, cz]}>
-      {/* Family-colored ownership glow — the primary "who owns this" signal */}
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.03, 0]}>
-        <planeGeometry args={[size, size]} />
+    <group>
+      <mesh geometry={shape.fill} position={[0, 0.03, 0]} onPointerDown={pick}>
         <meshBasicMaterial
           color={baseColor}
           transparent
           opacity={unclaimed ? 0.12 : 0.32}
           depthWrite={false}
+          side={THREE.DoubleSide}
         />
       </mesh>
 
-      <mesh
-        geometry={outlineGeo}
-        rotation={[-Math.PI / 2, 0, 0]}
-        position={[0, 0.035, 0]}
-      >
+      <mesh geometry={shape.border} position={[0, 0.04, 0]} onPointerDown={pick}>
         <meshBasicMaterial
           color={baseColor}
           transparent
@@ -169,44 +98,21 @@ function DistrictSquare({ territory, cx, cz }: { territory: Territory; cx: numbe
         />
       </mesh>
 
-      {/* Unclaimed empty lot: faint diagonal hatching over the open ground */}
       {hatch && (
-        <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.034, 0]}>
-          <planeGeometry args={[size - 0.5, size - 0.5]} />
+        <mesh geometry={shape.fill} position={[0, 0.035, 0]} onPointerDown={pick}>
           <meshBasicMaterial
             map={hatch}
             color="#dfe4ea"
             transparent
             opacity={0.22}
             depthWrite={false}
+            side={THREE.DoubleSide}
           />
         </mesh>
       )}
 
-      {unclaimed &&
-        [
-          [-1, -1],
-          [1, -1],
-          [-1, 1],
-          [1, 1],
-        ].map(([sx, sz], i) => (
-          <mesh
-            key={i}
-            rotation={[-Math.PI / 2, 0, 0]}
-            position={[(sx * size) / 2 - sx * 0.35, 0.036, (sz * size) / 2 - sz * 0.35]}
-          >
-            <planeGeometry args={[0.7, 0.7]} />
-            <meshBasicMaterial color="#9aa0a8" transparent opacity={0.35} depthWrite={false} />
-          </mesh>
-        ))}
-
       {isSelected && (
-        <mesh
-          ref={pulseRef}
-          geometry={pulseGeo}
-          rotation={[-Math.PI / 2, 0, 0]}
-          position={[0, 0.04, 0]}
-        >
+        <mesh ref={pulseRef} geometry={shape.border} position={[0, 0.05, 0]} onPointerDown={pick}>
           <meshBasicMaterial
             color={unclaimed ? "#c5cad3" : "#ffffff"}
             transparent
@@ -217,14 +123,8 @@ function DistrictSquare({ territory, cx, cz }: { territory: Territory; cx: numbe
         </mesh>
       )}
 
-      {/* Vendetta: cyan corner brackets only — never fills the square */}
       {isVendetta && (
-        <mesh
-          ref={flashRef}
-          geometry={vendettaGeo}
-          rotation={[-Math.PI / 2, 0, 0]}
-          position={[0, 0.048, 0]}
-        >
+        <mesh ref={flashRef} geometry={shape.border} position={[0, 0.055, 0]} onPointerDown={pick}>
           <meshBasicMaterial
             color={MAP_STATUS.vendetta}
             transparent
@@ -234,18 +134,6 @@ function DistrictSquare({ territory, cx, cz }: { territory: Territory; cx: numbe
           />
         </mesh>
       )}
-
-      <mesh
-        rotation={[-Math.PI / 2, 0, 0]}
-        position={[0, 0.02, 0]}
-        onPointerDown={(e) => {
-          e.stopPropagation();
-          selectTerritory(territory.id);
-        }}
-      >
-        <planeGeometry args={[size + 1, size + 1]} />
-        <meshBasicMaterial visible={false} />
-      </mesh>
     </group>
   );
 }
@@ -319,6 +207,7 @@ function LotPads({ layout, territory }: { layout: CityLayout; territory: Territo
 }
 
 export default function DistrictOverlay({ layout, territories }: Props) {
+  const shapes = useMemo(() => districtShapes(layout), [layout]);
   const byId = useMemo(() => new Map(territories.map((t) => [t.id, t])), [territories]);
   const overview = useMapView((s) => s.overview);
 
@@ -326,8 +215,9 @@ export default function DistrictOverlay({ layout, territories }: Props) {
     <group>
       {layout.centers.map((c) => {
         const t = byId.get(c.territoryId);
-        if (!t) return null;
-        return <DistrictSquare key={c.territoryId} territory={t} cx={c.worldX} cz={c.worldZ} />;
+        const shape = shapes.get(c.territoryId);
+        if (!t || !shape) return null;
+        return <DistrictShape key={c.territoryId} territory={t} shape={shape} />;
       })}
       {!overview &&
         territories.map((t) =>

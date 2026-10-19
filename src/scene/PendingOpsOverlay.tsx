@@ -7,6 +7,7 @@ import type { CityLayout } from "@/engine/cityLayout";
 import { MAP_STATUS } from "@/types/game";
 import { useGameStore } from "@/engine/store";
 import { resolveCrewTerritoryId } from "@/engine/crewLocation";
+import { districtShapes } from "./districtShapes";
 
 interface Props {
   layout: CityLayout;
@@ -65,8 +66,8 @@ function PulsingHitReticle({
   const ringRef = useRef<Mesh>(null);
   const tickRef = useRef<Mesh>(null);
   const invalidate = useThree((s) => s.invalidate);
-  const geo = useMemo(() => makeSquareRingGeometry(8.8, 7.9), []);
-  const ticks = useMemo(() => makeReticleTicksGeometry(8.8, 1.6, 0.35), []);
+  const geo = useMemo(() => makeSquareRingGeometry(7.7, 6.85), []);
+  const ticks = useMemo(() => makeReticleTicksGeometry(7.7, 1.4, 0.3), []);
 
   useFrame(({ clock }) => {
     if (!ringRef.current) return;
@@ -118,10 +119,17 @@ export default function PendingOpsOverlay({ layout }: Props) {
   const routes = useGameStore((s) => s.routes);
   const selectedTerritoryId = useGameStore((s) => s.selectedTerritoryId);
 
+  const shapes = useMemo(() => districtShapes(layout), [layout]);
   const centerById = useMemo(
     () => new Map(layout.centers.map((c) => [c.territoryId, c])),
     [layout],
   );
+  const spot = (id: string) => {
+    const anchor = shapes.get(id)?.anchor;
+    if (anchor) return anchor;
+    const center = centerById.get(id);
+    return center ? { x: center.worldX, z: center.worldZ } : null;
+  };
 
   if (cinematicQueue.length > 0) return null;
 
@@ -147,15 +155,15 @@ export default function PendingOpsOverlay({ layout }: Props) {
     <group>
       {pending.map((op) => {
         const originId = op.originTerritoryId;
-        const target = centerById.get(op.targetTerritoryId);
+        const target = spot(op.targetTerritoryId);
         if (!target) return null;
 
-        const origin = originId ? centerById.get(originId) : null;
+        const origin = originId ? spot(originId) : null;
         const points: [number, number, number][] = [];
         if (origin) {
-          points.push([origin.worldX, 0.5, origin.worldZ]);
+          points.push([origin.x, 0.5, origin.z]);
         }
-        points.push([target.worldX, 0.5, target.worldZ]);
+        points.push([target.x, 0.5, target.z]);
 
         return (
           <group key={op.id}>
@@ -171,8 +179,8 @@ export default function PendingOpsOverlay({ layout }: Props) {
               />
             )}
             <PulsingHitReticle
-              cx={target.worldX}
-              cz={target.worldZ}
+              cx={target.x}
+              cz={target.z}
               color={MAP_STATUS.hitPending}
               intensity={1}
             />
@@ -182,13 +190,13 @@ export default function PendingOpsOverlay({ layout }: Props) {
 
       {previewTerritoryId &&
         (() => {
-          const c = centerById.get(previewTerritoryId!);
+          const c = spot(previewTerritoryId!);
           if (!c) return null;
           return (
             <PulsingHitReticle
               key="hit-preview"
-              cx={c.worldX}
-              cz={c.worldZ}
+              cx={c.x}
+              cz={c.z}
               color={MAP_STATUS.hitPreview}
               intensity={0.75}
             />

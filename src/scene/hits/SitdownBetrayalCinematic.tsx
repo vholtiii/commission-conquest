@@ -6,7 +6,9 @@ import Goon from "./props/Goon";
 import MuzzleFlash from "./props/MuzzleFlash";
 import GlassShards from "./props/GlassShards";
 import { PaddyWagon, PoliceLights } from "./props/PoliceLights";
-import { coverageShot, moveCam, type Coverage } from "./cameraRig";
+import { coverageShot, handheld, moveCam, reelSide, type Coverage } from "./cameraRig";
+import Headlamps from "./props/Headlamps";
+import Blood from "./props/Blood";
 import type { SceneProps } from "./sceneProps";
 
 function paint(family: FamilyName): string {
@@ -46,8 +48,12 @@ export default function SitdownBetrayalCinematic({ cinematic, site, phase, local
   useFrame(() => {
     const coverage: Coverage =
       phase === "arrive" ? "wide" : phase === "table" ? "medium" : phase === "handshake" ? "close" : "pull";
-    const shot = coverageShot(door, site.facing, coverage);
+    const shot = coverageShot(door, site.facing, coverage, {
+      drift: local,
+      side: reelSide(cinematic.operationId),
+    });
     moveCam(camera, controls, shot.pos, shot.look, phase === "handshake" ? 0.5 : 0.1);
+    if (phase === "table") handheld(camera, 0.01);
     if (phase === "handshake" && !turnedAway) shake.current = Math.max(shake.current, shatters ? 0.12 : 0.04);
   });
 
@@ -56,6 +62,12 @@ export default function SitdownBetrayalCinematic({ cinematic, site, phase, local
   return (
     <group>
       <SedanFleet cars={cars} />
+      <Headlamps cars={cars.filter((car) => car.lamps).map((car) => ({ x: car.x, z: car.z, rot: car.rot }))} />
+      <pointLight position={[door.x, 1.3, door.z]} color="#ffb060" intensity={glow * 2.2} distance={6} />
+      {phase !== "arrive" && (
+        <Goon position={[door.x + 0.55, 0, door.z + 0.1]} rot={site.facing + Math.PI} role="associate" color="#2a2420" />
+      )}
+      <Blood active={killed && phase !== "arrive" && phase !== "table"} at={[door.x, 0, door.z]} />
       <mesh position={[site.building.x, 1.15, site.building.z]}>
         <boxGeometry args={[0.7, 0.45, 0.08]} />
         <meshStandardMaterial color="#e0b070" emissive="#e0b070" emissiveIntensity={glow} />
