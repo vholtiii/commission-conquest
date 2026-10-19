@@ -5,10 +5,12 @@
  * clean he looked.
  */
 import type { CrewMember, CrewRequest, GameState, Operation, SupplyRoute, Territory, TurnLogEntry } from "@/types/game";
+import { getFamilyDef } from "@/data/families";
 import type { Rng } from "./rng";
 import { buildSummonsCinematic } from "./hitOps";
 import { orphanCrews } from "./crews";
 import { dinnerActive } from "./dinner";
+import { tempoFor } from "./tempo";
 
 export const CALL_IN_COOLDOWN = 6;
 
@@ -33,7 +35,10 @@ export function canCallIn(state: GameState, crewId: string): { ok: boolean; reas
     affair.phase === "open" &&
     (affair.kind === "watch" || affair.kind === "investigation");
   const last = state.lastCallInTurn;
-  if (!onWatch && last != null && state.turn < last + CALL_IN_COOLDOWN) {
+  const cooldown = state.playerFamily
+    ? tempoFor(getFamilyDef(state.playerFamily).personality).callInCooldown
+    : CALL_IN_COOLDOWN;
+  if (!onWatch && last != null && state.turn < last + cooldown) {
     const ago = state.turn - last;
     return {
       ok: false,

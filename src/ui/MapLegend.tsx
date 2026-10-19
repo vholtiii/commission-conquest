@@ -2,6 +2,14 @@ import { useState } from "react";
 import { Building2, Car, Crosshair, Flame, ChevronDown, ChevronUp, MapPin, Crown, Eye, ShieldOff } from "lucide-react";
 import { FAMILY_HEX, MAP_STATUS, type FamilyName } from "@/types/game";
 import { BOROUGH_HEX, BOROUGH_ORDER } from "@/data/boroughs";
+import { FEATURE_BLURB, FEATURE_LABEL, type DistrictFeature } from "@/engine/districtFeatures";
+
+const FEATURES: { id: DistrictFeature; color: string }[] = [
+  { id: "docks", color: "#6b5344" },
+  { id: "downtown", color: "#c4a35a" },
+  { id: "industrial", color: "#8a5a3a" },
+  { id: "residential", color: "#6a8f71" },
+];
 
 const FAMILIES: FamilyName[] = ["Moretti", "Valenti", "Ferraro", "Salvati", "Rinaldi"];
 
@@ -56,6 +64,21 @@ export default function MapLegend() {
               <span className="h-4 w-4 rounded-[2px] border-2 border-[#2E6EB5] bg-[#2E6EB5]/30" />
               Colored square, no portrait = unknown presence
             </div>
+          </div>
+          <div className="space-y-1 border-t border-panel-border/60 pt-2">
+            <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Blocks</div>
+            {FEATURES.map((f) => (
+              <div key={f.id} className="flex items-start gap-2" title={FEATURE_BLURB[f.id]}>
+                <span
+                  className="mt-0.5 h-3 w-3 shrink-0 rounded-[2px] border border-white/20"
+                  style={{ background: f.color }}
+                />
+                <span>
+                  {FEATURE_LABEL[f.id]}
+                  <span className="block text-[10px] text-muted-foreground">{FEATURE_BLURB[f.id]}</span>
+                </span>
+              </div>
+            ))}
           </div>
           <div className="space-y-1 border-t border-panel-border/60 pt-2">
             <div className="text-[10px] uppercase tracking-wide text-muted-foreground">

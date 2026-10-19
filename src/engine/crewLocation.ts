@@ -6,10 +6,12 @@ export type LocationState = Pick<
   "crew" | "territories" | "routes" | "operations" | "playerFamily"
 > & { turn?: number };
 
-type HqState = Pick<GameState, "territories">;
+type HqState = Pick<GameState, "territories"> & { homeSeats?: GameState["homeSeats"] };
 
-/** Family headquarters: starting borough if still owned, else strategic, else first owned. */
+/** Family headquarters: the dealt home seat if still owned, else the starting borough, else strategic, else first owned. */
 export function familyHq(state: HqState, family: FamilyName): string | null {
+  const seat = state.homeSeats?.[family];
+  if (seat && state.territories.some((t) => t.id === seat && t.owner === family)) return seat;
   const def = getFamilyDef(family);
   const startId = def.startingTerritory;
   const byBorough = state.territories.find(

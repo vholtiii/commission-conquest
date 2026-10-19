@@ -29,6 +29,7 @@ import { hasConsigliere, hasPact } from "./diplomacy";
 import { activeDeals, atPeace, inTruce, makeDeal } from "./deals";
 import { hasManagedWarehouse, makeManagerLookup } from "./liquor";
 import { CRATE_STREET_VALUE, activeDeal, familiesOnPath } from "./passage";
+import { tempoFor } from "./tempo";
 
 /** Counters the player gets before the other side leaves the table. */
 export const TABLE_ROUNDS = 3;
@@ -383,7 +384,11 @@ export function openingTerms(
   const base: AgendaTerms = { cash: 0, standing: 0, ...seed };
   switch (agenda) {
     case "truce":
-      return { ...base, weeks: seed.weeks ?? TRUCE_DEFAULT_WEEKS, cash: trucePrice(state, family) };
+      return {
+        ...base,
+        weeks: seed.weeks ?? tempoFor(getFamilyDef(family).personality).truceWeeks,
+        cash: trucePrice(state, family),
+      };
     case "territory": {
       const t = state.territories.find((x) => x.id === seed.territoryId);
       if (!t) return base;
@@ -407,7 +412,7 @@ export function openingTerms(
       return {
         ...base,
         obligor,
-        weeks: seed.weeks ?? ALLIANCE_WEEKS,
+        weeks: seed.weeks ?? tempoFor(getFamilyDef(family).personality).contractWeeks,
         cash: obligor === player ? -price : round50(price * 1.25),
       };
     }
@@ -421,7 +426,9 @@ export function openingTerms(
     case "liquor": {
       const weekly = !!seed.weekly;
       const crates = seed.crates ?? (weekly ? LIQUOR_WEEKLY_CRATES : 10);
-      const weeks = seed.weeks ?? (weekly ? LIQUOR_WEEKLY_WEEKS : LIQUOR_WEEKS);
+      const weeks =
+        seed.weeks ??
+        (weekly ? tempoFor(getFamilyDef(family).personality).standingSaleWeeks : LIQUOR_WEEKS);
       return {
         ...base,
         crates,
@@ -483,7 +490,8 @@ export function termsValueTo(
     // A shorter deadline is worth more to whoever is buying the hit,
     // and costs whoever has to make it.
     const theyDoIt = terms.obligor === family;
-    value += (ALLIANCE_WEEKS - terms.weeks) * 60 * (theyDoIt ? -1 : 1);
+    const fairWeeks = tempoFor(getFamilyDef(family).personality).contractWeeks;
+    value += (fairWeeks - terms.weeks) * 60 * (theyDoIt ? -1 : 1);
   }
   if (agenda === "liquor" && terms.crates) {
     value += terms.crates * CRATE_STREET_VALUE * 1.2;
@@ -647,6 +655,25 @@ export function agendaTermsText(
   }
   if (terms.favor) bits.push("you owe them one");
   return bits.join(", ");
+}
+
+/**
+ * One line when their temperament wants the deal shorter or longer than the
+ * usual six. "Rinaldi want it short: 4 weeks."
+ */
+export function temperamentLine(
+  family: FamilyName,
+  agenda: SitdownAgenda,
+  weeks: number | undefined,
+): string | null {
+  if (weeks == null) return null;
+  if (agenda !== "truce" && agenda !== "alliance" && agenda !== "liquor") return null;
+  const tempo = tempoFor(getFamilyDef(family).personality);
+  if (!tempo.lengthWord) return null;
+  const theirs =
+    agenda === "truce" ? tempo.truceWeeks : agenda === "alliance" ? tempo.contractWeeks : tempo.standingSaleWeeks;
+  if (weeks !== theirs) return null;
+  return `${family} want it ${tempo.lengthWord}: ${weeks} weeks.`;
 }
 
 /** What the consigliere reads across the table. */

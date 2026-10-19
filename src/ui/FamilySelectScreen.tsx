@@ -1,10 +1,20 @@
+import { useState } from "react";
 import { FAMILIES } from "@/data/families";
-import type { FamilyName } from "@/types/game";
+import type { FamilyName, GameLength, GameSettings } from "@/types/game";
 import { useGameStore } from "@/engine/store";
 import { Button } from "@/components/ui/button";
 
 export default function FamilySelectScreen() {
   const selectFamily = useGameStore((s) => s.selectFamily);
+  const newGame = useGameStore((s) => s.newGame);
+  const [difficulty, setDifficulty] = useState<GameSettings["difficulty"]>("normal");
+  const [gameLength, setGameLength] = useState<GameLength>("medium");
+  const [startMode, setStartMode] = useState<NonNullable<GameSettings["startMode"]>>("random");
+
+  const lead = (name: FamilyName) => {
+    newGame({ difficulty, gameLength, startMode });
+    selectFamily(name);
+  };
 
   return (
     <div className="flex h-full w-full flex-col items-center justify-center overflow-y-auto bg-[#0f1013] px-6 py-10">
@@ -17,15 +27,77 @@ export default function FamilySelectScreen() {
         </p>
       </div>
 
+      <div className="mb-6 flex w-full max-w-xl flex-col gap-1.5">
+        <div className="flex gap-1.5">
+          {(["easy", "normal", "hard"] as const).map((d) => (
+            <button
+              key={d}
+              type="button"
+              onClick={() => setDifficulty(d)}
+              className={`flex-1 rounded-md border px-2 py-1.5 text-xs capitalize ${
+                difficulty === d
+                  ? "border-steel bg-steel/20 text-steel-light"
+                  : "border-panel-border bg-panel/50 hover:bg-panel-elevated"
+              }`}
+            >
+              {d}
+            </button>
+          ))}
+        </div>
+        <div className="flex gap-1.5">
+          {(
+            [
+              ["short", "Short · 30"],
+              ["medium", "Medium · 50"],
+              ["long", "Long · 80"],
+            ] as const
+          ).map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => setGameLength(id)}
+              className={`flex-1 rounded-md border px-2 py-1.5 text-[11px] ${
+                gameLength === id
+                  ? "border-steel bg-steel/20 text-steel-light"
+                  : "border-panel-border bg-panel/50 hover:bg-panel-elevated"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <div className="flex gap-1.5">
+          {(
+            [
+              ["random", "Random starts"],
+              ["classic", "Classic map"],
+            ] as const
+          ).map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => setStartMode(id)}
+              className={`flex-1 rounded-md border px-2 py-1.5 text-[11px] ${
+                startMode === id
+                  ? "border-steel bg-steel/20 text-steel-light"
+                  : "border-panel-border bg-panel/50 hover:bg-panel-elevated"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
       <div className="grid w-full max-w-5xl grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {FAMILIES.map((f) => (
           <div
             key={f.name}
             role="button"
             tabIndex={0}
-            onClick={() => selectFamily(f.name as FamilyName)}
+            onClick={() => lead(f.name as FamilyName)}
             onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === " ") selectFamily(f.name as FamilyName);
+              if (e.key === "Enter" || e.key === " ") lead(f.name as FamilyName);
             }}
             className="panel-surface-elevated group flex cursor-pointer flex-col rounded-lg border p-4 text-left transition-transform hover:-translate-y-1 hover:border-steel/60"
           >
@@ -55,7 +127,7 @@ export default function FamilySelectScreen() {
               style={{ boxShadow: `0 0 0 1px ${f.hex}44` }}
               onClick={(e) => {
                 e.stopPropagation();
-                selectFamily(f.name as FamilyName);
+                lead(f.name as FamilyName);
               }}
             >
               Lead the {f.name} family

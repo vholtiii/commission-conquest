@@ -69,6 +69,7 @@ export default function CrewSheet() {
   const joinCrew = useGameStore((s) => s.joinCrew);
   const leaveCrew = useGameStore((s) => s.leaveCrew);
   const setPanel = useGameStore((s) => s.setPanel);
+  const selectTerritory = useGameStore((s) => s.selectTerritory);
   const focusReason = useGameStore((s) => s.focusReason);
   const selectCrew = useGameStore((s) => s.selectCrew);
   const territories = useGameStore((s) => s.territories);
@@ -85,6 +86,7 @@ export default function CrewSheet() {
   const familyDinner = useGameStore((s) => s.familyDinner);
   const ratLeakCrewId = useGameStore((s) => s.ratLeakCrewId);
   const [callInArmedFor, setCallInArmedFor] = useState<string | null>(null);
+  const leaderless = useGameStore((s) => s.interregnum?.family === s.playerFamily);
 
   const member = crew.find((c) => c.id === selectedCrewId);
   if (!member) return null;
@@ -107,7 +109,7 @@ export default function CrewSheet() {
       ? 100
       : Math.min(100, ((member.xp - currXp) / Math.max(1, nextXp - currXp)) * 100);
 
-  const paths = isOwn && member.status === "active" ? pathsFromRole(member.role) : [];
+  const paths = isOwn && member.status === "active" ? pathsFromRole(member.role, leaderless) : [];
   const successionReasons =
     member.role === "underboss" ? successionReadinessReasons(member, turn) : null;
 
@@ -170,7 +172,12 @@ export default function CrewSheet() {
         </div>
 
         {here && focusReason && (
-          <div className="flex items-center gap-2 rounded-md border border-panel-border bg-panel/60 px-2 py-1.5 text-[11px]">
+          <button
+            type="button"
+            title={`Open ${here.name}`}
+            onClick={() => selectTerritory(here.id)}
+            className="flex w-full items-center gap-2 rounded-md border border-panel-border bg-panel/60 px-2 py-1.5 text-left text-[11px] hover:bg-panel-elevated"
+          >
             <span
               className="h-2.5 w-2.5 shrink-0 rounded-[2px]"
               style={{ background: here.owner ? FAMILY_HEX[here.owner] : "#7a7f87" }}
@@ -178,7 +185,7 @@ export default function CrewSheet() {
             <span className="text-foreground">{here.name}</span>
             <span className="text-muted-foreground">· {turf}</span>
             <span className="ml-auto text-muted-foreground">{focusReason}</span>
-          </div>
+          </button>
         )}
 
         {isOwn && (member.isPlayerBoss || member.role === "boss") && member.status !== "dead" && (
@@ -336,7 +343,7 @@ export default function CrewSheet() {
             </h3>
             <div className="space-y-2">
               {paths.map((path) => {
-                const check = canPromote(member, path.to, crew, money);
+                const check = canPromote(member, path.to, crew, money, { leaderless });
                 return (
                   <div
                     key={path.to}

@@ -269,25 +269,29 @@ function TerritoryMarker({ territory, cx, cz }: { territory: Territory; cx: numb
       ? "Unclaimed"
       : "District";
 
+  // The face opens the man. The name, the badges, and the ground open the block.
+  const openDistrict = (e: { stopPropagation: () => void }) => {
+    e.stopPropagation();
+    selectTerritory(territory.id);
+  };
+  const openCrew = (e: { stopPropagation: () => void }) => {
+    e.stopPropagation();
+    if (person) selectCrew(person.id);
+  };
+  const labelIsPerson = !!person && label !== territory.name;
+
   return (
     <Html
       position={[cx, 0.15, cz]}
       center
       occlude={false}
       zIndexRange={isHighlighted ? [8, 4] : [5, 1]}
-      style={{ pointerEvents: "auto" }}
+      style={{ pointerEvents: "none" }}
     >
       <div
-        className="flex select-none flex-col items-center gap-1 cursor-pointer"
-        onPointerDown={(e) => {
-          e.stopPropagation();
-          if (person && !focused) {
-            // Clicking a garrison face opens that crew; otherwise select the district
-            selectCrew(person.id);
-          } else {
-            selectTerritory(territory.id);
-          }
-        }}
+        className="flex cursor-pointer select-none flex-col items-center gap-1"
+        style={{ pointerEvents: "auto" }}
+        onPointerDown={openDistrict}
         onPointerEnter={() => setHovered(true)}
         onPointerLeave={() => setHovered(false)}
       >
@@ -297,11 +301,13 @@ function TerritoryMarker({ territory, cx, cz }: { territory: Territory; cx: numb
               <div
                 className="h-3 w-3 border-2 border-white/80 shadow"
                 style={{ background: districtColor, transform: "rotate(45deg)" }}
+                onPointerDown={openCrew}
               />
             ) : showingPerson ? (
               <div
                 className="h-3.5 w-3.5 rounded-full border-2 border-white/80 shadow"
                 style={{ background: districtColor }}
+                onPointerDown={openCrew}
               />
             ) : (
               <div
@@ -309,19 +315,24 @@ function TerritoryMarker({ territory, cx, cz }: { territory: Territory; cx: numb
                 style={{ background: districtColor, borderRadius: 2 }}
               />
             )}
-            <span className="whitespace-nowrap rounded bg-black/75 px-1 py-0.5 text-[10px] font-ui font-semibold text-white/90">
+            <span
+              className="whitespace-nowrap rounded bg-black/75 px-1 py-0.5 text-[10px] font-ui font-semibold text-white/90"
+              onPointerDown={openDistrict}
+            >
               {territory.name}
             </span>
           </div>
         ) : (
           <>
             {showingPerson ? (
-              <CrewMarker
-                member={person!}
-                size={markerSize}
-                highlighted={isHighlighted}
-                isRival={isRivalPerson}
-              />
+              <div onPointerDown={openCrew}>
+                <CrewMarker
+                  member={person!}
+                  size={markerSize}
+                  highlighted={isHighlighted}
+                  isRival={isRivalPerson}
+                />
+              </div>
             ) : (
               <DistrictPin
                 size={markerSize}
@@ -449,9 +460,18 @@ function TerritoryMarker({ territory, cx, cz }: { territory: Territory; cx: numb
                 textShadow: "0 1px 2px rgba(0,0,0,0.8)",
                 boxShadow: isBigBlock ? "0 0 0 1.5px rgba(251,191,36,0.85)" : undefined,
               }}
+              onPointerDown={labelIsPerson ? openCrew : openDistrict}
             >
               {label}
             </span>
+            {labelIsPerson && (
+              <span
+                className="whitespace-nowrap rounded bg-black/75 px-1.5 py-0.5 text-[11px] font-ui font-semibold text-white/95"
+                onPointerDown={openDistrict}
+              >
+                {territory.name}
+              </span>
+            )}
             {focused && focusReason && (
               <span
                 className="whitespace-nowrap rounded px-1.5 py-0.5 text-[9px] font-ui font-medium uppercase tracking-wide"
@@ -460,6 +480,7 @@ function TerritoryMarker({ territory, cx, cz }: { territory: Territory; cx: numb
                   color: territory.owner === playerFamily ? "#9ed0ff" : "#ffd28a",
                   border: `1px solid ${territory.owner ? FAMILY_HEX[territory.owner] : "#6a6e76"}`,
                 }}
+                onPointerDown={openDistrict}
               >
                 {focusReason} · {territory.owner === playerFamily ? "your turf" : territory.owner ? `${territory.owner} turf` : "unclaimed"}
               </span>

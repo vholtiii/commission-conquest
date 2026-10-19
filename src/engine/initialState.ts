@@ -28,6 +28,7 @@ import { computeTerritorySlots, maxRacketsFor, allowedRacketTypes } from "./terr
 import { districtsThatTouch, nextRacketSiteIndex } from "./cityLayout";
 import { emptyVictory, finalTurnFor } from "./victory";
 import { ERRAND_FIRST_TURN } from "./commissionErrand";
+import { dealStartingHoldings } from "./startPositions";
 
 interface TerritoryRaw {
   id: string;
@@ -240,6 +241,10 @@ const DEFAULT_SETTINGS: GameSettings = {
   skipCinematics: false,
   rivalCinematics: "brief",
   sfxVolume: 0.7,
+  postFx: true,
+  graphics: "auto",
+  ambienceVolume: 0.4,
+  startMode: "random",
 };
 
 /**
@@ -273,6 +278,12 @@ export function buildInitialState(
   const rng = createRng(seed);
 
   let territories = computeTerritorySlots(loadTerritories(rng), seed);
+  const dealt =
+    mergedSettings.startMode === "classic"
+      ? null
+      : dealStartingHoldings(territories, seed);
+  if (dealt) territories = dealt.territories;
+  const homeSeats = dealt?.homeSeats;
   let crew = FAMILIES.flatMap((f) => createFamilyRoster(rng, f.name));
 
   for (const family of FAMILIES) {
@@ -285,6 +296,7 @@ export function buildInitialState(
     version: 5,
     seed,
     settings: mergedSettings,
+    homeSeats,
     playerFamily: null,
     turn: 1,
     date: { year: 1925, month: 1, day: 1 },
@@ -395,24 +407,25 @@ export function startGame(state: GameState, family: FamilyName): GameState {
   const def = getFamilyDef(family);
   const rng = createRng(state.seed + family.charCodeAt(0));
 
-  const startTerritoryId = "manhattan";
+  const startTerritoryId =
+    state.settings.startMode === "classic" ? "manhattan" : (state.homeSeats?.[family] ?? "manhattan");
   let territories = state.territories.map((t) => {
     if (t.id === startTerritoryId) {
       const racketType = mapBusinessTypeToRacket("loan_sharking")!;
-      const rackets =
-        t.owner === family
-          ? t.rackets
-          : [
-              ...t.rackets,
-              createRacket(
-                `racket_${t.id}_player`,
-                t.id,
-                racketType,
-                2,
-                0,
-                nextRacketSiteIndex(t.rackets),
-              ),
-            ];
+      const starterId = `racket_${t.id}_player`;
+      const rackets = t.rackets.some((r) => r.id === starterId)
+        ? t.rackets
+        : [
+            ...t.rackets,
+            createRacket(
+              starterId,
+              t.id,
+              racketType,
+              2,
+              0,
+              nextRacketSiteIndex(t.rackets),
+            ),
+          ];
       return {
         ...t,
         owner: family,

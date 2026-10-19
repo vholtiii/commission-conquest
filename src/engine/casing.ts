@@ -834,7 +834,9 @@ export function businessFor(
   state: Pick<GameState, "intel">,
   territoryId: string,
 ): BusinessIntel[] {
-  return Object.values(state.intel?.business ?? {}).filter((b) => b.territoryId === territoryId);
+  return Object.values(state.intel?.business ?? {}).filter(
+    (b): b is BusinessIntel => !!b && typeof b === "object" && b.territoryId === territoryId,
+  );
 }
 
 /** Business snapshot ages out for stock/income after a couple of turns. */

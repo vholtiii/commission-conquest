@@ -26,6 +26,7 @@ import { bringCrewOnHit, commitHitCrew, planHit } from "./hitOps";
 import { pickMessageTarget } from "./rivalAI";
 import { resolveCrewTerritoryId } from "./crewLocation";
 import { withCooldown } from "./diplomacy";
+import { cadence } from "./tempo";
 
 export const COMMISSION_INFLUENCE = 25;
 export const COMMISSION_COOLDOWN = 8;
@@ -354,7 +355,7 @@ export function openCommissionCall(
       ...state,
       influence: state.influence - COMMISSION_INFLUENCE,
       commissionCall: call,
-      diplomacy: { ...state.diplomacy, commissionCooldown: state.turn + COMMISSION_COOLDOWN },
+      diplomacy: { ...state.diplomacy, commissionCooldown: state.turn + cadence(state.seed, "commission") },
     },
     log: log(state, `log_commission_call_${call.id}`, ASK_LOG[kind](target)),
   };

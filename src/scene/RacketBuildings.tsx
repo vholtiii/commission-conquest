@@ -216,7 +216,7 @@ function SafehouseFront({
               <mesh>
                 <boxGeometry args={[winW, winH, 0.04]} />
                 {lit ? (
-                  <meshStandardMaterial color="#6a4a28" emissive={LAMP} emissiveIntensity={0.7} roughness={0.5} />
+                  <meshStandardMaterial color="#6a4a28" emissive={LAMP} emissiveIntensity={1.6} roughness={0.5} />
                 ) : (
                   <meshStandardMaterial color={WINDOW_DARK} roughness={0.9} />
                 )}
@@ -315,14 +315,6 @@ function SafehouseFront({
           <meshStandardMaterial color={c} roughness={1} />
         </mesh>
       ))}
-
-      {/* The lamp in the upstairs window */}
-      <pointLight
-        position={[span, floors[litFloor]!, z + 0.35]}
-        color={LAMP}
-        intensity={0.35}
-        distance={3.2}
-      />
     </group>
   );
 }
@@ -552,7 +544,7 @@ function RacketBuilding({
   const lowProfile = !!block && block.kind !== "building";
   const height = lowProfile ? 1.3 + racket.level * 0.3 : 2.6 + racket.level * 0.9;
   const footprint: [number, number] = lowProfile ? [2.4, 1.6] : [2.0, 2.0];
-  const glow = 0.35 + racket.level * 0.15;
+  const glow = 0.75 + racket.level * 0.28;
   const isSafehouse = racket.type === "safehouse";
   // Quiet fronts: no neon, no bands, no roof beacon.
   const hideout = racket.type === "still" || racket.type === "warehouse" || isSafehouse;
@@ -690,7 +682,7 @@ function RacketBuilding({
             <meshStandardMaterial
               color={visual.emissive}
               emissive={visual.emissive}
-              emissiveIntensity={0.55 + i * 0.1}
+              emissiveIntensity={1.15 + i * 0.18}
               roughness={0.35}
             />
           </mesh>
@@ -719,14 +711,6 @@ function RacketBuilding({
             emissiveIntensity={glow * 1.4}
           />
         </mesh>
-      )}
-      {!isSafehouse && (
-        <pointLight
-          position={hideout ? [0, height * 0.35, footprint[1] / 2 + 0.2] : [0, height + 0.55, 0]}
-          color={hideout ? "#c4783a" : visual.emissive}
-          intensity={hideout ? 0.22 : (0.7 + racket.level * 0.3) * (lowProfile ? 0.5 : 1)}
-          distance={hideout ? 3.5 : 7}
-        />
       )}
 
       {freshness && (

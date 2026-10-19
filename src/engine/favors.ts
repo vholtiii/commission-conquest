@@ -11,11 +11,12 @@
  * Pure except for the state-returning function.
  */
 import type { Deal, FamilyName, GameState, TurnLogEntry } from "@/types/game";
-import { ALL_FAMILY_NAMES } from "@/data/families";
+import { ALL_FAMILY_NAMES, getFamilyDef } from "@/data/families";
 import type { Rng } from "./rng";
 import { getRelation } from "./relations";
 import { activeDeals, atPeace, makeDeal, queueSettlement } from "./deals";
-import { ALLIANCE_WEEKS, LIQUOR_WEEKS, drySpeakeasies, heldBy, playerWarehouseStock } from "./agendas";
+import { LIQUOR_WEEKS, drySpeakeasies, heldBy, playerWarehouseStock } from "./agendas";
+import { tempoFor } from "./tempo";
 
 /** Per-turn chance a family holding a favor calls it in, once it has a use. */
 export const FAVOR_CALL_CHANCE = 0.12;
@@ -80,16 +81,17 @@ function callIn(
 
   switch (use.kind) {
     case "hit": {
+      const weeks = tempoFor(getFamilyDef(family).personality).contractWeeks;
       const made = makeDeal(
         closed,
         "alliance",
         family,
-        { cash: 0, standing: 0, weeks: ALLIANCE_WEEKS, targetFamily: use.target, obligor: player, calledIn: true },
-        { obligor: player, weeks: ALLIANCE_WEEKS, rng },
+        { cash: 0, standing: 0, weeks, targetFamily: use.target, obligor: player, calledIn: true },
+        { obligor: player, weeks, rng },
       );
       return card(
         made.state,
-        `${family} calls in the favor you owe: put a ${use.target} man in the ground within ${ALLIANCE_WEEKS} weeks. No money changes hands.`,
+        `${family} calls in the favor you owe: put a ${use.target} man in the ground within ${weeks} weeks. No money changes hands.`,
         made.deal.id,
       );
     }

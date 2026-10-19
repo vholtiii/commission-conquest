@@ -23,6 +23,7 @@ import type { Rng } from "./rng";
 import { getRelation, setRelationDelta, statusFromScore } from "./relations";
 import { openIncidents, topSuspect } from "./incidents";
 import { BOSS_PRESENCE, bossPresenceDistrict } from "./bossPresence";
+import { tempoFor } from "./tempo";
 
 /** Turns a passage grudge stays warm. */
 export const PASSAGE_GRUDGE_TURNS = 8;
@@ -334,7 +335,7 @@ export function addPassageGrudge(
     territoryId,
     reason: "passage",
     turn: state.turn,
-    expiresTurn: state.turn + PASSAGE_GRUDGE_TURNS,
+    expiresTurn: state.turn + tempoFor(getFamilyDef(family).personality).passageGrudge,
   };
   return { ...state, grudges: [...(state.grudges ?? []), grudge] };
 }

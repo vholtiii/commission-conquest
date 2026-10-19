@@ -20,6 +20,7 @@ import {
   agendaBlurb,
   agendaLabel,
   agendaTermsText,
+  temperamentLine,
   buyableDistricts,
   contractPrice,
   contractTargets,
@@ -84,7 +85,7 @@ export default function AgendaPicker({
                   destTerritoryId: subject || dry[0]?.territory.id,
                   weekly: true,
                   crates: LIQUOR_WEEKLY_CRATES,
-                  weeks: LIQUOR_WEEKLY_WEEKS,
+                  weeks: undefined,
                 }
               : undefined;
   const agendaTable = agenda !== "general" && agenda !== "passage";
@@ -118,12 +119,12 @@ export default function AgendaPicker({
   const cashStep = theirAsk && Math.abs(theirAsk.cash) >= 1000 ? 100 : 50;
   const weekRange: [number, number, number] =
     agenda === "alliance"
-      ? [2, 12, ALLIANCE_WEEKS]
+      ? [2, 12, theirAsk?.weeks ?? ALLIANCE_WEEKS]
       : agenda === "racket"
         ? [CUT_MIN_WEEKS, CUT_MAX_WEEKS, CUT_DEFAULT_WEEKS]
         : agenda === "liquor"
-          ? [4, 8, LIQUOR_WEEKLY_WEEKS]
-          : [TRUCE_MIN_WEEKS, TRUCE_MAX_WEEKS, TRUCE_DEFAULT_WEEKS];
+          ? [4, 8, theirAsk?.weeks ?? LIQUOR_WEEKLY_WEEKS]
+          : [TRUCE_MIN_WEEKS, TRUCE_MAX_WEEKS, theirAsk?.weeks ?? TRUCE_DEFAULT_WEEKS];
 
   const choices = atTable ? PLAYER_AGENDAS.filter((a) => a !== "general") : PLAYER_AGENDAS;
 
@@ -359,7 +360,10 @@ export default function AgendaPicker({
       )}
       {theirAsk && (
         <p className="mt-1 px-1 text-[10px] text-muted-foreground">
-          They'll likely ask: {agendaTermsText(state, agenda, theirAsk)}.
+          They'll likely ask: {agendaTermsText(state, agenda, theirAsk)}
+          {temperamentLine(target, agenda, theirAsk.weeks)
+            ? ` ${temperamentLine(target, agenda, theirAsk.weeks)}`
+            : ""}
         </p>
       )}
       {agendaTable && myOpening && (

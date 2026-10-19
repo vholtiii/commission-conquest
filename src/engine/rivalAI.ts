@@ -34,8 +34,13 @@ import { isLaidLow, SAFEHOUSE, safehouseCaptureDefence } from "./safehouse";
 import { BOSS_PRESENCE, bossPresentIn, hqIsSoft } from "./bossPresence";
 import { actingUnderboss, bossIsJailed } from "./jail";
 import { isDefunct, settleRivalChair } from "./defection";
+import { startInterregnum } from "./interregnum";
 import { familiesPressingSuddenDeath } from "./victory";
-import { recordIntel } from "./intel";
+import { tempoFor } from "./tempo";
+import { recruitPrice } from "./recruiting";
+import { RIVAL_BRIBE_AT, RIVAL_CAPTAIN_BRIBE, RIVAL_COP_BRIBE, bumpRivalHeat } from "./rivalHeat";
+import { placementBonus } from "./districtFeatures";
+import { recordIntel, revealDistrict } from "./intel";
 import {
   isUnguarded,
   maxRacketsFor,
@@ -114,7 +119,12 @@ function tryBuildRacket(
   const preferred = priorities.filter((type) => allowed.includes(type));
   const pool = preferred.length > 0 ? preferred : allowed;
   if (pool.length === 0) return { state };
-  const type = rng.pick(pool);
+  const type = pickWeighted(rng, pool, (tp) => {
+    const rank = priorities.indexOf(tp);
+    const lean = rank >= 0 ? priorities.length - rank : 1;
+    return lean * placementBonus(target, { type: tp }, target.rackets).mult;
+  });
+  if (!type) return { state };
   const cost = RACKET_BUILD_COST[type];
   const treasury = state.rivalTreasury?.[family] ?? 0;
   if (treasury < cost) return { state };
@@ -161,6 +171,7 @@ function tryExpand(
   family: FamilyName,
   rng: Rng,
 ): { state: GameState; log?: TurnLogEntry } {
+  if (state.interregnum?.family === family) return { state };
   // One district a turn, same as the player. Once the base move is spent, only
   // special-case grabs (leadership vacuum, vendetta target) stay on the table.
   const targets = adjacentNeutralOrEnemy(state, family).filter(
@@ -272,7 +283,7 @@ function tryExpand(
 
   const withCrew = grab ? ` ${grab.leader.name} brings ${grab.men.length} of his crew.` : "";
   return {
-    state: recordCapture({ ...state, crew, territories, relations }, family),
+    state: bumpRivalHeat(recordCapture({ ...state, crew, territories, relations }, family), family, 4),
     log: {
       id: `ai_expand_${family}_${state.turn}_${target.id}`,
       turn: state.turn,
@@ -288,7 +299,7 @@ function tryExpand(
  * gone underground (holding court away from his HQ). Otherwise the rival
  * plans on the address everyone knows and finds an empty chair.
  */
-export const BOSS_UNDERGROUND_LEAK = 0.4;
+export const BOSS_UNDERGROUND_LEAK = 0.65;
 
 /**
  * Where a rival family believes a boss is this week. The HQ is public, and so
@@ -331,6 +342,7 @@ function tryHit(
   contracted?: FamilyName,
 ): { state: GameState; log?: TurnLogEntry } {
   if (handsDown(state)) return { state };
+  if (state.interregnum?.family === family) return { state };
   const def = getFamilyDef(family);
   const crew = getActiveCrew(state.crew, family);
   if (crew.filter((c) => c.role !== "boss").length < 1 && crew.length < 1) return { state };
@@ -353,13 +365,18 @@ function tryHit(
       (f) => f !== family && !isDefunct(state, f) && !atPeace(state, family, f),
     );
     if (open.length === 0) return { state };
-    const hostile = open.filter(
-      (f) => getRelation(state.relations, family, f) < -20,
-    );
-    const pressing = familiesPressingSuddenDeath(state).filter((f) => open.includes(f));
-    const pool = hostile.length > 0 ? hostile : open;
-    targetFamily =
-      pressing.length > 0 && rng.chance(0.7) ? rng.pick(pressing) : rng.pick(pool);
+    const weak = state.interregnum?.family;
+    if (weak && weak !== family && open.includes(weak) && rng.chance(0.3)) {
+      targetFamily = weak;
+    } else {
+      const hostile = open.filter(
+        (f) => getRelation(state.relations, family, f) < -20,
+      );
+      const pressing = familiesPressingSuddenDeath(state).filter((f) => open.includes(f));
+      const pool = hostile.length > 0 ? hostile : open;
+      targetFamily =
+        pressing.length > 0 && rng.chance(0.7) ? rng.pick(pressing) : rng.pick(pool);
+    }
   }
 
   const targetTerritory =
@@ -372,13 +389,19 @@ function tryHit(
   const bossTerritoryId = targetBoss
     ? believedBossSite(state, targetBoss, surveilled, rng, family)
     : null;
+  // A public trip that ends before the hit lands: aim for the house he'll be back in.
+  const homeAgain =
+    !!targetBoss?.awayAt && targetBoss.awayAt.untilTurn <= state.turn + 1
+      ? familyHq(state, targetBoss.family)
+      : null;
   // The street's address, not the man's: a boss underground was not found.
   const badAddress =
     !!targetBoss &&
     !!bossTerritoryId &&
     bossTerritoryId !== resolveCrewTerritoryId(state, targetBoss.id);
   const hitTerritory =
-    (bossTerritoryId && state.territories.find((t) => t.id === bossTerritoryId)) ||
+    ((homeAgain ?? bossTerritoryId) &&
+      state.territories.find((t) => t.id === (homeAgain ?? bossTerritoryId))) ||
     targetTerritory;
 
   let approach: HitApproach =
@@ -455,13 +478,28 @@ function tryHit(
   if (approach === "car_bomb" && (!seated.bombMakerId || !seated.planterId)) return { state };
   if (approach === "sitdown_betrayal" && !seated.negotiatorId) return { state };
 
+  // Most weeks the bullet is for a soldier. A boss dies often enough to matter, not often enough to close the city.
+  let mark = targetBoss;
+  let where = hitTerritory;
+  const soldierFirst = vendetta ? 0.4 : 0.82;
+  if (!contracted && rng.chance(soldierFirst)) {
+    const soldiers = getActiveCrew(state.crew, targetFamily!).filter((c) => c.role !== "boss");
+    const soldier = soldiers.length > 0 ? rng.pick(soldiers) : undefined;
+    const here = soldier ? resolveCrewTerritoryId(state, soldier.id) : null;
+    const block = here ? state.territories.find((t) => t.id === here) : undefined;
+    if (soldier && block) {
+      mark = soldier;
+      where = block;
+    }
+  }
+
   const op = planHit(
     state,
     {
       family,
-      targetTerritoryId: hitTerritory.id,
+      targetTerritoryId: where.id,
       targetFamily: targetFamily!,
-      targetCrewId: targetBoss?.id,
+      targetCrewId: mark?.id,
       approach,
       shooterIds: seated.shooterIds,
       wheelmanId: seated.wheelmanId,
@@ -478,8 +516,9 @@ function tryHit(
   );
 
   const committed = commitHitCrew(state, op);
+  const heated = bumpRivalHeat(committed, family, approach === "car_bomb" ? 12 : 6);
   return {
-    state: { ...committed, operations: [...committed.operations, op] },
+    state: { ...heated, operations: [...heated.operations, op] },
     log: {
       id: `ai_hit_${family}_${state.turn}`,
       turn: state.turn,
@@ -618,7 +657,6 @@ export function pickMessageTarget(state: GameState, victim: FamilyName): CrewMem
     .sort((a, b) => b.w - a.w)[0]?.c;
 }
 
-const MESSAGE_COOLDOWN = 6;
 const MESSAGE_THRESHOLD: Record<string, number> = {
   volatile: 1,
   smuggler: 1,
@@ -643,7 +681,8 @@ function tryMessageHit(
   const grudges = passageGrudges(state, family);
   const def = getFamilyDef(family);
   if (grudges.length < (MESSAGE_THRESHOLD[def.personality] ?? 2)) return { state };
-  if ((state.messageHitTurns?.[family] ?? -99) + MESSAGE_COOLDOWN > state.turn) return { state };
+  const messageCooldown = tempoFor(def.personality).messageCooldown;
+  if ((state.messageHitTurns?.[family] ?? -99) + messageCooldown > state.turn) return { state };
   if (
     state.operations.some(
       (o) => !o.resolved && o.kind === "hit" && o.family === family && o.intent === "message",
@@ -699,7 +738,8 @@ function tryMessageHit(
   );
   // No public log: the rumor mill is the only warning the player gets.
   const committed = commitHitCrew(state, op);
-  return { state: { ...committed, operations: [...committed.operations, op] } };
+  const heated = bumpRivalHeat(committed, family, approach === "car_bomb" ? 12 : 6);
+  return { state: { ...heated, operations: [...heated.operations, op] } };
 }
 
 function tryShiftGarrison(
@@ -866,23 +906,31 @@ export function tryShakedown(
 
 function tryBribe(state: GameState, family: FamilyName, rng: Rng): GameState {
   if (family === state.playerFamily) return state;
-  if (!rng.chance(0.15)) return state;
-  return state;
+  const heat = state.rivalHeat?.[family] ?? 0;
+  if (heat < RIVAL_BRIBE_AT) return state;
+  const treasury = state.rivalTreasury?.[family] ?? 0;
+  const captain = heat >= 70 && treasury >= RIVAL_CAPTAIN_BRIBE;
+  const cost = captain ? RIVAL_CAPTAIN_BRIBE : RIVAL_COP_BRIBE;
+  if (treasury < cost) return state;
+  const drop = rng.int(captain ? 20 : 15, captain ? 30 : 22);
+  return {
+    ...state,
+    rivalTreasury: { ...(state.rivalTreasury ?? {}), [family]: treasury - cost },
+    rivalHeat: { ...(state.rivalHeat ?? {}), [family]: Math.max(0, heat - drop) },
+  };
 }
-
-/** Same street price the player pays for a new man. */
-const AI_RECRUIT_COST = 800;
 
 function tryRecruit(state: GameState, family: FamilyName, rng: Rng): GameState {
   const count = getActiveCrew(state.crew, family).length;
   if (count >= 12 || !rng.chance(0.2)) return state;
   const treasury = state.rivalTreasury?.[family] ?? 0;
-  if (treasury < AI_RECRUIT_COST) return state;
   const recruit = createCrewMember(rng, family, "associate");
+  const cost = recruitPrice(recruit, family);
+  if (treasury < cost) return state;
   return {
     ...state,
     crew: [...state.crew, recruit],
-    rivalTreasury: { ...(state.rivalTreasury ?? {}), [family]: treasury - AI_RECRUIT_COST },
+    rivalTreasury: { ...(state.rivalTreasury ?? {}), [family]: treasury - cost },
   };
 }
 
@@ -966,7 +1014,7 @@ export function runAiTurn(
   }
 
   for (const act of picked) {
-    if (!rng.chance(Math.min(0.95, 0.5 + aggression * 0.15))) continue;
+    if (!rng.chance(Math.min(0.95, (0.5 + aggression * 0.15) * (current.turn < 15 ? 0.3 : 1)))) continue;
     const result = act();
     current = result.state;
     if (result.log) logs.push(result.log);
@@ -1084,8 +1132,9 @@ function tryBossTravel(
   };
 
   return {
-    // "Seen in" is public: the street knows where his car is parked this week.
-    state: recordIntel(travelled, [boss.id], dest.id, "sighting"),
+    // "Seen in" is public: the street knows where his car is parked this week,
+    // and the map can name that block from then on.
+    state: revealDistrict(recordIntel(travelled, [boss.id], dest.id, "sighting"), dest.id),
     log: {
       id: `ai_boss_visit_${family}_${state.turn}`,
       turn: state.turn,
@@ -1107,6 +1156,11 @@ export function runAllAiTurns(state: GameState, rng: Rng): AiTurnResult {
     const settled = settleRivalChair(current, family, rng);
     current = settled.state;
     logs.push(...settled.logs);
+    if (settled.needsClock) {
+      const started = startInterregnum(current, family, "killed", rng);
+      current = started.state;
+      logs.push(...started.logs);
+    }
   }
 
   for (const family of rivals) {

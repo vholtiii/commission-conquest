@@ -26,11 +26,12 @@ function promotionState(
   member: CrewMember,
   crew: CrewMember[],
   money: number,
+  leaderless = false,
 ): { ready: boolean; tip: string } | null {
   if (member.status !== "active") return null;
-  const paths = pathsFromRole(member.role);
+  const paths = pathsFromRole(member.role, leaderless);
   if (paths.length === 0) return null;
-  const checks = paths.map((p) => ({ path: p, check: canPromote(member, p.to, crew, money) }));
+  const checks = paths.map((p) => ({ path: p, check: canPromote(member, p.to, crew, money, { leaderless }) }));
   const open = checks.filter((c) => c.check.ok);
   if (open.length > 0) {
     return {
@@ -114,7 +115,8 @@ function CrewRow({
   slots?: string;
   watched?: boolean;
 }) {
-  const promo = promotionState(member, crew, money);
+  const leaderless = useGameStore((s) => s.interregnum?.family === s.playerFamily);
+  const promo = promotionState(member, crew, money, leaderless);
   const duty = dutyMark(member, territories);
   return (
     <div className="flex w-full items-center gap-1 rounded-md pr-1 hover:bg-panel-elevated">

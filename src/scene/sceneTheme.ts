@@ -12,7 +12,7 @@ export const BUILDING_PALETTE = {
 export const BUILDING_PALETTE_LIST = Object.values(BUILDING_PALETTE);
 
 export const ROAD_COLOR = "#2a2b2e";
-export const WATER_COLOR = "#33475a";
+export const WATER_COLOR = "#3d86b0";
 export const PARK_COLOR = "#3a4a35";
 export const SIDEWALK_COLOR = "#3c3c3c";
 

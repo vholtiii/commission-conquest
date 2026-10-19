@@ -1,9 +1,9 @@
-import { Suspense, useMemo, useRef } from "react";
+import { Suspense, useMemo, useRef, useState } from "react";
 import { Canvas } from "@react-three/fiber";
-import { MapControls } from "@react-three/drei";
+import { MapControls, PerformanceMonitor } from "@react-three/drei";
 import * as THREE from "three";
 import { useGameStore } from "@/engine/store";
-import { buildCityLayout } from "@/engine/cityLayout";
+import { getCityLayout } from "@/engine/cityLayout";
 import ProceduralBuildings from "./ProceduralBuildings";
 import DistrictOverlay from "./DistrictOverlay";
 import Markers from "./Markers";
@@ -12,6 +12,7 @@ import BuildFx from "./BuildFx";
 import KenneyProps from "./KenneyProps";
 import MapCamera from "./MapCamera";
 import RacketBuildings, { useOccupiedRacketBlocks } from "./RacketBuildings";
+import RacketLightPool from "./RacketLightPool";
 import PendingOpsOverlay from "./PendingOpsOverlay";
 import SitdownOverlay from "./SitdownOverlay";
 import SupplyRouteOverlay from "./SupplyRouteOverlay";
@@ -35,25 +36,24 @@ export default function CityScene() {
       (s.cinematicQueue.length > 0 && !s.pendingHitResult) || s.sitdownPhase != null,
   );
   const postFx = useGameStore((s) => s.settings.postFx !== false);
+  const graphics = useGameStore((s) => s.settings.graphics ?? "auto");
+  const [autoLow, setAutoLow] = useState(false);
+  const low = graphics === "low" || (graphics === "auto" && autoLow);
 
-  // Layout geometry only depends on static position/borough fields, not on owner/rackets,
-  // so we key the memo off those to avoid rebuilding the whole city grid every turn.
-  const layoutKey = useMemo(
-    () => territories.map((t) => `${t.id}:${t.x}:${t.y}:${t.borough}`).join("|"),
-    [territories],
-  );
-  const layout = useMemo(() => buildCityLayout(territories, seed), [layoutKey, seed]);
+  const layout = useMemo(() => getCityLayout(territories, seed), [territories, seed]);
   const occupied = useOccupiedRacketBlocks(layout, territories);
 
+  // Shared with the fly-to camera and the hit reel.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const controlsRef = useRef<any>(null);
 
   return (
     <div className="absolute inset-0 z-0 h-full w-full">
       <Canvas
-        shadows
+        shadows={!low}
         flat={postFx}
         frameloop="always"
-        dpr={[1, 1.75]}
+        dpr={low ? 1 : [1, 1.75]}
         camera={{ position: [0, 34, 30], fov: 42, near: 0.1, far: 300 }}
         onPointerMissed={(e) => {
           // Only a plain left click on empty ground deselects; a right/middle
@@ -66,6 +66,14 @@ export default function CityScene() {
         gl={{ antialias: true, alpha: false, powerPreference: "high-performance" }}
       >
         <Atmosphere />
+        {graphics === "auto" && (
+          <PerformanceMonitor
+            onDecline={() => setAutoLow(true)}
+            onIncline={() => setAutoLow(false)}
+            flipflops={3}
+            onFallback={() => setAutoLow(true)}
+          />
+        )}
 
         <MapControls
           ref={controlsRef}
@@ -98,6 +106,7 @@ export default function CityScene() {
           territories={territories}
         />
         <RacketBuildings layout={layout} territories={territories} />
+        <RacketLightPool layout={layout} territories={territories} />
         <BlockPlumbing layout={layout} territories={territories} />
         <AmbientTells layout={layout} territories={territories} />
         <DistrictOverlay layout={layout} territories={territories} />
@@ -115,7 +124,7 @@ export default function CityScene() {
         <Suspense fallback={null}>
           <KenneyProps layout={layout} />
         </Suspense>
-        {postFx && <PostFx />}
+        {postFx && <PostFx bloom={!low} />}
       </Canvas>
     </div>
   );

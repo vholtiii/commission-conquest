@@ -2,6 +2,7 @@ import type { CrewMember, FamilyName, GameState, TurnLogEntry } from "@/types/ga
 import type { Rng } from "./rng";
 import { applySuccession, isSuccessionReady } from "./succession";
 import { declareMourning } from "./mourning";
+import { startInterregnum } from "./interregnum";
 
 /** Turns the boss sits before the chair passes for good. */
 export const JAIL_TURNS = 4;
@@ -121,6 +122,11 @@ export function tickJails(
     current = { ...current, crew };
     const succ = applySuccession(current, family, rng);
     current = succ.state;
+    if (!succ.succeeded && family === current.playerFamily) {
+      const started = startInterregnum(current, family, "put_away", rng);
+      current = started.state;
+      logs.push(...started.logs);
+    }
     const quiet = declareMourning(current);
     current = quiet.state;
     logs.push(...succ.logs, ...quiet.logs);

@@ -15,6 +15,7 @@ import { createRng, hashString } from "./rng";
 import { isUnguarded } from "./territoryValue";
 import { findDeliveryPath, hasSafehouse } from "./economy";
 import { BOSS_PRESENCE } from "./bossPresence";
+import { placementBonus } from "./districtFeatures";
 import { penalizeRacketFreeze } from "./practice";
 
 const SPEAKEASY_BASE_INCOME = 280;
@@ -153,8 +154,9 @@ export function stockCap(racket: Racket, manager?: CrewMember | null): number {
   return Math.floor(base * warehouseManagerMods(manager).capMult);
 }
 
-function capOf(r: Racket, lookup?: ManagerLookup): number {
-  return stockCap(r, lookup?.(r));
+function capOf(r: Racket, lookup?: ManagerLookup, feature?: Territory["feature"]): number {
+  const docks = feature === "docks" && r.type === "warehouse" ? 1.25 : 1;
+  return Math.floor(stockCap(r, lookup?.(r)) * docks);
 }
 
 function proofCount(r: Racket): number {
@@ -162,7 +164,7 @@ function proofCount(r: Racket): number {
 }
 
 /** Take crates, proofed ones first. Mutates the racket. */
-function pullFrom(r: Racket, n: number): { take: number; proofed: number } {
+export function pullFrom(r: Racket, n: number): { take: number; proofed: number } {
   const take = Math.min(r.stock, Math.max(0, n));
   const before = proofCount(r);
   const proofed = Math.min(before, take);
@@ -181,7 +183,7 @@ export function districtStorage(
   for (const r of t.rackets) {
     if (!isStorageType(r.type)) continue;
     if (r.type === "warehouse" && frozen(r, turn)) continue;
-    const c = capOf(r, lookup);
+    const c = capOf(r, lookup, t.feature);
     cap += c;
     stored += Math.min(r.stock, c);
   }
@@ -360,7 +362,7 @@ export function depositCrates(
     for (const r of rackets) {
       if (r.type !== type) continue;
       if (type === "warehouse" && frozen(r, turn)) continue;
-      const free = Math.max(0, capOf(r, lookup) - r.stock);
+      const free = Math.max(0, capOf(r, lookup, t.feature) - r.stock);
       if (free <= 0) continue;
       const add = Math.min(free, remaining);
       r.stock += add;
@@ -434,7 +436,7 @@ export function depositTracked(
       for (const r of rackets) {
         if (r.type !== type) continue;
         if (type === "warehouse" && frozen(r, turn)) continue;
-        const free = Math.max(0, capOf(r, lookup) - r.stock);
+        const free = Math.max(0, capOf(r, lookup, t.feature) - r.stock);
         if (free <= 0) continue;
         const budget = wantProof ? proofLeft : remaining - proofLeft;
         if (budget <= 0) continue;
@@ -556,7 +558,9 @@ export function applyWarehouseShrinkage(
 } {
   let shrunk = 0;
   const byRacket: { racketId: string; lost: number; cause: string }[] = [];
+  const straightToBar = t.rackets.some((r) => r.type === "speakeasy");
   const rackets = t.rackets.map((r) => {
+    if (straightToBar && r.type === "warehouse") return r;
     if (r.type !== "warehouse" || frozen(r, turn) || r.stock <= 0) return r;
     const mgr = lookup(r);
     const mods = warehouseManagerMods(mgr);
@@ -610,7 +614,8 @@ export function produceAndStore(
 
   for (const r of territory.rackets) {
     if (!isProducerType(r.type)) continue;
-    const out = productionOutput(r, bossHere);
+    const cook = t.feature === "industrial" ? 1.25 : 1;
+    const out = Math.floor(productionOutput(r, bossHere) * cook);
     produced += out;
     let left = out;
     if (intoBarn && left > 0) {
@@ -631,6 +636,18 @@ export function produceAndStore(
     const dep = depositTracked(territory, spill, 0, "warehouseOnly", turn, lookup);
     territory = dep.territory;
     dumped = dep.overflow;
+  }
+
+  if (t.feature === "docks") {
+    let extra = 0;
+    for (const r of territory.rackets) {
+      if (r.type === "warehouse") extra += 2 * r.level;
+    }
+    if (extra > 0) {
+      const landed = depositTracked(territory, extra, 0, "warehouseOnly", turn, lookup);
+      territory = landed.territory;
+      produced += landed.moved;
+    }
   }
 
   const dumpCash = dumped * 4;
@@ -713,7 +730,8 @@ export function sellSpeakeasies(
 
   const rackets = territory.rackets.map((r) => {
     if (r.type !== "speakeasy") return r;
-    const base = Math.floor(SPEAKEASY_BASE_INCOME * r.level * (1 + incomeBonus));
+    const place = placementBonus(territory, r, territory.rackets);
+    const base = Math.floor(SPEAKEASY_BASE_INCOME * r.level * (1 + incomeBonus) * place.mult);
     if (r.stock <= 0) {
       dryCount += 1;
       const dirty = Math.floor(base * 0.25);
@@ -766,7 +784,7 @@ export function stashHeat(
   let { stored } = districtStorage(t, turn, lookup);
   if (lookup && hasManagedWarehouse(t, lookup, turn)) {
     for (const r of t.rackets) {
-      if (r.type === "speakeasy") stored -= Math.min(r.stock, capOf(r, lookup));
+      if (r.type === "speakeasy") stored -= Math.min(r.stock, capOf(r, lookup, t.feature));
     }
   }
   const base = Math.floor(Math.max(0, stored - 50) / 100);
@@ -783,7 +801,7 @@ export function idleStorageCost(
   for (const r of t.rackets) {
     if (r.type !== "warehouse") continue;
     if (frozen(r, turn)) continue;
-    const empty = Math.max(0, capOf(r, lookup) - r.stock);
+    const empty = Math.max(0, capOf(r, lookup, t.feature) - r.stock);
     free += Math.max(0, empty - WAREHOUSE_FREE_EMPTY);
   }
   return Math.floor(free * 0.1);

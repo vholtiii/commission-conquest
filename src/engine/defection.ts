@@ -155,6 +155,12 @@ export function walkToRival(
 }
 
 /** Move a man off the roster into the player's pool, asking for nothing. */
+export function releaseToPool(state: GameState, manId: string): GameState {
+  const man = state.crew.find((c) => c.id === manId);
+  if (!man) return state;
+  return offerToPlayer(state, man);
+}
+
 function offerToPlayer(state: GameState, man: CrewMember): GameState {
   const cleared = untie(state, man.id);
   const waiting: CrewMember = {
@@ -269,13 +275,14 @@ export function scatterFamily(
 
 /**
  * The week a rival boss dies: a ready underboss takes the chair, else a ready
- * consigliere. Otherwise the outfit breaks and the survivors become free agents.
+ * consigliere. Otherwise `needsClock` is set and the caller opens the
+ * six-week leaderless period.
  */
 export function settleRivalChair(
   state: GameState,
   family: FamilyName,
   rng: Rng,
-): { state: GameState; logs: TurnLogEntry[]; newBossName?: string } {
+): { state: GameState; logs: TurnLogEntry[]; newBossName?: string; needsClock?: boolean } {
   if (family === state.playerFamily || isDefunct(state, family) || livingBoss(state, family)) {
     return { state, logs: [] };
   }
@@ -284,7 +291,9 @@ export function settleRivalChair(
     const promoted = promoteToBoss(state, family, heir);
     return { state: promoted.state, logs: promoted.logs, newBossName: promoted.newBossName };
   }
-  return scatterFamily(state, family, rng);
+  // The outfit is leaderless. The caller starts the six-week clock; this
+  // module does not import it (that module already imports this one).
+  return { state, logs: [], needsClock: true };
 }
 
 /**

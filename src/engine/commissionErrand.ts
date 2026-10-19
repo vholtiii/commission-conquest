@@ -12,6 +12,7 @@ import { hitCrewIds } from "@/data/hitApproaches";
 import { onUnresolvedHit } from "./jobReturn";
 import { WARRANT } from "./heat";
 import type { Rng } from "./rng";
+import { cadence } from "./tempo";
 
 export const ERRAND_WEEKS = 7;
 export const ERRAND_GAP = 8;
@@ -23,6 +24,10 @@ export const ERRAND_OFFER_TURNS = 2;
 export const ERRAND_OFFER_CHANCE = 0.25;
 /** A new game hears nothing before this turn. */
 export const ERRAND_FIRST_TURN = 8;
+
+function errandGap(state: Pick<GameState, "seed">): number {
+  return cadence(state.seed, "errand");
+}
 
 /** Heat each approach puts on the family, before a botch adds more. */
 export const ERRAND_APPROACH_HEAT = { ambush: 8, drive_by: 12, car_bomb: 20 } as const;
@@ -226,7 +231,7 @@ export function tickCommissionErrand(
     return {
       state: closeErrand(
         { ...state, reputation: { ...state.reputation, respect } },
-        state.turn + ERRAND_GAP,
+        state.turn + errandGap(state),
       ),
       logs,
     };
@@ -319,7 +324,7 @@ function handOffErrand(
     family: player,
   };
   if (!took || !asked) {
-    return { state: closeErrand(state, state.turn + ERRAND_GAP), log };
+    return { state: closeErrand(state, state.turn + errandGap(state)), log };
   }
   return {
     state: {
@@ -405,7 +410,7 @@ export function payCommissionKill(state: GameState, op: Operation, targetDead: b
   };
   return pushLog(
     {
-      ...closeErrand(state, state.turn + ERRAND_GAP),
+      ...closeErrand(state, state.turn + errandGap(state)),
       influence: Math.max(0, Math.min(300, state.influence + ERRAND_STANDING)),
     },
     log,
@@ -463,7 +468,7 @@ function resolveRivalErrand(state: GameState, rng: Rng): { state: GameState; log
   };
   return {
     state: {
-      ...closeErrand({ ...state, crew, rivalInfluence: influence }, state.turn + ERRAND_GAP),
+      ...closeErrand({ ...state, crew, rivalInfluence: influence }, state.turn + errandGap(state)),
     },
     logs: [log],
   };

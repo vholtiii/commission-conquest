@@ -42,6 +42,7 @@ import {
 } from "./liquor";
 import { addEvidence, makeEvidence, openIncidentFromHijack } from "./incidents";
 import { seizureCover } from "./safehouse";
+import { dockHaul } from "./districtFeatures";
 import { getRelation, setRelationDelta, statusFromScore } from "./relations";
 import {
   CRATE_STREET_VALUE,
@@ -1263,7 +1264,7 @@ export function processSupplyRoutes(state: GameState, rng: Rng): SupplyRunResult
 
     const wd = withdrawWarehouse(
       src,
-      route.cratesPerTurn + extraHaul(truckingLevel(next, route.family)),
+      route.cratesPerTurn + extraHaul(truckingLevel(next, route.family)) + dockHaul(src),
       state.turn,
       lookup,
     );

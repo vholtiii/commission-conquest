@@ -8,6 +8,7 @@ import { isProducerType, isStorageType, planFeedSpeakeasy, stockCap, warehouseMa
 import { activeCrewIds, isUnguarded, maxRacketsFor, lotTier, lotTierHint, lotTierLabel, allowedRacketTypes } from "@/engine/territoryValue";
 import { RACKET_VISUALS } from "@/data/racketVisuals";
 import { emptyIntel, hiddenCountIn, hasFreshCasing, spottedThisTurn, visibleCrewIn } from "@/engine/intel";
+import { businessFor, businessSummary, isBusinessStale } from "@/engine/casing";
 import { canSendOnHit } from "@/engine/jobReturn";
 import { LOCATION_REASON_LABEL, familyHq, isBossUnderground, resolveCrewLocation, resolveCrewTerritoryId } from "@/engine/crewLocation";
 import {
@@ -28,6 +29,8 @@ import PortraitAvatar from "@/ui/PortraitAvatar";
 import Tip from "@/ui/Tip";
 import WantedTag, { pct as riskPct } from "@/ui/WantedTag";
 import { arrestRisk } from "@/engine/heat";
+import { attentionLabel } from "@/engine/rivalHeat";
+import { FEATURE_BLURB, FEATURE_LABEL, placementBonus } from "@/engine/districtFeatures";
 import PanelShell from "./PanelShell";
 import { formatMoney } from "../formatters";
 import type { CrewMember, GameState, Racket } from "@/types/game";
@@ -98,6 +101,7 @@ export default function DistrictPanel() {
   const rumors = useGameStore((s) => s.rumors ?? []);
   const bossStay = useGameStore((s) => s.bossStay);
   const heat = useGameStore((s) => s.heat);
+  const rivalHeat = useGameStore((s) => s.rivalHeat);
   const bribes = useGameStore((s) => s.bribes);
   const streetLawyerUntil = useGameStore((s) => s.streetLawyerUntil ?? 0);
   const counselUntil = useGameStore((s) => s.counselUntil ?? 0);
@@ -139,6 +143,9 @@ export default function DistrictPanel() {
         ];
       })();
   const unknown = isRival ? hiddenCountIn(locState, territory.id) : 0;
+  const learned = isRival
+    ? new Map(businessFor({ intel: intel ?? emptyIntel() }, territory.id).map((b) => [b.racketId, b]))
+    : null;
   const managingIds = new Set(
     territories.flatMap((t) => t.rackets.map((r) => r.managerId).filter((id): id is string => !!id)),
   );
@@ -279,6 +286,13 @@ export default function DistrictPanel() {
               <Tip content={lotTierHint(tier)}>
                 <Badge variant="outline" className="text-[10px] text-muted-foreground">
                   {tierLabel}
+                </Badge>
+              </Tip>
+            )}
+            {territory.feature && (
+              <Tip content={FEATURE_BLURB[territory.feature]}>
+                <Badge variant="outline" className="text-[10px] text-foreground">
+                  {FEATURE_LABEL[territory.feature]}
                 </Badge>
               </Tip>
             )}
@@ -596,6 +610,11 @@ export default function DistrictPanel() {
                     Stale — crew may have moved
                   </p>
                 )}
+                {fresh && !stale && territory.owner && (
+                  <p className="text-[10px] text-muted-foreground">
+                    Police attention: {attentionLabel(rivalHeat?.[territory.owner] ?? 0)}
+                  </p>
+                )}
               </div>
             );
           })()}
@@ -675,11 +694,14 @@ export default function DistrictPanel() {
           {territory.rackets.length === 0 && <p className="text-xs text-muted-foreground">No rackets built.</p>}
           <div className="space-y-1.5">
             {territory.rackets.map((r) => {
+              const note = learned?.get(r.id);
               const visual = RACKET_VISUALS[r.type];
               const Icon = visual.Icon;
               const manager = r.managerId ? crew.find((c) => c.id === r.managerId) : null;
               const frozen = isRacketFrozen(r, turn);
-              const income = frozen ? 0 : racketIncome(r, 0, manager, crew, bossBoost);
+              const ownerBonus = territory.owner ? getFamilyDef(territory.owner).bonuses.incomeBonus : 0;
+              const place = placementBonus(territory, r, territory.rackets);
+              const income = frozen ? 0 : racketIncome(r, ownerBonus, manager, crew, bossBoost, place.mult);
               const crewPct = frozen ? 0 : racketCrewBonusPct(manager, crew);
               const upgradeCost = presenceBuildCost(r.upgradeCost, bossBoost);
               const canUpgrade =
@@ -758,11 +780,14 @@ export default function DistrictPanel() {
                                 <span className="text-amber-300"> · boss</span>
                               </Tip>
                             )}
+                            {place.reasons.length > 0 && (
+                              <span className="text-muted-foreground"> · {place.reasons.join(" · ")}</span>
+                            )}
                           </span>
                         )}
                         {isOwned && isStorageType(r.type) && (
                           <span>
-                            {r.stock}/{stockCap(r, manager)} crates
+                            {r.stock}/{territory.feature === "docks" && r.type === "warehouse" ? Math.floor(stockCap(r, manager) * 1.25) : stockCap(r, manager)} crates
                           </span>
                         )}
                         <span className="flex gap-0.5">
@@ -774,6 +799,12 @@ export default function DistrictPanel() {
                           ))}
                         </span>
                       </div>
+                      {note?.type && (
+                        <div className="mt-0.5 text-[10px] text-sky-300">
+                          Lookout: {businessSummary(note, turn)}
+                          {isBusinessStale(note, turn) ? " · a few weeks old" : ""}
+                        </div>
+                      )}
                       {isOwned && isLegitBusiness(r.type) && (() => {
                         const status = launderSiteStatus(r, turn);
                         if (status === "off") {

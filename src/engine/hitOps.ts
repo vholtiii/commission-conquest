@@ -26,12 +26,13 @@ import { setRelationDelta } from "./relations";
 import { crewPresentIn, familyHq, resolveCrewTerritoryId } from "./crewLocation";
 import { safehouseCapacity } from "./safehouse";
 import { isLegitBusiness } from "./economy";
-import { emptyIntel, hasFreshCasing, recordIntel } from "./intel";
+import { emptyIntel, hasFreshCasing, recordIntel, revealDistrict } from "./intel";
 import { coverFire, getawayCover, isLaidLow, laidLowHouse, safehouseHitPenalty } from "./safehouse";
 import { buildLookoutReport, runCasing, rungToOutcome, type CasingResult } from "./lookout";
 import { applySuccession } from "./succession";
 import { territoryHops } from "./territoryHops";
 import { isDefunct, scatterFamily, settleRivalChair } from "./defection";
+import { startInterregnum } from "./interregnum";
 import { declareMourning, handsDown } from "./mourning";
 import { pullForJob, releaseCrewHome } from "./jobReturn";
 import { noteErrandCasing, payCommissionKill } from "./commissionErrand";
@@ -1212,6 +1213,17 @@ export function resolveHit(
         ? applySuccession(newState, fam, rng)
         : settleRivalChair(newState, fam, rng);
     newState = succ.state;
+    if ("succeeded" in succ && succ.succeeded === false && fam === state.playerFamily) {
+      const putAway = newState.crew.some((c) => c.family === fam && c.role === "boss" && c.putAway);
+      const started = startInterregnum(newState, fam, putAway ? "put_away" : "killed", rng);
+      newState = started.state;
+      succ.logs.push(...started.logs);
+    }
+    if ("needsClock" in succ && succ.needsClock) {
+      const started = startInterregnum(newState, fam, "killed", rng);
+      newState = started.state;
+      succ.logs.push(...started.logs);
+    }
     if (succ.logs.length) {
       newState = {
         ...newState,
@@ -1649,6 +1661,7 @@ export function resolvePendingOperations(
       if (op.lookoutId) current = releaseCrewHome(current, [op.lookoutId], op.id);
       const noted = noteErrandCasing(current, op);
       current = noted.state;
+      if (op.family === current.playerFamily) current = revealDistrict(current, op.targetTerritoryId);
       if (noted.log) tipLogs.push(noted.log);
       current = {
         ...current,
@@ -1697,6 +1710,7 @@ export function resolvePendingOperations(
     };
 
     if (op.family === current.playerFamily) {
+      current = revealDistrict(current, op.targetTerritoryId);
       reports.push(
         buildLookoutReport(stateBefore, current, op, presentIds, fallout.outcome, fallout.relationDelta, {
           casing,
@@ -1743,6 +1757,7 @@ export function resolvePendingOperations(
     current = fallout.state;
 
     if (o.family === current.playerFamily) {
+      current = revealDistrict(current, o.targetTerritoryId);
       reports.push(
         buildLookoutReport(stateBefore, current, o, presentIds, fallout.outcome, fallout.relationDelta, {
           forHit: true,

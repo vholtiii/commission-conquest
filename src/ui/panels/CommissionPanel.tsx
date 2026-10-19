@@ -35,7 +35,8 @@ import { Button } from "@/components/ui/button";
 import PanelShell from "./PanelShell";
 import Tip from "@/ui/Tip";
 import { titleCase, formatMoney } from "../formatters";
-import { familyInfluence, familyWealth, LEAD_TURNS, STREAK_START_TURN } from "@/engine/victory";
+import { familyInfluence, familyWealth, STREAK_START_TURN } from "@/engine/victory";
+import { leadTurnsFor } from "@/engine/tempo";
 import { commissionMinutes, minuteAge, minuteFamily, rivalFeuds, seatChips } from "@/engine/commissionMinutes";
 import {
   canAsk,
@@ -861,6 +862,7 @@ function Standings() {
   const snapshot = useGameStore();
   const defunct = useGameStore((s) => s.defunctFamilies);
   if (!playerFamily) return null;
+  const leadTurns = leadTurnsFor(snapshot.settings.gameLength);
   const left = Math.max(0, (victory?.finalTurn ?? 50) - turn);
   const rows = ALL_FAMILY_NAMES.map((f) => ({
     f,
@@ -907,7 +909,7 @@ function Standings() {
       <p className="mt-1.5 text-[10px] text-muted-foreground">
         {turn < STREAK_START_TURN
           ? `Sudden death opens turn ${STREAK_START_TURN}`
-          : `Sudden death ${victory?.influenceLeadTurns ?? 0}/${LEAD_TURNS} standing · ${victory?.wealthLeadTurns ?? 0}/${LEAD_TURNS} wealth`}
+          : `Sudden death ${victory?.influenceLeadTurns ?? 0}/${leadTurns} standing · ${victory?.wealthLeadTurns ?? 0}/${leadTurns} wealth`}
         {(victory?.bankruptTurns ?? 0) > 0 ? ` · broke ${victory.bankruptTurns}/3` : ""}
       </p>
     </div>

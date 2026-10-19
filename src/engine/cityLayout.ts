@@ -70,6 +70,32 @@ function boroughHeightBias(borough: string): number {
   }
 }
 
+const layoutCache = new Map<string, CityLayout>();
+
+/** Geometry only depends on id, position, borough, and whether the lot is empty. */
+export function layoutCacheKey(
+  territories: Pick<Territory, "id" | "x" | "y" | "borough" | "emptyLot">[],
+  seed: number,
+): string {
+  return `${seed}|${territories
+    .map((t) => `${t.id}:${t.x}:${t.y}:${t.borough}:${t.emptyLot ? 1 : 0}`)
+    .join("|")}`;
+}
+
+/** Cached layout. Selection and slot math rebuild the grid only when the map changes. */
+export function getCityLayout(territories: Territory[], seed = 42): CityLayout {
+  const key = layoutCacheKey(territories, seed);
+  const hit = layoutCache.get(key);
+  if (hit) return hit;
+  const layout = buildCityLayout(territories, seed);
+  layoutCache.set(key, layout);
+  if (layoutCache.size > 4) {
+    const oldest = layoutCache.keys().next().value;
+    if (oldest !== undefined) layoutCache.delete(oldest);
+  }
+  return layout;
+}
+
 export function buildCityLayout(territories: Territory[], seed = 42): CityLayout {
   const rng = createRng(seed);
   const width = GRID_W * (BLOCK_SIZE + ROAD_GAP);
@@ -296,6 +322,26 @@ export function districtsThatTouch(
     }
   }
   return new Map([...adj].map(([id, set]) => [id, [...set].sort()]));
+}
+
+/** Building cells that share a side with water, counted per district. */
+export function waterfrontScores(layout: CityLayout): Map<string, number> {
+  const water = new Set<string>();
+  for (const b of layout.blocks) {
+    if (b.kind === "water") water.add(`${b.gx},${b.gz}`);
+  }
+  const scores = new Map<string, number>();
+  for (const b of layout.blocks) {
+    if (b.kind !== "building" || !b.territoryId) continue;
+    const touch =
+      water.has(`${b.gx - 1},${b.gz}`) ||
+      water.has(`${b.gx + 1},${b.gz}`) ||
+      water.has(`${b.gx},${b.gz - 1}`) ||
+      water.has(`${b.gx},${b.gz + 1}`);
+    if (!touch) continue;
+    scores.set(b.territoryId, (scores.get(b.territoryId) ?? 0) + 1);
+  }
+  return scores;
 }
 
 /** Nearest road cell to a world position (for cinematic car pathing). */

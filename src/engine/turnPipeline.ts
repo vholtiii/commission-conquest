@@ -44,7 +44,7 @@ import { pruneGrudges, releaseHeldCrew } from "./casing";
 import { generateCrewRequests, tickCrewMentoring } from "./crews";
 import { tickBossPresence } from "./bossPresence";
 import { familyHeadless, tickJails } from "./jail";
-import { checkVictory, influenceTick, rivalStandingDrivers } from "./victory";
+import { checkVictory, familyInfluence, familyWealth, influenceTick, rivalStandingDrivers } from "./victory";
 import { generateRumors } from "./rumors";
 import { tickIncidents } from "./incidents";
 import { hitLogEntry } from "./attribution";
@@ -60,10 +60,12 @@ import { callInFavors } from "./favors";
 import { walkIns } from "./recruiting";
 import { noteDrivingArrival, noteHitmanPride, tickJobPractice } from "./practice";
 import { expireFreeAgents, settleRivalChair } from "./defection";
+import { playerLeaderless, startInterregnum, tickInterregnum } from "./interregnum";
 import { handsDown } from "./mourning";
 import { applyWeeklyStreet } from "./standing";
 import { expireDinner } from "./dinner";
 import { tickCommissionErrand } from "./commissionErrand";
+import { selectDigestLines } from "@/ui/digestRank";
 
 export interface PlayerHit {
   op: Operation;
@@ -430,13 +432,16 @@ export function endTurn(state: GameState, rng?: Rng): GameState {
   turnLedger = mergeLedger(turnLedger, economy.ledger);
   const headless =
     !!current.playerFamily && familyHeadless(current, current.playerFamily);
-  const scaleIncome = (n: number) => (headless && n > 0 ? n * 0.75 : n);
-  if (headless) {
+  const leaderless = playerLeaderless(current);
+  const scaleIncome = (n: number) => ((headless || leaderless) && n > 0 ? n * 0.75 : n);
+  if (headless || leaderless) {
     logs.push({
       id: `log_headless_${current.turn}`,
       turn: current.turn,
       category: "system",
-      text: "No one is speaking for the family — the rackets run at three quarters.",
+      text: leaderless
+        ? "No boss — the rackets run at three quarters until someone takes the chair."
+        : "No one is speaking for the family — the rackets run at three quarters.",
       family: current.playerFamily ?? undefined,
     });
   }
@@ -460,6 +465,8 @@ export function endTurn(state: GameState, rng?: Rng): GameState {
     lastNetIncome: scaleIncome(economy.lastNetIncome),
     liquorStock: economy.liquorStock,
     rivalTreasury: economy.rivalTreasury,
+    rivalHeat: economy.rivalHeat,
+    beltThisWeek: economy.beltThisWeek,
     launderPlan: pruneLaunderPlan(
       current.launderPlan ?? {},
       economy.territories,
@@ -641,6 +648,11 @@ export function endTurn(state: GameState, rng?: Rng): GameState {
     const settled = settleRivalChair(current, family, random);
     current = settled.state;
     logs.push(...settled.logs);
+    if (settled.needsClock) {
+      const started = startInterregnum(current, family, "killed", random);
+      current = started.state;
+      logs.push(...started.logs);
+    }
   }
 
   current.territories = pruneManagers(current);
@@ -725,6 +737,23 @@ export function endTurn(state: GameState, rng?: Rng): GameState {
       c.status === "dead" ? c : { ...c, lastSiteId: resolveCrewTerritoryId(current, c.id) ?? undefined },
     ),
   };
+  const families = {} as NonNullable<typeof current.history>[number]["families"];
+  for (const name of ALL_FAMILY_NAMES) {
+    families[name] = {
+      wealth: familyWealth(current, name),
+      influence: familyInfluence(current, name),
+      districts: current.territories.filter((t) => t.owner === name).length,
+    };
+  }
+  const topLine = selectDigestLines(logs, current.playerFamily, current.turn)[0];
+  current = {
+    ...current,
+    history: [...(current.history ?? []), { turn: current.turn, families }].slice(-120),
+    headlines: topLine ? [...(current.headlines ?? []), topLine].slice(-100) : current.headlines,
+  };
+  const regency = tickInterregnum(current, random);
+  current = regency.state;
+  logs.push(...regency.logs);
   current.victory = checkVictory(current);
   current = appendLogs(current, logs);
 

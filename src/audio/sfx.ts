@@ -125,6 +125,11 @@ function ready(): Rig | null {
   return r && r.master.gain.value > 0 ? r : null;
 }
 
+/** The shared context. Ambience hangs its own gain off this, outside the compressor. */
+export function sharedAudio(): AudioContext | null {
+  return rig()?.audio ?? null;
+}
+
 export function setSfxVolume(volume: number): void {
   const r = rig();
   if (r) r.master.gain.value = Math.max(0, Math.min(1, volume));
@@ -593,4 +598,31 @@ export function crash(): void {
     chain(noise(r, t, 0.4), filter(r, "bandpass", 500 + Math.random() * 1400, 12), env(r, t, 0.002, 0.5, 0.35), out);
   }
   shatter(r, at + 0.03, 0.6, "street");
+}
+
+/** A short burst of type bars when the evening paper lands. */
+export function typewriter(): void {
+  const r = ready();
+  if (!r) return;
+  const out = voice(r, "dry", 0, 0.35);
+  let t = r.audio.currentTime;
+  for (let i = 0; i < 14; i++) {
+    const click = tone(r, "square", 1800 + (i % 4) * 220, t, t + 0.012);
+    chain(click, env(r, t, 0.001, 0.15, 0.012), out);
+    t += 0.045 + (i % 3) * 0.012;
+  }
+}
+
+/** A handful of coins when the week closed in the black. */
+export function coins(): void {
+  const r = ready();
+  if (!r) return;
+  const out = voice(r, "dry", 0, 0.4);
+  let t = r.audio.currentTime;
+  for (let i = 0; i < 6; i++) {
+    const ping = tone(r, "sine", 1400 + i * 180, t, t + 0.12);
+    ping.frequency.exponentialRampToValueAtTime(900 + i * 40, t + 0.1);
+    chain(ping, env(r, t, 0.002, 0.2, 0.1), out);
+    t += 0.07;
+  }
 }

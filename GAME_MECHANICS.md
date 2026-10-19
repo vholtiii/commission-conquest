@@ -274,7 +274,13 @@ District value is how many rackets you can build there — derived from the Voro
 - Rival AI weights racket builds toward districts with open slots, expands toward high `valueScore` (slots × 200 + baseIncome + income strategic bonus) relative to softness, and garrisons big blocks preferentially.
 - **Shakedown**: economic / expansionist / volatile rivals can skim an adjacent enemy district that has rackets but no active garrison (~60% success, half of racket income stolen; 25% chance to drop the top racket one level). Guard your rackets.
 
+**Block features** (`districtFeatures.ts`). Each district is docks, downtown, industrial, or residential. Docks are the 6 or 7 blocks with the most buildings touching water, so they move with the city seed. A docks trucking company earns +25% and a route that starts there hauls one extra crate. A docks warehouse holds +25% and lands 2 crates per level each week. Downtown gambling and loan sharking earn +20%. Industrial stills and breweries cook +25%. Residential delis, barbers, and restaurants earn +20% and wash +20% more. One same-block pairing adds +15%: speakeasy with gambling, speakeasy with warehouse (that warehouse doesn't get pilfered), or brothel with speakeasy. A laundromat or restaurant beside any vice racket washes +20% more. The district panel and the build menu name the bonus. The map legend and the piers on the water show which blocks are docks.
+
+**Opening deal** (`startPositions.ts`). Random starts (the default; Classic map keeps the file) pool the districts the map marks as owned, draw five home seats at least a few borders apart, and snake-draft the rest so families open within about 10% of each other. The player's home seat is his family's seat, and he still opens a loan shark there.
+
 ## Hits (`src/engine/hitOps.ts`)
+
+A boss's death quiets the city for three weeks (`MOURNING_WEEKS`). Nobody orders or lands a hit. Another death starts those three weeks over. A death that leaves the chair empty — the six-week crisis — quiets the city for two weeks instead.
 
 Approaches:
 
@@ -442,13 +448,13 @@ Street also moves at the end of each week, before the influence drift: +1 per li
 
 Rival portraits are hidden by default. Map shows family-colored squares only.
 
-**Always visible:** your crew. Rival portraits — bosses included — need real intel (a lookout report, a hit, a bribe, or an active district/family reveal). A rival boss's **black sedan** is the public tell instead: it is parked at the kerb of his HQ (crown badge) and, when he travels (`awayAt` for a sit-down or a weekly visit, logged as "was seen in…"), at that district for the week — but the car alone never shows his face. Street sightings are stored as `known[...]` entries with `source: "sighting"`; they place the car, not the portrait.
+**Always visible:** your crew. Rival portraits — bosses included — need real intel (a lookout report, a hit, a bribe, or an active district/family reveal). A rival boss's **black sedan** is the public tell instead: it is parked at the kerb of his HQ (crown badge) and, when he travels (`awayAt` for a sit-down or a weekly visit, logged as "was seen in…"), at that district for the week — but the car alone never shows his face. Street sightings are stored as `known[...]` entries with `source: "sighting"`; they place the car, not the portrait. A lookout report or a sighting also marks that district discovered, so its name shows on the map.
 
 **Reveal sources:**
 
 | Source | Effect | Expiry |
 |--------|--------|--------|
-| Case district (1 turn lookout) | Records all rivals present; Lookout Report card + district record | Until that crew moves |
+| Case district (1 turn lookout) | Records all rivals present; Lookout Report card + district record. The district name appears on the map. | Until that crew moves |
 | Surveil-first hit | Same when casing finishes (report tagged forHit) | Until move |
 | Any resolved hit | Records present rivals | Until move |
 | Cops bribe | Whole district faces for 3 turns | Expiry turn |
@@ -469,6 +475,8 @@ Personalities:
 - **covert** (Ferraro) — hits, bribes, low heat
 - **smuggler** (Salvati) — deliveries and warehouses
 - **volatile** (Rinaldi) — aggression and vendettas
+
+Temperament changes how long they wait (`tempo.ts`): a volatile truce or contract is 4 weeks and they send another message after 4, an economic truce is 8 weeks and they wait 8. Passage grudges and standing liquor sales follow the same table. Dinner, Commission errands, and Commission asks jitter once per seed (dinner 7–10 weeks, the other two 6–10). The sudden-death streak is 5 weeks on a short game, 6 on medium, 8 on long.
 
 A new game sets `aiAggression` from the difficulty button (`aggressionForDifficulty` in `initialState.ts`): easy 0.45, normal 1, hard 1.5. Each rival then attempts `floor(aggression × personality × 2)` actions a week (at least one; volatile ×1.4, covert ×0.8) and each attempt fires with chance `0.5 + aggression × 0.15`. Easy is one action about half the time. Normal is two (one for a covert family). Hard is three, or four for a volatile family. A save keeps the aggression it started with. Rivals fight each other; vendettas escalate retaliation.
 
@@ -547,12 +555,14 @@ Length is chosen next to difficulty on a new game (short 30 turns, medium 50, lo
 
 **Summit** on the final turn, after the other checks: lead either track by 10% and you win; trail both by more than 10% and you lose; within 10% on both, more districts than every rival wins, otherwise you lose.
 
-**Lose:** the boss is dead and no underboss can take the chair; the boss's 4-turn jail window expires with no ready underboss; or both cash pools stay negative for 3 weeks.
+**Lose:** six weeks pass with no boss after the chair emptied; or both cash pools stay negative for 3 weeks. A ready underboss still takes the chair the week the boss dies, and the game goes on.
 
-**Succession:** the underboss keeps his loyalty at the boss's funeral (`funeralLoyaltyHit` skips the heir), so a ready heir stays ready at the moment he is needed. Rivals still pay a flat $800 for a recruit, out of their treasury.
+**Leaderless** (`interregnum.ts`): if nobody is ready, the family fractures once (about a third of its districts, never the home seat, and shaky soldiers walk) and has six weeks to crown an underboss. During those weeks income is 75%, loyalty drops 3 a week, and the family cannot capture or order a hit. Promoting a capo to underboss waives the hit requirement, asks level 3 and loyalty 25, and a wounded capo can still be named. The $2,500 can come from either pocket. It steps down an underboss who cannot take the chair. A made soldier of level 4 can be named underboss. An underboss with loyalty 30 who has held the rank a week becomes boss. A man named that same week does not also take the loyalty drip. A rival gets the same clock: each week a 50% chance to name his best capo, wounded or not, and if the clock runs out the outfit scatters and the men join the player's pool. Only one family holds the clock; another rival waits his turn, and the player takes the slot if he needs it. Rivals aim at a leaderless family more often.
+
+**Succession:** the underboss keeps his loyalty at the boss's funeral (`funeralLoyaltyHit` skips the heir), so a ready heir stays ready at the moment he is needed. Rivals pay the same street price the player does for a recruit. After week 10 their treasury takes the real weekly net, and a broke family lets an associate go or drops an unmanaged joint a level. Each rival has a heat meter: vice, hits, captures, and car bombs raise it, it cools by 4 a week, and past 40 the precinct may raid a joint or pinch a soldier. Past 50 they buy the cops off. A fresh lookout report says whether that family's police attention is low, watched, or hot.
 
 **Jail:** only the boss gets a window (`jailedUntilTurn`). A ready underboss becomes acting boss (income, presence, captures; no sit-downs or pacts; loyalty −2). With nobody ready the family is headless (no captures, income −25%, loyalty −4, no diplomacy). Buying the judge ($6,000 + $2,000 × wanted, clean cash; mayor bribe adds about +0.35) can spring him. Failure burns the full price. Everyone else who is jailed stays jailed.
 
 ## Persistence
 
-Zustand `persist` to localStorage (`commission-conquest-v2`) plus manual save slots via Menu panel.
+Zustand `persist` to localStorage (`commission-conquest-v4`) plus manual save slots via Menu panel.

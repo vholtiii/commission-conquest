@@ -1,6 +1,7 @@
 import type { FamilyName, RacketType, Territory } from "@/types/game";
-import { buildCityLayout, getDistrictBlocks, type CityLayout } from "./cityLayout";
+import { getCityLayout, getDistrictBlocks, type CityLayout } from "./cityLayout";
 import { MAX_RACKETS_PER_DISTRICT } from "./economy";
+import { stampDistrictFeatures } from "./districtFeatures";
 
 export type LotTier = "empty" | "sparse" | "built";
 
@@ -120,8 +121,8 @@ export function computeTerritorySlots(
   territories: Territory[],
   seed: number,
 ): Territory[] {
-  const layout = buildCityLayout(territories, seed);
-  return territories.map((t) => {
+  const layout = getCityLayout(territories, seed);
+  const slotted = territories.map((t) => {
     const buildingBlocks = buildingBlocksFor(layout, t.id);
     return {
       ...t,
@@ -129,6 +130,7 @@ export function computeTerritorySlots(
       racketSlots: slotsFromBlocks(buildingBlocks),
     };
   });
+  return stampDistrictFeatures(slotted, seed);
 }
 
 /** Backfill slots on older saves that lack the fields (or still have 1-slot empty lots). */
@@ -146,7 +148,7 @@ export function ensureTerritorySlots(
         (t.buildingBlocks > 0 || t.racketSlots >= EMPTY_LOT_SLOTS),
     )
   ) {
-    return territories;
+    return territories.every((t) => t.feature) ? territories : stampDistrictFeatures(territories, seed);
   }
   return computeTerritorySlots(territories, seed);
 }

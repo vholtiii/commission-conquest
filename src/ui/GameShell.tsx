@@ -1,5 +1,7 @@
 import CityScene from "@/scene/CityScene";
+import { useEffect } from "react";
 import { useGameStore } from "@/engine/store";
+import { duckAmbience } from "@/audio/ambience";
 import TopBar from "./TopBar";
 import LeftToolbar from "./LeftToolbar";
 import RightRoster from "./RightRoster";
@@ -31,10 +33,13 @@ import SitdownTable from "./SitdownTable";
 import MapLegend from "./MapLegend";
 import TurnDigest from "./TurnDigest";
 import TurnCurtain from "./TurnCurtain";
+import PanelErrorBoundary from "./PanelErrorBoundary";
+import GoalsCard from "./GoalsCard";
 import { useMapView } from "@/engine/mapView";
 import { RACKET_LABELS } from "@/types/game";
 import { isLegitBusiness, launderSiteStatus } from "@/engine/economy";
 import { livingBoss } from "@/engine/jail";
+import { successionReadinessReasons } from "@/engine/succession";
 import { Button } from "@/components/ui/button";
 import { formatDelta, formatMoney } from "./formatters";
 
@@ -60,6 +65,45 @@ function TombsBanner() {
       >
         Buy the judge · {formatMoney(cost)}
       </Button>
+    </div>
+  );
+}
+
+function LeaderlessBanner() {
+  const playerFamily = useGameStore((s) => s.playerFamily);
+  const reg = useGameStore((s) => s.interregnum);
+  const turn = useGameStore((s) => s.turn);
+  const setPanel = useGameStore((s) => s.setPanel);
+  if (!reg || reg.family !== playerFamily) return null;
+  const left = Math.max(0, reg.deadline - turn);
+  return (
+    <div className="flex items-center justify-between gap-3 border-b border-heat/50 bg-heat/15 px-4 py-2 text-xs">
+      <span>
+        No boss: {left} week{left === 1 ? "" : "s"} to crown an heir.
+      </span>
+      <Button size="sm" className="h-7 shrink-0 text-[11px]" onClick={() => setPanel("crew")}>
+        Name an underboss
+      </Button>
+    </div>
+  );
+}
+
+function HeirWarning() {
+  const playerFamily = useGameStore((s) => s.playerFamily);
+  const crew = useGameStore((s) => s.crew);
+  const turn = useGameStore((s) => s.turn);
+  const reg = useGameStore((s) => s.interregnum);
+  if (!playerFamily || reg?.family === playerFamily) return null;
+  const boss = livingBoss({ crew }, playerFamily);
+  if (!boss || (boss.status !== "jailed" && boss.status !== "wounded")) return null;
+  const underboss = crew.find((c) => c.family === playerFamily && c.role === "underboss");
+  const missing = underboss
+    ? successionReadinessReasons(underboss, turn).filter((r) => !r.met).map((r) => r.label)
+    : ["No underboss"];
+  if (missing.length === 0) return null;
+  return (
+    <div className="border-b border-amber-500/40 bg-amber-500/10 px-4 py-1.5 text-[11px] text-amber-200">
+      Heir at risk — {missing.join(" · ")}
     </div>
   );
 }
@@ -348,6 +392,11 @@ export default function GameShell() {
       (s.cinematicQueue.length > 0 && !s.pendingHitResult) || s.sitdownPhase != null,
   );
   const overview = useMapView((s) => s.overview);
+  const activePanel = useGameStore((s) => s.activePanel);
+
+  useEffect(() => {
+    duckAmbience(cinematicPlaying);
+  }, [cinematicPlaying]);
 
   if (!playerFamily) {
     return <FamilySelectScreen />;
@@ -357,6 +406,8 @@ export default function GameShell() {
     <div className="flex h-screen w-screen flex-col overflow-hidden bg-background font-ui">
       <TopBar />
       <TombsBanner />
+      <LeaderlessBanner />
+      <HeirWarning />
       <div className="relative flex flex-1 overflow-hidden">
         <div className={cinematicPlaying ? "pointer-events-none" : undefined}>
           <LeftToolbar />
@@ -364,6 +415,7 @@ export default function GameShell() {
 
         <div className="relative z-0 flex-1">
           <CityScene />
+          <GoalsCard />
           <TurnCurtain />
 
           {overview && (
@@ -384,24 +436,28 @@ export default function GameShell() {
                   : "pointer-events-auto relative z-40 flex h-full min-h-0 max-h-full flex-col"
               }
             >
-              <ActivePanel />
+              <PanelErrorBoundary resetKey={activePanel}>
+                <ActivePanel />
+              </PanelErrorBoundary>
             </div>
           </div>
 
           <div className="relative z-30">
             <MapLegend />
           </div>
-          <HitCaptions />
-          <SitdownTable />
-          <EventModal />
-          <CrewRequestModal />
-          <SitdownRequestModal />
-          <HitResultModal />
-          <SitdownResultModal />
-          <CommissionRulingModal />
-          <DealSettlementModal />
-          <LookoutReportModal />
-          <VictoryOverlay />
+          <PanelErrorBoundary resetKey="modals">
+            <HitCaptions />
+            <SitdownTable />
+            <EventModal />
+            <CrewRequestModal />
+            <SitdownRequestModal />
+            <HitResultModal />
+            <SitdownResultModal />
+            <CommissionRulingModal />
+            <DealSettlementModal />
+            <LookoutReportModal />
+            <VictoryOverlay />
+          </PanelErrorBoundary>
         </div>
 
         <div className={cinematicPlaying ? "pointer-events-none opacity-40" : undefined}>

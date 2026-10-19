@@ -314,8 +314,17 @@ export const PROMOTION_PATHS: PromotionPath[] = [
   },
 ];
 
-export function pathsFromRole(role: CrewRole): PromotionPath[] {
-  return PROMOTION_PATHS.filter((p) => p.from === role);
+export function pathsFromRole(role: CrewRole, leaderless = false): PromotionPath[] {
+  const paths = PROMOTION_PATHS.filter((p) => p.from === role);
+  if (leaderless && role === "soldier") {
+    paths.push({
+      from: "soldier",
+      to: "underboss",
+      cost: 2500,
+      check: () => ({ ok: false, reasons: [] }),
+    });
+  }
+  return paths;
 }
 
 export function canPromote(
@@ -323,17 +332,59 @@ export function canPromote(
   toRole: CrewRole,
   crew: CrewMember[],
   money: number,
+  opts?: { leaderless?: boolean; dirty?: number },
 ): { ok: boolean; cost: number; reasons: { label: string; met: boolean }[] } {
+  if (opts?.leaderless && member.role === "soldier" && toRole === "underboss") {
+    const hasUb = crew.some(
+      (c) =>
+        c.family === member.family &&
+        c.role === "underboss" &&
+        (c.status === "active" || c.status === "wounded"),
+    );
+    const cost = 2500;
+    const reasons = [
+      { label: "Made", met: !isUnmade(member) },
+      { label: "Level ≥ 4", met: member.level >= 4 },
+      { label: "No active underboss", met: !hasUb },
+      { label: `Cash $${cost}`, met: money >= cost },
+      { label: "Active", met: member.status === "active" },
+    ];
+    return { ok: reasons.every((r) => r.met), cost, reasons };
+  }
   const path = PROMOTION_PATHS.find((p) => p.from === member.role && p.to === toRole);
   if (!path) {
     return { ok: false, cost: 0, reasons: [{ label: "No promotion path", met: false }] };
   }
   const checked = path.check(member, crew);
-  const reasons = [
+  let reasons = [
     ...checked.reasons,
     { label: `Cash $${path.cost}`, met: money >= path.cost },
     { label: "Active", met: member.status === "active" },
   ];
+  if (opts?.leaderless && member.role === "capo" && toRole === "underboss") {
+    const blocking = crew.some(
+      (c) =>
+        c.family === member.family &&
+        c.id !== member.id &&
+        c.role === "underboss" &&
+        c.status === "active" &&
+        c.loyalty >= 30,
+    );
+    reasons = reasons.map((r) => {
+      if (r.label === "Level ≥ 5") return { label: "Level ≥ 3", met: member.level >= 3 };
+      if (r.label === "Loyalty ≥ 65") return { label: "Loyalty ≥ 25", met: member.loyalty >= 25 };
+      if (r.label === "Hits ≥ 2") return { label: "Hits waived while the chair is empty", met: true };
+      if (r.label === "Active") {
+        return {
+          label: "On his feet or wounded",
+          met: member.status === "active" || member.status === "wounded",
+        };
+      }
+      if (r.label === "No active underboss") return { label: "No underboss who can take the chair", met: !blocking };
+      if (r.label.startsWith("Cash")) return { ...r, met: money + Math.max(0, opts?.dirty ?? 0) >= path.cost };
+      return r;
+    });
+  }
   return { ok: reasons.every((r) => r.met), cost: path.cost, reasons };
 }
 
@@ -344,11 +395,14 @@ export function promoteCrew(
   turn: number,
 ): CrewMember[] {
   const next = crew.map((m) => {
-    if (m.id !== memberId || m.status !== "active") return m;
+    if (m.id !== memberId) return m;
+    if (m.status !== "active" && !(m.status === "wounded" && toRole === "underboss")) return m;
     const path = PROMOTION_PATHS.find((p) => p.from === m.role && p.to === toRole);
-    if (!path) return m;
+    const lifted = toRole === "underboss" && m.role === "soldier" && !isUnmade(m) && m.level >= 4;
+    if (!path && !lifted) return m;
     return {
       ...m,
+      status: toRole === "underboss" && m.status === "wounded" ? "active" : m.status,
       role: toRole,
       level: m.level + 1,
       loyalty: Math.min(100, m.loyalty + 5),
@@ -358,8 +412,17 @@ export function promoteCrew(
       crewSinceTurn: toRole === "soldier" ? m.crewSinceTurn : undefined,
     };
   });
+  const promoted = next.find((m) => m.id === memberId && m.role === toRole);
+  const seated =
+    promoted && toRole === "underboss"
+      ? next.map((m) =>
+          m.id !== promoted.id && m.family === promoted.family && m.role === "underboss" && m.status !== "dead"
+            ? { ...m, role: "capo" as const, roleSinceTurn: turn }
+            : m,
+        )
+      : next;
   // A capo who moves up to the brass leaves his men loose.
-  return orphanCrews(next);
+  return orphanCrews(seated);
 }
 
 /** XP needed to reach a given level (level 1 = 0). */

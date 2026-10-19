@@ -136,6 +136,51 @@ export function hiddenCountIn(state: VisibilityState, territoryId: string): numb
   return present.filter((c) => !isCrewVisible(state, c)).length;
 }
 
+/** The player has been to this block, or the street named it. The map can label it. */
+export function revealDistrict(state: GameState, territoryId: string | undefined): GameState {
+  if (!territoryId) return state;
+  const territory = state.territories.find((t) => t.id === territoryId);
+  if (!territory || territory.discovered) return state;
+  return {
+    ...state,
+    territories: state.territories.map((t) =>
+      t.id === territoryId ? { ...t, discovered: true } : t,
+    ),
+  };
+}
+
+/**
+ * Blocks a lookout already filed, or a sighting already named, so an old
+ * save lights them up without casing them again.
+ */
+export function revealKnownDistricts<T extends GameState>(state: T): T {
+  const intel = state.intel ?? emptyIntel();
+  const ids = new Set<string>();
+  for (const id of Object.keys(intel.reports ?? {})) ids.add(id);
+  for (const id of Object.keys(intel.clues ?? {})) ids.add(id);
+  for (const snap of Object.values(intel.business ?? {})) ids.add(snap.territoryId);
+  for (const report of state.pendingReports ?? []) ids.add(report.territoryId);
+  for (const entry of Object.values(intel.known ?? {})) {
+    if (entry.source === "sighting" || entry.source === "surveillance") ids.add(entry.territoryId);
+  }
+  const errand = state.commissionErrand;
+  if (errand?.phase === "hunting") {
+    const done = errand.found ? errand.path.length : errand.leadIndex;
+    for (let i = 0; i < done; i++) {
+      const id = errand.path[i];
+      if (id) ids.add(id);
+    }
+  }
+  if (ids.size === 0) return state;
+  let changed = false;
+  const territories = state.territories.map((t) => {
+    if (t.discovered || !ids.has(t.id)) return t;
+    changed = true;
+    return { ...t, discovered: true };
+  });
+  return changed ? { ...state, territories } : state;
+}
+
 export function recordIntel(
   state: GameState,
   crewIds: string[],

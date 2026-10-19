@@ -1,9 +1,9 @@
 import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
-import { Instance, Instances } from "@react-three/drei";
+import { Instance, Instances, Text } from "@react-three/drei";
 import type { CityLayout } from "@/engine/cityLayout";
-import { BLOCK_SIZE, ROAD_GAP, blockKey } from "@/engine/cityLayout";
+import { BLOCK_SIZE, GRID_W, ROAD_GAP, blockKey } from "@/engine/cityLayout";
 import type { FamilyName, Territory } from "@/types/game";
 import { FAMILY_HEX } from "@/types/game";
 import { useGameStore } from "@/engine/store";
@@ -22,6 +22,160 @@ const PITCH = BLOCK_SIZE + ROAD_GAP;
 /** A 3x3 block of cells plus the gaps out to the road edge on every side. */
 const SLAB_SIZE = 4 * PITCH - BLOCK_SIZE;
 const ROAD_FLAT: [number, number, number] = [-Math.PI / 2, 0, 0];
+const WATER_Y = -0.06;
+
+interface RiverSheet {
+  id: string;
+  x: number;
+  z: number;
+  w: number;
+  d: number;
+}
+
+interface ShoreEdge {
+  id: string;
+  x: number;
+  z: number;
+  /** Long axis of the deck follows the shore. */
+  rot: number;
+  crane: boolean;
+  craneRot: number;
+  sign: boolean;
+  signX: number;
+  signZ: number;
+  signRot: number;
+}
+
+function cellKey(gx: number, gz: number): string {
+  return `${gx},${gz}`;
+}
+
+/** Greedy rectangles over a set of "gx,gz" keys. */
+function coverCells(keys: string[]): { gx0: number; gx1: number; gz0: number; gz1: number }[] {
+  const remaining = new Set(keys);
+  const rects: { gx0: number; gx1: number; gz0: number; gz1: number }[] = [];
+  const ordered = [...remaining]
+    .map((key) => {
+      const [gx, gz] = key.split(",").map(Number);
+      return { gx: gx!, gz: gz! };
+    })
+    .sort((a, b) => a.gz - b.gz || a.gx - b.gx);
+  for (const start of ordered) {
+    if (!remaining.has(cellKey(start.gx, start.gz))) continue;
+    let gx1 = start.gx;
+    while (remaining.has(cellKey(gx1 + 1, start.gz))) gx1++;
+    let gz1 = start.gz;
+    for (;;) {
+      let row = true;
+      for (let gx = start.gx; gx <= gx1; gx++) {
+        if (!remaining.has(cellKey(gx, gz1 + 1))) {
+          row = false;
+          break;
+        }
+      }
+      if (!row) break;
+      gz1++;
+    }
+    for (let gz = start.gz; gz <= gz1; gz++) {
+      for (let gx = start.gx; gx <= gx1; gx++) remaining.delete(cellKey(gx, gz));
+    }
+    rects.push({ gx0: start.gx, gx1, gz0: start.gz, gz1 });
+  }
+  return rects;
+}
+
+/** West river, east river, and the south harbor, each as one or two solid sheets. */
+function riverSheets(layout: CityLayout): RiverSheet[] {
+  const west: string[] = [];
+  const east: string[] = [];
+  const south: string[] = [];
+  for (const b of layout.blocks) {
+    if (b.kind !== "water") continue;
+    const key = cellKey(b.gx, b.gz);
+    if (b.gx <= 2) west.push(key);
+    else if (b.gx >= GRID_W - 3) east.push(key);
+    else south.push(key);
+  }
+  const sheets: RiverSheet[] = [];
+  const emit = (name: string, keys: string[]) => {
+    for (const rect of coverCells(keys)) {
+      const x0 = rect.gx0 * PITCH - layout.width / 2;
+      const x1 = (rect.gx1 + 1) * PITCH - layout.width / 2;
+      const z0 = rect.gz0 * PITCH - layout.depth / 2;
+      const z1 = (rect.gz1 + 1) * PITCH - layout.depth / 2;
+      sheets.push({
+        id: `${name}-${rect.gx0}-${rect.gz0}`,
+        x: (x0 + x1) / 2,
+        z: (z0 + z1) / 2,
+        w: x1 - x0,
+        d: z1 - z0,
+      });
+    }
+  };
+  emit("west", west);
+  emit("east", east);
+  emit("south", south);
+  return sheets;
+}
+
+const SHORE_DIRS = [
+  [1, 0],
+  [-1, 0],
+  [0, 1],
+  [0, -1],
+] as const;
+
+/** A deck segment on every water-facing cell of a docks district, plus one crane and sign. */
+function shoreEdges(layout: CityLayout, territories: Territory[]): ShoreEdge[] {
+  const docks = new Set(territories.filter((t) => t.feature === "docks").map((t) => t.id));
+  if (docks.size === 0) return [];
+  const waterAt = new Map(
+    layout.blocks.filter((b) => b.kind === "water").map((b) => [cellKey(b.gx, b.gz), b] as const),
+  );
+  const byDistrict = new Map<
+    string,
+    { x: number; z: number; dx: number; dz: number; bx: number; bz: number }[]
+  >();
+  for (const b of layout.blocks) {
+    if (b.kind !== "building" || !b.territoryId || !docks.has(b.territoryId)) continue;
+    for (const [dx, dz] of SHORE_DIRS) {
+      const w = waterAt.get(cellKey(b.gx + dx, b.gz + dz));
+      if (!w) continue;
+      const nudge = BLOCK_SIZE * 0.22;
+      const list = byDistrict.get(b.territoryId) ?? [];
+      list.push({
+        x: w.worldX - dx * nudge,
+        z: w.worldZ - dz * nudge,
+        dx,
+        dz,
+        bx: b.worldX,
+        bz: b.worldZ,
+      });
+      byDistrict.set(b.territoryId, list);
+      break;
+    }
+  }
+  const edges: ShoreEdge[] = [];
+  for (const [districtId, cells] of byDistrict) {
+    const mid = cells[Math.floor(cells.length / 2)];
+    cells.forEach((cell, i) => {
+      const alongZ = cell.dx !== 0;
+      edges.push({
+        id: `${districtId}-${i}`,
+        x: cell.x,
+        z: cell.z,
+        rot: alongZ ? Math.PI / 2 : 0,
+        crane: cell === mid,
+        craneRot: Math.atan2(cell.dx, cell.dz),
+        sign: cell === mid,
+        signX: cell.bx - cell.dx * BLOCK_SIZE * 0.62,
+        signZ: cell.bz - cell.dz * BLOCK_SIZE * 0.62,
+        signRot: Math.atan2(-cell.dx, -cell.dz),
+      });
+    });
+  }
+  return edges;
+}
 
 function tintTowardFamily(baseHex: string, familyHex: string, amount: number): string {
   const a = new THREE.Color(baseHex);
@@ -99,6 +253,18 @@ function makeWindowTextureSet(seed: number, count: number): WindowMaps[] {
   return variants;
 }
 
+function RiverSheet({ sheet, material }: { sheet: RiverSheet; material: THREE.MeshStandardMaterial }) {
+  const geo = useRef<THREE.PlaneGeometry>(null);
+  useLayoutEffect(() => {
+    geo.current?.computeTangents();
+  }, [sheet.w, sheet.d]);
+  return (
+    <mesh position={[sheet.x, WATER_Y, sheet.z]} rotation={ROAD_FLAT} material={material}>
+      <planeGeometry ref={geo} args={[sheet.w, sheet.d]} />
+    </mesh>
+  );
+}
+
 interface BuildingInstanceData {
   key: string;
   x: number;
@@ -116,10 +282,23 @@ export default function ProceduralBuildings({ layout, seed, occupied, territorie
   const crossing = useMemo(() => intersectionTexture(), []);
   const sidewalk = useMemo(() => sidewalkTexture(), []);
   const parksTex = useMemo(() => parkTexture(), []);
-  const waterNormal = useMemo(() => waterNormalTexture(), []);
+  const waterNormal = useMemo(() => {
+    const tex = waterNormalTexture();
+    tex.repeat.set(10, 8);
+    return tex;
+  }, []);
+  const waterMat = useMemo(
+    () =>
+      new THREE.MeshStandardMaterial({
+        color: WATER_COLOR,
+        normalMap: waterNormal,
+        normalScale: WATER_NORMAL_SCALE,
+        roughness: 0.22,
+        metalness: 0.25,
+      }),
+    [waterNormal],
+  );
   const playerFamily = useGameStore((s) => s.playerFamily);
-  const waterGeo = useRef<THREE.PlaneGeometry>(null);
-  const waterMat = useRef<THREE.MeshStandardMaterial>(null);
 
   useEffect(() => {
     return () => {
@@ -138,18 +317,13 @@ export default function ProceduralBuildings({ layout, seed, occupied, territorie
       sidewalk.dispose();
       parksTex.dispose();
       waterNormal.dispose();
+      waterMat.dispose();
     };
-  }, [asphalt, asphaltX, crossing, sidewalk, parksTex, waterNormal]);
-
-  useLayoutEffect(() => {
-    waterGeo.current?.computeTangents();
-  }, [waterNormal]);
+  }, [asphalt, asphaltX, crossing, sidewalk, parksTex, waterNormal, waterMat]);
 
   useFrame((_, dt) => {
-    const map = waterMat.current?.normalMap;
-    if (!map) return;
-    map.offset.x += dt * 0.015;
-    map.offset.y += dt * 0.008;
+    waterNormal.offset.x += dt * 0.015;
+    waterNormal.offset.y += dt * 0.008;
   });
 
   const ownerByTerritory = useMemo(() => {
@@ -158,12 +332,14 @@ export default function ProceduralBuildings({ layout, seed, occupied, territorie
     return m;
   }, [territories]);
 
-  const { buildings, avenues, streets, crossings, water, parks, plates, slabs, pavers } = useMemo(() => {
+  const rivers = useMemo(() => riverSheets(layout), [layout]);
+  const shores = useMemo(() => shoreEdges(layout, territories), [layout, territories]);
+
+  const { buildings, avenues, streets, crossings, parks, plates, slabs, pavers } = useMemo(() => {
     const buildings: BuildingInstanceData[] = [];
     const avenues: { x: number; z: number }[] = [];
     const streets: { x: number; z: number }[] = [];
     const crossings: { x: number; z: number }[] = [];
-    const water: { x: number; z: number }[] = [];
     const parks: { x: number; z: number }[] = [];
     const plates: { x: number; z: number; color: string; opacity: number }[] = [];
     // One pavement slab per 3x3 block, keyed by the block's grid quadrant.
@@ -237,13 +413,11 @@ export default function ProceduralBuildings({ layout, seed, occupied, territorie
         if (onAvenue && onStreet) crossings.push(cell);
         else if (onAvenue) avenues.push(cell);
         else streets.push(cell);
-      } else if (b.kind === "water") {
-        water.push({ x: b.worldX, z: b.worldZ });
       } else if (b.kind === "park") {
         parks.push({ x: b.worldX, z: b.worldZ });
       }
     }
-    return { buildings, avenues, streets, crossings, water, parks, plates, slabs, pavers };
+    return { buildings, avenues, streets, crossings, parks, plates, slabs, pavers };
   }, [layout, seed, occupied, ownerByTerritory, playerFamily]);
 
   const byVariant = useMemo(() => {
@@ -307,24 +481,58 @@ export default function ProceduralBuildings({ layout, seed, occupied, territorie
         ))}
       </Instances>
 
-      <Instances limit={water.length || 1} range={water.length}>
-        <planeGeometry ref={waterGeo} args={[groundSize, groundSize]} />
-        <meshStandardMaterial
-          ref={waterMat}
-          color={WATER_COLOR}
-          normalMap={waterNormal}
-          normalScale={WATER_NORMAL_SCALE}
-          roughness={0.35}
-          metalness={0.15}
-        />
-        {water.map((c, i) => (
-          <Instance
-            key={`water-${i}`}
-            position={[c.x, 0, c.z]}
-            rotation={[-Math.PI / 2, 0, 0]}
-          />
-        ))}
-      </Instances>
+      {rivers.map((sheet) => (
+        <RiverSheet key={sheet.id} sheet={sheet} material={waterMat} />
+      ))}
+
+      {shores.map((edge) => (
+        <group key={edge.id}>
+          <group position={[edge.x, 0.16, edge.z]} rotation={[0, edge.rot, 0]}>
+            <mesh>
+              <boxGeometry args={[PITCH * 0.96, 0.14, 0.72]} />
+              <meshStandardMaterial color="#6b5344" roughness={0.9} />
+            </mesh>
+            <mesh position={[-PITCH * 0.32, -0.28, 0]}>
+              <boxGeometry args={[0.1, 0.5, 0.1]} />
+              <meshStandardMaterial color="#3a322c" roughness={0.95} />
+            </mesh>
+            <mesh position={[PITCH * 0.32, -0.28, 0]}>
+              <boxGeometry args={[0.1, 0.5, 0.1]} />
+              <meshStandardMaterial color="#3a322c" roughness={0.95} />
+            </mesh>
+          </group>
+          {edge.crane && (
+            <group position={[edge.x, 0.28, edge.z]} rotation={[0, edge.craneRot, 0]}>
+              <mesh position={[0, 1.15, 0.15]}>
+                <boxGeometry args={[0.12, 2.2, 0.12]} />
+                <meshStandardMaterial color="#3e424a" metalness={0.4} roughness={0.5} />
+              </mesh>
+              <mesh position={[0, 2.2, 0.7]}>
+                <boxGeometry args={[0.08, 0.08, 1.15]} />
+                <meshStandardMaterial color="#8a6a32" metalness={0.3} roughness={0.6} />
+              </mesh>
+            </group>
+          )}
+          {edge.sign && (
+            <group position={[edge.signX, 1.85, edge.signZ]} rotation={[0, edge.signRot, 0]}>
+              <mesh>
+                <boxGeometry args={[1.85, 0.46, 0.08]} />
+                <meshStandardMaterial color="#1c2836" roughness={0.7} />
+              </mesh>
+              <Text
+                position={[0, 0, 0.05]}
+                fontSize={0.24}
+                letterSpacing={0.08}
+                anchorX="center"
+                anchorY="middle"
+                color="#f0e2b6"
+              >
+                DOCKS
+              </Text>
+            </group>
+          )}
+        </group>
+      ))}
 
       <Instances limit={parks.length || 1} range={parks.length}>
         <planeGeometry args={[groundSize, groundSize]} />

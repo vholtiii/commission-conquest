@@ -19,6 +19,11 @@ interface Props {
 
 const TILE = 7.6;
 
+/** The wash is paint. The district plate underneath takes the click. */
+function ignoreRaycast() {
+  return null;
+}
+
 function makeHatchGeometry(size: number, stripes = 5): THREE.ShapeGeometry {
   const shapes: THREE.Shape[] = [];
   const half = size / 2;
@@ -135,8 +140,8 @@ function StrategicTile({
   const ringOp = (!discovered ? 0.55 : unclaimed ? 0.4 : 0.95) * blend;
 
   return (
-    <group position={[cx, 0.5, cz]}>
-      <mesh rotation={[-Math.PI / 2, 0, 0]} renderOrder={20}>
+    <group position={[cx, 0.5, cz]} raycast={() => null}>
+      <mesh raycast={ignoreRaycast} rotation={[-Math.PI / 2, 0, 0]} renderOrder={20}>
         <planeGeometry args={[TILE, TILE]} />
         <meshBasicMaterial
           color={baseColor}
@@ -148,7 +153,7 @@ function StrategicTile({
       </mesh>
 
       {!discovered ? (
-        <mesh geometry={outlineGeo} rotation={[-Math.PI / 2, 0, 0]} renderOrder={21}>
+        <mesh raycast={ignoreRaycast} geometry={outlineGeo} rotation={[-Math.PI / 2, 0, 0]} renderOrder={21}>
           <meshBasicMaterial
             color="#3a3d44"
             transparent
@@ -160,7 +165,7 @@ function StrategicTile({
         </mesh>
       ) : unclaimed ? (
         <>
-          <mesh geometry={hatchGeo} rotation={[-Math.PI / 2, 0, 0]} renderOrder={21}>
+          <mesh raycast={ignoreRaycast} geometry={hatchGeo} rotation={[-Math.PI / 2, 0, 0]} renderOrder={21}>
             <meshBasicMaterial
               color="#9aa0a8"
               transparent
@@ -170,7 +175,7 @@ function StrategicTile({
               side={THREE.DoubleSide}
             />
           </mesh>
-          <mesh geometry={dashedGeo} rotation={[-Math.PI / 2, 0, 0]} renderOrder={22}>
+          <mesh raycast={ignoreRaycast} geometry={dashedGeo} rotation={[-Math.PI / 2, 0, 0]} renderOrder={22}>
             <meshBasicMaterial
               color={MAP_STATUS.neutral}
               transparent
@@ -183,7 +188,7 @@ function StrategicTile({
         </>
       ) : (
         <>
-          <mesh geometry={outlineGeo} rotation={[-Math.PI / 2, 0, 0]} renderOrder={21}>
+          <mesh raycast={ignoreRaycast} geometry={outlineGeo} rotation={[-Math.PI / 2, 0, 0]} renderOrder={21}>
             <meshBasicMaterial
               color={baseColor}
               transparent
@@ -194,7 +199,7 @@ function StrategicTile({
             />
           </mesh>
           {ownedByPlayer && (
-            <mesh geometry={innerRingGeo} rotation={[-Math.PI / 2, 0, 0]} renderOrder={22}>
+            <mesh raycast={ignoreRaycast} geometry={innerRingGeo} rotation={[-Math.PI / 2, 0, 0]} renderOrder={22}>
               <meshBasicMaterial
                 color="#ffffff"
                 transparent
@@ -214,7 +219,7 @@ function StrategicTile({
           center
           occlude={false}
           zIndexRange={[6, 2]}
-          style={{ pointerEvents: "auto", opacity: blend }}
+          style={{ pointerEvents: blend > 0.05 ? "auto" : "none", opacity: blend }}
         >
           <button
             type="button"

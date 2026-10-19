@@ -18,7 +18,7 @@ import { HalfFloatType } from "three";
  * Built on postprocessing's composer directly: the @react-three/postprocessing
  * effect components throw in react-three-fiber's prop applier on three 0.170.
  */
-export default function PostFx() {
+export default function PostFx({ bloom = true }: { bloom?: boolean }) {
   const gl = useThree((s) => s.gl);
   const scene = useThree((s) => s.scene);
   const camera = useThree((s) => s.camera);
@@ -30,7 +30,7 @@ export default function PostFx() {
       multisampling: 0,
       frameBufferType: HalfFloatType,
     });
-    const bloom = new BloomEffect({
+    const bloomEffect = new BloomEffect({
       mipmapBlur: true,
       luminanceThreshold: 0.85,
       luminanceSmoothing: 0.2,
@@ -41,10 +41,10 @@ export default function PostFx() {
     noise.blendMode.opacity.value = 0.04;
     const tone = new ToneMappingEffect({ mode: ToneMappingMode.ACES_FILMIC });
     next.addPass(new RenderPass(scene, camera));
-    next.addPass(new EffectPass(camera, bloom));
+    if (bloom) next.addPass(new EffectPass(camera, bloomEffect));
     next.addPass(new EffectPass(camera, vignette, noise, tone));
     return { next, autoClear };
-  }, [gl, scene, camera]);
+  }, [gl, scene, camera, bloom]);
 
   useLayoutEffect(() => {
     composer.next.setSize(size.width, size.height);

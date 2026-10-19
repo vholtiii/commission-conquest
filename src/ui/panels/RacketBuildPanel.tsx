@@ -1,4 +1,4 @@
-import type { RacketType } from "@/types/game";
+import type { RacketType, Territory } from "@/types/game";
 import { RACKET_LABELS } from "@/types/game";
 import { useGameStore } from "@/engine/store";
 import {
@@ -12,6 +12,7 @@ import {
 } from "@/engine/economy";
 import { maxRacketsFor, allowedRacketTypes, lotTier, lotTierLabel, lotTierHint } from "@/engine/territoryValue";
 import { BOSS_PRESENCE, bossPresentIn, presenceBuildCost } from "@/engine/bossPresence";
+import { placementBonus } from "@/engine/districtFeatures";
 import { Badge } from "@/components/ui/badge";
 import Tip from "@/ui/Tip";
 import PanelShell from "./PanelShell";
@@ -88,6 +89,7 @@ function TypeButton({
   dirtyMoney,
   bossHere,
   denied,
+  territory,
   onBuild,
 }: {
   type: RacketType;
@@ -96,8 +98,10 @@ function TypeButton({
   dirtyMoney: number;
   bossHere: boolean;
   denied?: string;
+  territory: Territory;
   onBuild: () => void;
 }) {
+  const bonus = placementBonus(territory, { type }, territory.rackets);
   const cost = presenceBuildCost(RACKET_BUILD_COST[type], bossHere);
   const funding = racketFunding(type);
   const pay = racketPayment(type, cost, money, dirtyMoney);
@@ -129,6 +133,11 @@ function TypeButton({
           {denied && (
             <Badge variant="outline" className="text-[9px]">
               Lot too thin
+            </Badge>
+          )}
+          {!denied && bonus.reasons.length > 0 && (
+            <Badge className="bg-money/20 text-[9px] text-money">
+              Bonus here: {bonus.reasons[0]}
             </Badge>
           )}
           {!denied && short && (
@@ -190,6 +199,7 @@ export default function RacketBuildPanel() {
             money={money}
             dirtyMoney={dirtyMoney}
             bossHere={bossHere}
+            territory={territory}
             onBuild={() => buildRacket(territory.id, type)}
           />
         ))}
@@ -208,6 +218,7 @@ export default function RacketBuildPanel() {
             money={money}
             dirtyMoney={dirtyMoney}
             bossHere={bossHere}
+            territory={territory}
             onBuild={() => buildRacket(territory.id, type)}
           />
         ))}
@@ -226,6 +237,7 @@ export default function RacketBuildPanel() {
             money={money}
             dirtyMoney={dirtyMoney}
             bossHere={bossHere}
+            territory={territory}
             onBuild={() => buildRacket(territory.id, type)}
           />
         ))}

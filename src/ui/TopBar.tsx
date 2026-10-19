@@ -12,6 +12,8 @@ import { formatDate, formatDelta, formatMoney } from "./formatters";
 import WantedTag from "./WantedTag";
 import { useTurnTransition } from "./turnTransition";
 import { useAnimatedNumber, type StatFlash } from "./useAnimatedNumber";
+import { coins } from "@/audio/sfx";
+import { setAmbienceVolume, startAmbience } from "@/audio/ambience";
 import { cn } from "@/lib/utils";
 
 const CLOSE_MS = 220;
@@ -238,7 +240,13 @@ export default function TopBar() {
         size="lg"
         className="shrink-0 bg-steel font-ui font-bold uppercase tracking-wide text-white hover:bg-steel-light disabled:opacity-40"
         disabled={blocked || phase !== "idle"}
-        onClick={endTurn}
+        onClick={() => {
+          startAmbience();
+          setAmbienceVolume(useGameStore.getState().settings.ambienceVolume ?? 0.4);
+          endTurn();
+          const books = useGameStore.getState().weekBooks;
+          if (books && books.net > 0) coins();
+        }}
       >
         Next Turn
       </Button>

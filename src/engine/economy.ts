@@ -44,6 +44,8 @@ import {
   markWarehouseProof,
 } from "./liquor";
 import { isUnguarded } from "./territoryValue";
+import { RIVAL_GRACE_FLOOR, RIVAL_GRACE_TURNS, beltTighten, tickRivalHeat } from "./rivalHeat";
+import { placementBonus } from "./districtFeatures";
 
 export const MAX_RACKETS_PER_DISTRICT = 3;
 
@@ -175,6 +177,7 @@ export function launderCap(
   turn = 0,
   /** The boss holds court on this block: the books stretch further. */
   bossHere = false,
+  launderMult = 1,
 ): number {
   if (!isLegitBusiness(racket.type)) return 0;
   const rules = LAUNDER_RULES[racket.type];
@@ -184,7 +187,8 @@ export function launderCap(
       racket.level *
       capMult *
       earlyGameCapMult(turn) *
-      (bossHere ? BOSS_PRESENCE.launderCapMult : 1),
+      (bossHere ? BOSS_PRESENCE.launderCapMult : 1) *
+      launderMult,
   );
 }
 
@@ -228,7 +232,7 @@ export function weeklyWashCeiling(state: GameState): number {
       const manager = r.managerId
         ? state.crew.find((c) => c.id === r.managerId && c.status === "active") ?? null
         : null;
-      const cap = launderCap(r, manager, state.turn, bossHere);
+      const cap = launderCap(r, manager, state.turn, bossHere, placementBonus(t, r, t.rackets).launderMult);
       clean += Math.floor(cap * (1 - launderCut(r.type)));
     }
   }
@@ -585,6 +589,7 @@ export function racketIncome(
   manager?: CrewMember | null,
   crew?: CrewMember[],
   bossHere = false,
+  placementMult = 1,
 ): number {
   const base = RACKET_BASE_INCOME[racket.type] * racket.level;
   let managerMult = bossHere ? BOSS_PRESENCE.unmanagedFloor : 0.7;
@@ -596,7 +601,7 @@ export function racketIncome(
     if (isUnmade(manager)) managerMult *= 0.85;
   }
   if (bossHere) managerMult *= BOSS_PRESENCE.incomeMult;
-  return Math.floor(base * (1 + incomeBonus) * managerMult);
+  return Math.floor(base * (1 + incomeBonus) * managerMult * placementMult);
 }
 
 /** The crew's share of a managed racket's income, for the breakdown line. */
@@ -1111,7 +1116,7 @@ export function collectLaunderSites(
             (c) => c.id === r.managerId && c.status === "active",
           ) ?? null
         : null;
-      const cap = Math.max(1, launderCap(r, manager, state.turn, bossHere));
+      const cap = Math.max(1, launderCap(r, manager, state.turn, bossHere, placementBonus(t, r, t.rackets).launderMult));
       sites.push({
         racket: r,
         territoryId: t.id,
@@ -1447,7 +1452,8 @@ export function processEconomyTurn(
                 c.status === "active",
             )
           : null;
-        let inc = racketIncome(racket, incomeBonus, manager, state.crew, bossHere);
+        const place = placementBonus(t, racket, updated.rackets);
+        let inc = racketIncome(racket, incomeBonus, manager, state.crew, bossHere, place.mult);
         if (isPlayer && dinnerActive(state)) inc = Math.floor(inc * DINNER_INCOME_MULT);
         const take = racketTake(racket.type, inc);
         moneyDelta += take.clean;
@@ -1638,6 +1644,8 @@ export function processAllEconomy(
   heatDelta: number;
   liquorStock: number;
   rivalTreasury: Partial<Record<FamilyName, number>>;
+  rivalHeat: Partial<Record<FamilyName, number>>;
+  beltThisWeek: FamilyName[];
   audits: LaunderAudit[];
   ledger: LiquorLedger;
   books: PlayerWeekParts | null;
@@ -1657,6 +1665,7 @@ export function processAllEconomy(
   const rivalTreasury: Partial<Record<FamilyName, number>> = {
     ...(state.rivalTreasury ?? {}),
   };
+  const belt: FamilyName[] = [];
 
   const families = [...new Set(territories.map((t) => t.owner).filter(Boolean))] as FamilyName[];
 
@@ -1678,8 +1687,28 @@ export function processAllEconomy(
       audits.push(...partial.audits);
       ledger = mergeLedger(ledger, partial.ledger);
     } else {
-      const stipend = Math.max(partial.netIncome, 150);
-      rivalTreasury[family] = Math.max(0, (rivalTreasury[family] ?? 0) + stipend);
+      const early = state.turn < RIVAL_GRACE_TURNS;
+      const earned = state.interregnum?.family === family ? Math.floor(partial.netIncome * 0.75) : partial.netIncome;
+      const net = early ? Math.max(earned, RIVAL_GRACE_FLOOR) : earned;
+      const before = rivalTreasury[family] ?? 0;
+      let after = before + net;
+      if (!early && before <= 0 && earned < 0) {
+        const cut = beltTighten(territories, roster, family);
+        if (cut.note) {
+          territories = cut.territories;
+          roster = cut.crew;
+          after = 0;
+          belt.push(family);
+          logs.push({
+            id: `log_belt_${state.turn}_${family}`,
+            turn: state.turn,
+            category: "economy",
+            text: cut.note,
+            family,
+          });
+        }
+      }
+      rivalTreasury[family] = after;
     }
   }
 
@@ -1729,8 +1758,13 @@ export function processAllEconomy(
 
   territories = tickDistrictHeat(territories);
 
+  const pressure = tickRivalHeat(state, territories, roster, (family) =>
+    createRng(hashString(`${state.seed}:${state.turn}:raid:${family}`)),
+  );
+  logs.push(...pressure.logs);
+
   return {
-    territories,
+    territories: pressure.territories,
     moneyDelta,
     dirtyDelta,
     lastNetIncome: playerNet,
@@ -1738,10 +1772,12 @@ export function processAllEconomy(
     heatDelta,
     liquorStock,
     rivalTreasury,
+    rivalHeat: pressure.rivalHeat,
+    beltThisWeek: belt,
     audits,
     ledger,
     books: playerBooks,
-    crew: roster,
+    crew: pressure.crew,
   };
 }
 

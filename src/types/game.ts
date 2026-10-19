@@ -377,6 +377,8 @@ export interface Territory {
   buildingBlocks: number;
   /** Max rackets allowed (derived from buildingBlocks, typically 2–6). */
   racketSlots: number;
+  /** What the block is good at. Stamped from the city seed; old saves get it on load. */
+  feature?: "docks" | "downtown" | "industrial" | "residential";
 }
 
 export interface BribeStatus {
@@ -1341,6 +1343,12 @@ export interface GameSettings {
   sfxVolume?: number;
   /** Bloom, vignette, film grain, and filmic tone mapping. Defaults to on. */
   postFx?: boolean;
+  /** auto drops resolution, shadows, and bloom when the frame rate falls. */
+  graphics?: "auto" | "high" | "low";
+  /** City ambience loudness, 0 (off) to 1. Defaults to 0.4. */
+  ambienceVolume?: number;
+  /** random deals opening districts each seed. classic keeps the map file. */
+  startMode?: "random" | "classic";
 }
 
 /** How many districts each family has grabbed on a given turn. */
@@ -1382,8 +1390,14 @@ export interface GameState {
   lawyerBossPleaUntil: number;
   /** The week a rush wash was bought. Once a week. */
   lawyerWashTurn: number;
+  /** Home block dealt to each family at the start. Absent on older saves. */
+  homeSeats?: Partial<Record<FamilyName, string>>;
   /** Rival AI cash pools (player uses money/dirtyMoney). */
   rivalTreasury: Partial<Record<FamilyName, number>>;
+  /** Police attention on each rival, 0–100. The player has `heat` instead. */
+  rivalHeat?: Partial<Record<FamilyName, number>>;
+  /** Rivals who shed payroll or a joint this week because the treasury was empty. */
+  beltThisWeek?: FamilyName[];
   territories: Territory[];
   crew: CrewMember[];
   recruitmentPool: CrewMember[];
@@ -1392,6 +1406,15 @@ export interface GameState {
   events: GameEvent[];
   activeEvent: GameEvent | null;
   turnLog: TurnLogEntry[];
+  /** Top line of each week's paper, capped at 100. The turn log itself only keeps 200. */
+  headlines?: TurnLogEntry[];
+  /** Wealth, influence, and districts at the close of each week. */
+  history?: {
+    turn: number;
+    families: Record<FamilyName, { wealth: number; influence: number; districts: number }>;
+  }[];
+  /** The first-weeks card was closed. Older saves leave this unset, so the card can still appear. */
+  onboardingDismissed?: boolean;
   relations: RelationsMatrix;
   /** Sit-downs, tribute, and non-aggression pacts. */
   diplomacy: DiplomacyState;
@@ -1469,8 +1492,18 @@ export interface GameState {
   mattresses?: { startTurn: number; reason: "war" | "hit" } | null;
   /** Exclusive turn the boss can still call the mattresses after a hit on the family. */
   mattressReadyUntil?: number;
-  /** Exclusive turn the city may order hits again. A boss's death sets this six weeks out. */
+  /** Exclusive turn the city may order hits again. A boss's death sets this three weeks out. */
   mourningUntil?: number;
+  /**
+   * The chair is empty. The family has until `deadline` to crown an underboss
+   * or the game (or, for a rival, the family) ends.
+   */
+  interregnum?: {
+    family: FamilyName;
+    startedTurn: number;
+    deadline: number;
+    cause: "killed" | "put_away";
+  } | null;
   /** A summons reel waiting to play, queued by the store when an event resolves. */
   pendingSummons?: HitCinematic | null;
   /** A Commission call in progress. */

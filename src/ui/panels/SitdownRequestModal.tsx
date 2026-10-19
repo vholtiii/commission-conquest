@@ -18,7 +18,7 @@ import {
   type SitdownParty,
 } from "@/engine/sitdowns";
 import { counterAcceptance, termsText, termsValue } from "@/engine/passage";
-import { agendaLabel, agendaTermsText } from "@/engine/agendas";
+import { agendaLabel, agendaTermsText, temperamentLine } from "@/engine/agendas";
 import { isAgendaTable } from "@/engine/sitdowns";
 import { currentRumors } from "@/engine/rumors";
 import { Button } from "@/components/ui/button";
@@ -100,7 +100,7 @@ export default function SitdownRequestModal() {
                 ? `${family} has made their point. They want you at ${where} in two weeks to settle passage through their turf — on their terms.`
                 : `${family} has noticed your trucks on their blocks. They propose meeting in two weeks at ${where} to set a price for passage.`
               : agenda
-                ? `${family} proposes meeting in two weeks at ${where} — ${venueLabel(offered)}. What they want: ${agendaTermsText(state, agenda, sitdown.table!.ask)}. The number gets settled at the table.`
+                ? `${family} proposes meeting in two weeks at ${where} — ${venueLabel(offered)}. What they want: ${agendaTermsText(state, agenda, sitdown.table!.ask)}${temperamentLine(family, agenda, sitdown.table!.ask.weeks) ? ` ${temperamentLine(family, agenda, sitdown.table!.ask.weeks)}` : ""} The number gets settled at the table.`
                 : `${family} proposes meeting in two weeks at ${where} — ${venueLabel(offered)}.`
             : `${family} won't take your terms. They'll meet at ${where} — ${venueLabel(offered)}.`}
         </p>

@@ -4,6 +4,7 @@ import { useGameStore } from "@/engine/store";
 import type { GameLength, GameSettings } from "@/types/game";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { setAmbienceVolume } from "@/audio/ambience";
 import PanelShell from "./PanelShell";
 
 const SLOTS = [1, 2, 3];
@@ -66,6 +67,22 @@ export default function MenuPanel() {
             />
             Post-processing
           </label>
+          <div className="mt-1.5 flex gap-1.5">
+            {(["auto", "high", "low"] as const).map((g) => (
+              <button
+                key={g}
+                type="button"
+                onClick={() => updateSettings({ graphics: g })}
+                className={`flex-1 rounded-md border px-2 py-1.5 text-[11px] capitalize ${
+                  (settings.graphics ?? "auto") === g
+                    ? "border-steel bg-steel/20 text-steel-light"
+                    : "border-panel-border bg-panel/50 hover:bg-panel-elevated"
+                }`}
+              >
+                {g === "auto" ? "Auto" : g === "high" ? "Sharp" : "Light"}
+              </button>
+            ))}
+          </div>
           <label className="mt-1.5 flex items-center gap-2 rounded-md border border-panel-border bg-panel/50 px-3 py-2 text-xs">
             <span className="shrink-0">Sound effects</span>
             <input
@@ -76,6 +93,22 @@ export default function MenuPanel() {
               onChange={(e) => updateSettings({ sfxVolume: Number(e.target.value) / 100 })}
               className="w-full accent-steel"
               aria-label="Sound effects volume"
+            />
+          </label>
+          <label className="mt-1.5 flex items-center gap-2 rounded-md border border-panel-border bg-panel/50 px-3 py-2 text-xs">
+            <span className="shrink-0">Ambience</span>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              value={Math.round((settings.ambienceVolume ?? 0.4) * 100)}
+              onChange={(e) => {
+                const ambienceVolume = Number(e.target.value) / 100;
+                updateSettings({ ambienceVolume });
+                setAmbienceVolume(ambienceVolume);
+              }}
+              className="w-full accent-steel"
+              aria-label="Ambience volume"
             />
           </label>
         </div>

@@ -10,6 +10,7 @@ import { livingBoss } from "./jail";
 import { isDefunct } from "./defection";
 import { getRelation, statusFromScore } from "./relations";
 import { liftSeatedHitmen } from "./practice";
+import { cadence } from "./tempo";
 
 export const DINNER_TURNS = 2;
 export const DINNER_COOLDOWN = 8;
@@ -96,7 +97,8 @@ export function canCallDinner(state: GameState): { ok: boolean; reason?: string 
     return { ok: false, reason: "The boss isn't free to host it." };
   }
   const last = state.lastDinnerTurn;
-  if (last != null && state.turn < last + DINNER_COOLDOWN) {
+  const dinnerWait = cadence(state.seed, "dinner");
+  if (last != null && state.turn < last + dinnerWait) {
     const ago = state.turn - last;
     return {
       ok: false,

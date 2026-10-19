@@ -22,7 +22,7 @@ import { alignTerritoriesToMap, buildInitialState, startGame } from "./initialSt
 import { endTurn, resolvePlayerHits } from "./turnPipeline";
 import { familyHeadless, releaseBoss, releaseMember } from "./jail";
 import { emptyVictory, finalTurnFor, seedRivalInfluence } from "./victory";
-import { buildCityLayout, ensureRacketSites, nextRacketSiteIndex, racketBlockFor } from "./cityLayout";
+import { ensureRacketSites, getCityLayout, nextRacketSiteIndex, racketBlockFor } from "./cityLayout";
 import { bringCrewOnHit, buildHitCinematic, commitHitCrew, planHit } from "./hitOps";
 import {
   acceptCommissionErrand as takeErrand,
@@ -106,6 +106,8 @@ import {
   type DiplomacyAction,
 } from "./diplomacy";
 import { captureAllowance, resolveCapture } from "./capture";
+import { playerLeaderless } from "./interregnum";
+import { dealtSeats } from "./startPositions";
 import {
   answerCrewRequest,
   canJoinCrew,
@@ -154,7 +156,7 @@ import type {
   SitdownVenue,
   SupplyRoutePreview,
 } from "@/types/game";
-import { normalizeIntel } from "./intel";
+import { normalizeIntel, revealKnownDistricts } from "./intel";
 import { hitCrewIds } from "@/data/hitApproaches";
 import type { CrewRole } from "@/types/game";
 import {
@@ -217,7 +219,7 @@ function focusOnTerritory(
   state: GameState,
   territoryId: string,
 ): { x: number; z: number; distance: number } | null {
-  const center = buildCityLayout(state.territories, state.seed).centers.find(
+  const center = getCityLayout(state.territories, state.seed).centers.find(
     (c) => c.territoryId === territoryId,
   );
   if (!center) return null;
@@ -230,7 +232,7 @@ function focusOnRacket(
   racketId: string,
 ): { x: number; z: number; distance: number } | null {
   const territory = state.territories.find((t) => t.id === territoryId);
-  const layout = buildCityLayout(state.territories, state.seed);
+  const layout = getCityLayout(state.territories, state.seed);
   const index = territory?.rackets.findIndex((r) => r.id === racketId) ?? -1;
   const racket = index >= 0 ? territory!.rackets[index]! : undefined;
   const site = typeof racket?.siteIndex === "number" ? racket.siteIndex : index;
@@ -263,6 +265,7 @@ interface GameStore extends GameState {
   newGame: (settings?: Partial<GameSettings>) => void;
   selectFamily: (family: FamilyName) => void;
   setPanel: (panel: PanelId) => void;
+  dismissOnboarding: () => void;
   selectTerritory: (id: string | null, opts?: { toastLabel?: string; racketId?: string }) => void;
   clearFlyTo: () => void;
   clearHitFx: () => void;
@@ -442,6 +445,8 @@ const defaultSettings: GameSettings = {
   rivalCinematics: "brief",
   sfxVolume: 0.7,
   postFx: true,
+  graphics: "auto",
+  ambienceVolume: 0.4,
 };
 
 function cloneState(s: GameState): GameState {
@@ -466,6 +471,8 @@ export const useGameStore = create<GameStore>()(
       selectFamily: (family) => {
         set({ ...startGame(get(), family) });
       },
+
+      dismissOnboarding: () => set({ onboardingDismissed: true }),
 
       setPanel: (panel) =>
         set((s) => ({
@@ -618,7 +625,11 @@ export const useGameStore = create<GameStore>()(
         const s = get();
         const member = s.crew.find((c) => c.id === crewId);
         if (!member || member.family !== s.playerFamily) return;
-        const check = canPromote(member, toRole, s.crew, s.money);
+        const leaderless = s.interregnum?.family === s.playerFamily;
+        const check = canPromote(member, toRole, s.crew, s.money, {
+          leaderless,
+          dirty: leaderless ? s.dirtyMoney : 0,
+        });
         if (!check.ok) {
           toast.error("Cannot promote", {
             description: check.reasons.filter((r) => !r.met).map((r) => r.label).join(" · "),
@@ -637,8 +648,10 @@ export const useGameStore = create<GameStore>()(
           });
           return;
         }
+        const fromDirty = leaderless ? Math.min(Math.max(0, s.dirtyMoney), check.cost) : 0;
         set({
-          money: s.money - check.cost,
+          money: s.money - (check.cost - fromDirty),
+          dirtyMoney: s.dirtyMoney - fromDirty,
           crew: promoteCrew(s.crew, crewId, toRole, s.turn),
         });
         toast.success(`${member.name} promoted to ${toRole.replace("_", " ")}`, {
@@ -1484,6 +1497,12 @@ export const useGameStore = create<GameStore>()(
       planPlayerHit: (args) => {
         const s = get();
         if (!s.playerFamily) return;
+        if (playerLeaderless(s)) {
+          toast.error("No one to order it", {
+            description: "Crown an underboss before the family sends anyone.",
+          });
+          return;
+        }
         if (handsDown(s)) {
           const left = (s.mourningUntil ?? 0) - s.turn;
           toast.error("The city is quiet", {
@@ -2276,6 +2295,12 @@ export const useGameStore = create<GameStore>()(
       orderCommissionHit: (args) => {
         const s = get();
         if (!s.playerFamily) return;
+        if (playerLeaderless(s)) {
+          toast.error("No one to order it", {
+            description: "Crown an underboss before the family sends anyone.",
+          });
+          return;
+        }
         const errand = s.commissionErrand;
         if (!errand || errand.phase !== "hunting" || !errand.found) {
           toast.error("You have not found him yet.");
@@ -2692,9 +2717,11 @@ export const useGameStore = create<GameStore>()(
           });
           return;
         }
-        if (familyHeadless(s, s.playerFamily)) {
+        if (familyHeadless(s, s.playerFamily) || playerLeaderless(s)) {
           toast.error("Nobody to order the move", {
-            description: "The boss is in the Tombs and no underboss is standing in.",
+            description: playerLeaderless(s)
+              ? "The chair is empty. Crown an underboss first."
+              : "The boss is in the Tombs and no underboss is standing in.",
           });
           return;
         }
@@ -2749,8 +2776,16 @@ export const useGameStore = create<GameStore>()(
           territories = alignTerritoriesToMap(
             migrateLaunderSites(territories, plan, loaded.playerFamily ?? null),
           );
+          const loadedIntel = normalizeIntel(loaded.intel);
+          territories = revealKnownDistricts({
+            ...loaded,
+            territories,
+            intel: loadedIntel,
+            pendingReports: loaded.pendingReports ?? [],
+          }).territories;
           set({
             ...loaded,
+            homeSeats: dealtSeats(loaded),
             crew: (loaded.crew ?? []).map(migrateMade),
             making: loaded.making ?? null,
             territories,
@@ -2782,6 +2817,7 @@ export const useGameStore = create<GameStore>()(
             settings: {
               ...defaultSettings,
               ...loaded.settings,
+              startMode: loaded.settings?.startMode ?? "classic",
               skipCinematics: loaded.settings?.skipCinematics ?? false,
               sfxVolume: loaded.settings?.sfxVolume ?? 0.7,
             },
@@ -2790,7 +2826,7 @@ export const useGameStore = create<GameStore>()(
             supplyRouteFocusId: null,
             supplyRoutePreview: null,
             focusReason: loaded.focusReason ?? null,
-            intel: normalizeIntel(loaded.intel),
+            intel: loadedIntel,
             grudges: loaded.grudges ?? [],
             incidents: loaded.incidents ?? [],
             rumors: loaded.rumors ?? [],
@@ -2866,6 +2902,7 @@ export const useGameStore = create<GameStore>()(
           "newGame",
           "selectFamily",
           "setPanel",
+          "dismissOnboarding",
           "selectTerritory",
           "clearFlyTo",
           "clearHitFx",
@@ -2936,6 +2973,8 @@ export const useGameStore = create<GameStore>()(
           "loadSlot",
         ];
         for (const m of methods) delete copy[m];
+        const log = copy.turnLog;
+        if (Array.isArray(log) && log.length > 200) copy.turnLog = log.slice(-200);
         return copy as GameState;
       },
       merge: (persisted, current) => {
@@ -2955,9 +2994,19 @@ export const useGameStore = create<GameStore>()(
             p.playerFamily ?? current.playerFamily ?? null,
           ),
         );
+        const mergedIntel = normalizeIntel(p.intel ?? current.intel);
+        territories = revealKnownDistricts({
+          ...current,
+          ...p,
+          territories,
+          intel: mergedIntel,
+          pendingReports: p.pendingReports ?? current.pendingReports ?? [],
+          commissionErrand: p.commissionErrand ?? current.commissionErrand,
+        }).territories;
         return {
           ...current,
           ...p,
+          homeSeats: dealtSeats(p),
           crew: (p.crew ?? current.crew ?? []).map(migrateMade),
           making: p.making ?? null,
           territories,
@@ -2990,7 +3039,7 @@ export const useGameStore = create<GameStore>()(
           supplyRouteFocusId: null,
           supplyRoutePreview: null,
           focusReason: p.focusReason ?? null,
-          intel: normalizeIntel(p.intel),
+          intel: mergedIntel,
           grudges: p.grudges ?? current.grudges ?? [],
           incidents: p.incidents ?? current.incidents ?? [],
           rumors: p.rumors ?? current.rumors ?? [],
@@ -3057,6 +3106,7 @@ export const useGameStore = create<GameStore>()(
           settings: {
             ...defaultSettings,
             ...(p.settings ?? {}),
+            startMode: p.settings?.startMode ?? "classic",
             skipCinematics: p.settings?.skipCinematics ?? false,
             sfxVolume: p.settings?.sfxVolume ?? 0.7,
           },

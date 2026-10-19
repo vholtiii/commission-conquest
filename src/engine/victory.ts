@@ -1,6 +1,7 @@
 import type { FamilyName, GameLength, GameState, VictoryState } from "@/types/game";
 import { ALL_FAMILY_NAMES, getFamilyDef } from "@/data/families";
 import { livingBoss } from "./jail";
+import { leadTurnsFor } from "./tempo";
 
 export const LEAD_TURNS = 6;
 /** Sudden-death streaks start counting on this turn; nobody is crowned in the opening weeks. */
@@ -139,6 +140,19 @@ export function checkVictory(state: GameState): VictoryState {
   if (!state.playerFamily || !state.started) return victory;
 
   const player = state.playerFamily;
+  const reg = state.interregnum;
+  if (reg?.family === player) {
+    if (state.turn >= reg.deadline) {
+      return {
+        ...victory,
+        lost: true,
+        reason:
+          reg.cause === "put_away"
+            ? "Six weeks with no boss. The family never recovered from the Tombs."
+            : "Six weeks with no boss. The chair stayed empty.",
+      };
+    }
+  } else {
   const boss = livingBoss(state, player);
   if (!boss || boss.status === "dead") {
     const putAway = state.crew.some(
@@ -159,6 +173,7 @@ export function checkVictory(state: GameState): VictoryState {
       reason: "Your boss never left the Tombs, and no underboss was ready.",
     };
   }
+  }
 
   const broke = state.money < 0 && state.dirtyMoney < 0;
   const bankruptTurns = broke ? victory.bankruptTurns + 1 : 0;
@@ -171,20 +186,26 @@ export function checkVictory(state: GameState): VictoryState {
     };
   }
 
-  const streaksOpen = state.turn >= STREAK_START_TURN;
+  const leadTurns = leadTurnsFor(state.settings.gameLength);
+  const streaksFrozen = state.interregnum?.family === player;
+  const streaksOpen = state.turn >= STREAK_START_TURN && !streaksFrozen;
   const inf = familyInfluence(state, player);
   const infSecond = secondPlace(state, (f) => familyInfluence(state, f));
   const influenceLead =
     streaksOpen && inf >= INFLUENCE_BAR && inf >= infSecond * INFLUENCE_MULT;
-  const influenceLeadTurns = influenceLead ? victory.influenceLeadTurns + 1 : 0;
-  if (influenceLeadTurns >= LEAD_TURNS) {
+  const influenceLeadTurns = streaksFrozen
+    ? victory.influenceLeadTurns
+    : influenceLead
+      ? victory.influenceLeadTurns + 1
+      : 0;
+  if (!streaksFrozen && influenceLeadTurns >= leadTurns) {
     return {
       ...victory,
       bankruptTurns,
       influenceLeadTurns,
       wealthLeadTurns: 0,
       won: true,
-      reason: `Standing for ${LEAD_TURNS} weeks — the Commission bends.`,
+      reason: `Standing for ${leadTurns} weeks — the Commission bends.`,
     };
   }
 
@@ -192,15 +213,19 @@ export function checkVictory(state: GameState): VictoryState {
   const wealthSecond = secondPlace(state, (f) => familyWealth(state, f));
   const wealthLead =
     streaksOpen && wealth >= WEALTH_FLOOR && wealth >= wealthSecond * WEALTH_MULT;
-  const wealthLeadTurns = wealthLead ? victory.wealthLeadTurns + 1 : 0;
-  if (wealthLeadTurns >= LEAD_TURNS) {
+  const wealthLeadTurns = streaksFrozen
+    ? victory.wealthLeadTurns
+    : wealthLead
+      ? victory.wealthLeadTurns + 1
+      : 0;
+  if (!streaksFrozen && wealthLeadTurns >= leadTurns) {
     return {
       ...victory,
       bankruptTurns,
       influenceLeadTurns,
       wealthLeadTurns,
       won: true,
-      reason: `The richest family in the city for ${LEAD_TURNS} weeks.`,
+      reason: `The richest family in the city for ${leadTurns} weeks.`,
     };
   }
 

@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useGameStore } from "@/engine/store";
+import { typewriter } from "@/audio/sfx";
 import { FAMILY_HEX, type TurnLogEntry } from "@/types/game";
 import { formatDate } from "./formatters";
 import { selectDigestLines } from "./digestRank";
@@ -36,12 +37,24 @@ export default function TurnDigest() {
   const [dismissedTurn, setDismissedTurn] = useState<number | null>(null);
 
   const closed = turnLog.some((l) => l.id.startsWith("log_turn_"));
-  if (!closed || !playerFamily) return null;
-  if (dismissedTurn === turn) return null;
-  if (activeEvent || pendingHitResult || sitdownCard || dealCard || (pendingReports?.length ?? 0) > 0 || cinematic) {
-    return null;
-  }
-  if (phase === "closing" || phase === "hold") return null;
+  const showing =
+    closed &&
+    !!playerFamily &&
+    dismissedTurn !== turn &&
+    !activeEvent &&
+    !pendingHitResult &&
+    !sitdownCard &&
+    !dealCard &&
+    (pendingReports?.length ?? 0) === 0 &&
+    !cinematic &&
+    phase !== "closing" &&
+    phase !== "hold";
+
+  useEffect(() => {
+    if (showing) typewriter();
+  }, [showing, turn]);
+
+  if (!showing) return null;
 
   const lines = selectDigestLines(turnLog, playerFamily, turn);
   const quiet = lines.length === 0;
