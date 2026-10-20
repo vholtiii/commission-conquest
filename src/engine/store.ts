@@ -31,6 +31,7 @@ import {
   errandWeeksLeft,
 } from "./commissionErrand";
 import { canJoinHit, canSendOnHit, pullForJob } from "./jobReturn";
+import { isDefunct } from "./defection";
 import { createRng, hashString } from "./rng";
 import {
   assignCrew,
@@ -1790,6 +1791,23 @@ export const useGameStore = create<GameStore>()(
         if (refuseSitting(s, crewId)) return;
         const territory = s.territories.find((t) => t.id === territoryId);
         if (!territory?.owner || territory.owner === s.playerFamily) return;
+        if (isDefunct(s, territory.owner)) {
+          toast.error("Nobody left to watch", { description: `The ${territory.owner} family is finished.` });
+          return;
+        }
+        if (
+          s.operations.some(
+            (o) =>
+              !o.resolved &&
+              o.kind === "surveillance" &&
+              o.family === s.playerFamily &&
+              o.targetTerritoryId === territoryId &&
+              !o.errandId,
+          )
+        ) {
+          toast.error("Someone is already casing that block.");
+          return;
+        }
         const lookout = s.crew.find(
           (c) =>
             c.id === crewId &&
@@ -1884,7 +1902,15 @@ export const useGameStore = create<GameStore>()(
         })),
 
       tryBribe: (type, targetFamily, targetTerritory) => {
-        set(attemptBribe(get(), type, targetFamily, targetTerritory));
+        const before = get();
+        const after = attemptBribe(before, type, targetFamily, targetTerritory);
+        if (after === before) return;
+        set(after);
+        const entry = after.turnLog.length > before.turnLog.length ? after.turnLog[after.turnLog.length - 1] : undefined;
+        if (!entry) return;
+        if (entry.id.includes("_ok_")) toast.success("The money landed", { description: entry.text });
+        else if (entry.category === "heat") toast.error("The bribe fell through", { description: entry.text });
+        else toast.warning(entry.text);
       },
 
       callInOwn: (crewId) => {
@@ -2788,6 +2814,8 @@ export const useGameStore = create<GameStore>()(
             homeSeats: dealtSeats(loaded),
             crew: (loaded.crew ?? []).map(migrateMade),
             making: loaded.making ?? null,
+            consigliereNote: loaded.consigliereNote ?? null,
+            consigliereRest: loaded.consigliereRest ?? {},
             territories,
             launderPlan: pruneLaunderPlan(
               plan,
@@ -3009,6 +3037,8 @@ export const useGameStore = create<GameStore>()(
           homeSeats: dealtSeats(p),
           crew: (p.crew ?? current.crew ?? []).map(migrateMade),
           making: p.making ?? null,
+          consigliereNote: p.consigliereNote ?? null,
+          consigliereRest: p.consigliereRest ?? {},
           territories,
           launderPlan: pruneLaunderPlan(
             plan,

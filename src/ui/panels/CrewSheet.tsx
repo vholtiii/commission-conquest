@@ -273,13 +273,19 @@ export default function CrewSheet() {
           />
         )}
 
-        <div className="grid grid-cols-3 gap-2 text-center text-xs">
-          <StatBox label="Loyalty" value={member.loyalty} />
-          <WantedBox member={member} />
-          <StatBox label="XP" value={member.xp} />
-        </div>
+        {isOwn ? (
+          <div className="grid grid-cols-3 gap-2 text-center text-xs">
+            <StatBox label="Loyalty" value={member.loyalty} />
+            <WantedBox member={member} />
+            <StatBox label="XP" value={member.xp} />
+          </div>
+        ) : (
+          <p className="text-[11px] text-muted-foreground">
+            You know his face and his family. A lookout's profile is the closest you get to his measure.
+          </p>
+        )}
 
-        <div>
+        {isOwn && <div>
           <h3 className="mb-1.5 text-xs uppercase tracking-wide text-muted-foreground">Skills</h3>
           <div className="space-y-1.5">
             {Object.entries(member.skills).map(([key, val]) => (
@@ -297,7 +303,7 @@ export default function CrewSheet() {
               </div>
             ))}
           </div>
-        </div>
+        </div>}
 
         {member.traits.length > 0 && (
           <div>

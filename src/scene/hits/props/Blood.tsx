@@ -5,12 +5,14 @@ import * as THREE from "three";
 interface Props {
   active: boolean;
   at: [number, number, number];
+  /** Yaw the man was facing, atan2(dx, dz). The pool opens ahead of his feet. */
+  facing?: number;
 }
 
 const SPRAY = 7;
 
-/** A pool that opens under a fallen man, and a few drops thrown at the hit. */
-export default function Blood({ active, at }: Props) {
+/** A pool that opens under a fallen man's chest, and a few drops thrown at his feet. */
+export default function Blood({ active, at, facing = 0 }: Props) {
   const pool = useRef<THREE.Mesh>(null);
   const drops = useRef<THREE.InstancedMesh>(null);
   const start = useRef<number | null>(null);
@@ -32,13 +34,16 @@ export default function Blood({ active, at }: Props) {
       return;
     }
     if (start.current === null) start.current = clock.elapsedTime;
-    const t = Math.min(1, (clock.elapsedTime - start.current) / 1.2);
+    const elapsed = clock.elapsedTime - start.current;
+    const t = Math.min(1, elapsed / 1.2);
+    // The chest is on the ground half a second after the shot. The pool waits for it.
+    const poolT = Math.min(1, Math.max(0, (elapsed - 0.5) / 0.7));
     if (pool.current) {
-      pool.current.visible = true;
-      const s = 0.15 + t * 0.7;
+      pool.current.visible = poolT > 0;
+      const s = 0.15 + poolT * 0.7;
       pool.current.scale.set(s, s, 1);
       const mat = pool.current.material as THREE.MeshBasicMaterial;
-      mat.opacity = 0.35 + t * 0.4;
+      mat.opacity = 0.35 + poolT * 0.4;
     }
     if (drops.current) {
       drops.current.visible = t < 0.45;
@@ -55,7 +60,12 @@ export default function Blood({ active, at }: Props) {
 
   return (
     <group position={[at[0], 0.03, at[2]]}>
-      <mesh ref={pool} rotation={[-Math.PI / 2, 0, 0]} visible={false}>
+      <mesh
+        ref={pool}
+        position={[Math.sin(facing) * 0.45, 0, Math.cos(facing) * 0.45]}
+        rotation={[-Math.PI / 2, 0, 0]}
+        visible={false}
+      >
         <circleGeometry args={[0.55, 14]} />
         <meshBasicMaterial color="#4a1014" transparent opacity={0.5} depthWrite={false} />
       </mesh>

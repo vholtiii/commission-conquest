@@ -16,7 +16,32 @@ import { placementBonus } from "../districtFeatures";
 import { playerLeaderless } from "../interregnum";
 import { nextRacketSiteIndex } from "../cityLayout";
 import type { Rng } from "../rng";
-import type { CrewMember, FamilyName, GameState, RacketType } from "@/types/game";
+import type { CrewMember, FamilyName, GameState, HitApproach, RacketType } from "@/types/game";
+
+export type SimStrategy = "balanced" | "racketeer" | "warmonger" | "expansionist" | "turtle";
+
+interface Style {
+  build: boolean;
+  /** Stop hiring once the family has this many active men. */
+  recruitCap: number;
+  /** Case a neighbouring block every this many weeks. 0 never cases. */
+  lookoutEvery: number;
+  /** `soft` only takes a block with no garrison or no rackets. */
+  capture: "weekly" | "soft" | "never";
+  captureMen: number;
+  /** Order a hit every this many weeks. 0 never hits. */
+  hitEvery: number;
+  /** Cycle ambush, drive-by and car bomb. Otherwise always an ambush. */
+  rotateApproach: boolean;
+}
+
+const STYLES: Record<SimStrategy, Style> = {
+  balanced: { build: true, recruitCap: 8, lookoutEvery: 4, capture: "weekly", captureMen: 3, hitEvery: 6, rotateApproach: false },
+  racketeer: { build: true, recruitCap: 8, lookoutEvery: 0, capture: "soft", captureMen: 3, hitEvery: 0, rotateApproach: false },
+  warmonger: { build: true, recruitCap: 8, lookoutEvery: 2, capture: "weekly", captureMen: 3, hitEvery: 3, rotateApproach: true },
+  expansionist: { build: true, recruitCap: 12, lookoutEvery: 0, capture: "weekly", captureMen: 4, hitEvery: 0, rotateApproach: false },
+  turtle: { build: false, recruitCap: 8, lookoutEvery: 0, capture: "never", captureMen: 0, hitEvery: 0, rotateApproach: false },
+};
 
 function assignManagers(state: GameState): GameState {
   const family = state.playerFamily;
@@ -90,11 +115,11 @@ function maybeBuild(state: GameState, rng: Rng): GameState {
   };
 }
 
-function maybeRecruit(state: GameState): GameState {
+function maybeRecruit(state: GameState, cap: number): GameState {
   const family = state.playerFamily;
   if (!family) return state;
   const active = state.crew.filter((c) => c.family === family && c.status === "active").length;
-  if (active >= 8) return state;
+  if (active >= cap) return state;
   let best = -1;
   let price = Infinity;
   state.recruitmentPool.forEach((member, index) => {
@@ -122,9 +147,9 @@ function maybeRecruit(state: GameState): GameState {
   };
 }
 
-function maybeLookout(state: GameState, rng: Rng): GameState {
+function maybeLookout(state: GameState, rng: Rng, every: number): GameState {
   const family = state.playerFamily;
-  if (!family || state.turn % 4 !== 0) return state;
+  if (!family || every <= 0 || state.turn % every !== 0) return state;
   const mine = new Set(state.territories.filter((t) => t.owner === family).map((t) => t.id));
   const targets = state.territories.filter(
     (t) => t.owner && t.owner !== family && t.adjacentTerritories.some((id) => mine.has(id)),
@@ -162,24 +187,33 @@ function maybeLookout(state: GameState, rng: Rng): GameState {
   };
 }
 
-function maybeCapture(state: GameState, rng: Rng): GameState {
+function maybeCapture(state: GameState, rng: Rng, mode: "weekly" | "soft", men: number): GameState {
   const family = state.playerFamily;
-  if (!family || dinnerActive(state)) return state;
+  if (!family || dinnerActive(state) || men <= 0) return state;
   const mine = new Set(state.territories.filter((t) => t.owner === family).map((t) => t.id));
   const neighbours = state.territories
     .filter((t) => t.owner && t.owner !== family && t.adjacentTerritories.some((id) => mine.has(id)))
+    .filter((t) => mode === "weekly" || t.garrisonIds.length === 0 || t.rackets.length === 0)
     .filter((t) => captureAllowance(state, family, t).ok)
     .sort((a, b) => a.rackets.length - b.rackets.length);
   const target = neighbours[0];
   if (!target) return state;
-  const crew = eligibleCaptureCrew(state, target.id).slice(0, 3).map((c) => c.id);
+  const crew = eligibleCaptureCrew(state, target.id).slice(0, men).map((c) => c.id);
   if (crew.length === 0) return state;
   return resolveCapture(state, target.id, crew, rng).state;
 }
 
-function maybeHit(state: GameState, rng: Rng): GameState {
+const APPROACHES: HitApproach[] = ["ambush", "drive_by", "car_bomb"];
+
+function idleHands(state: GameState, family: FamilyName): CrewMember[] {
+  return state.crew.filter(
+    (c) => c.family === family && c.status === "active" && c.assignment.type === "idle" && c.role !== "boss",
+  );
+}
+
+function maybeHit(state: GameState, rng: Rng, every: number, rotate: boolean): GameState {
   const family = state.playerFamily;
-  if (!family || handsDown(state) || dinnerActive(state) || state.turn % 6 !== 0) return state;
+  if (!family || handsDown(state) || dinnerActive(state) || every <= 0 || state.turn % every !== 0) return state;
   const report = Object.values(state.intel?.reports ?? {}).find((r) => r && r.territoryId);
   if (!report) return state;
   const block = state.territories.find((t) => t.id === report.territoryId);
@@ -188,10 +222,12 @@ function maybeHit(state: GameState, rng: Rng): GameState {
   const knownId = Object.entries(state.intel?.known ?? {}).find(
     ([, entry]) => entry?.territoryId === block.id,
   )?.[0];
-  const shooter = state.crew.find(
-    (c) => c.family === family && c.status === "active" && c.assignment.type === "idle" && c.role !== "boss",
-  );
+  const hands = idleHands(state, family);
+  const shooter = hands[0];
+  const second = hands[1];
   if (!shooter || !knownId) return state;
+  let approach: HitApproach = rotate ? APPROACHES[Math.floor(state.turn / every) % APPROACHES.length]! : "ambush";
+  if (approach !== "ambush" && !second) approach = "ambush";
   const origin = state.territories.find((t) => t.owner === family)?.id;
   const op = planHit(
     state,
@@ -200,17 +236,24 @@ function maybeHit(state: GameState, rng: Rng): GameState {
       targetTerritoryId: block.id,
       targetFamily: block.owner,
       targetCrewId: knownId,
-      approach: "ambush",
-      shooterIds: [shooter.id],
+      approach,
+      shooterIds: approach === "car_bomb" ? [] : [shooter.id],
+      wheelmanId: approach === "drive_by" ? second!.id : undefined,
+      bombMakerId: approach === "car_bomb" ? shooter.id : undefined,
+      planterId: approach === "car_bomb" ? second!.id : undefined,
       originTerritoryId: origin,
-      blind: !knownId,
+      blind: false,
     },
     rng,
   );
+  const seated = approach === "ambush" ? [shooter.id] : [shooter.id, second!.id];
   return {
     ...state,
     operations: [...state.operations, op],
-    crew: assignCrew(state.crew, shooter.id, { type: "operation", operationId: op.id }),
+    crew: seated.reduce(
+      (crew, id) => assignCrew(crew, id, { type: "operation", operationId: op.id }),
+      state.crew,
+    ),
   };
 }
 
@@ -250,14 +293,15 @@ function maybeNameHeir(state: GameState): GameState {
 }
 
 /** One week of the stand-in boss. Pure: no toasts, no store. */
-export function autoPlayer(state: GameState, rng: Rng): GameState {
+export function autoPlayer(state: GameState, rng: Rng, strategy: SimStrategy = "balanced"): GameState {
   if (!state.playerFamily || state.victory.won || state.victory.lost) return state;
+  const style = STYLES[strategy];
   let next = maybeNameHeir(state);
   next = assignManagers(next);
-  next = maybeBuild(next, rng);
-  next = maybeRecruit(next);
-  next = maybeLookout(next, rng);
-  next = maybeCapture(next, rng);
-  next = maybeHit(next, rng);
+  if (style.build) next = maybeBuild(next, rng);
+  next = maybeRecruit(next, style.recruitCap);
+  if (style.lookoutEvery > 0) next = maybeLookout(next, rng, style.lookoutEvery);
+  if (style.capture !== "never") next = maybeCapture(next, rng, style.capture, style.captureMen);
+  if (style.hitEvery > 0) next = maybeHit(next, rng, style.hitEvery, style.rotateApproach);
   return next;
 }

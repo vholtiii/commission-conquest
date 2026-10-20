@@ -276,7 +276,7 @@ export function scatterFamily(
 /**
  * The week a rival boss dies: a ready underboss takes the chair, else a ready
  * consigliere. Otherwise `needsClock` is set and the caller opens the
- * six-week leaderless period.
+ * five-week leaderless period.
  */
 export function settleRivalChair(
   state: GameState,
@@ -291,7 +291,7 @@ export function settleRivalChair(
     const promoted = promoteToBoss(state, family, heir);
     return { state: promoted.state, logs: promoted.logs, newBossName: promoted.newBossName };
   }
-  // The outfit is leaderless. The caller starts the six-week clock; this
+  // The outfit is leaderless. The caller starts the five-week clock; this
   // module does not import it (that module already imports this one).
   return { state, logs: [], needsClock: true };
 }

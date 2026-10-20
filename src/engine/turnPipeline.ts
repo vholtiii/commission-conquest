@@ -33,6 +33,7 @@ import {
   tickBribes,
   applyWarrantConsequences,
 } from "./heat";
+import { tickConsigliere } from "./consigliere";
 import { drawEvent } from "./events";
 import { advanceRatAffair } from "./ratAffair";
 import { advanceMaking } from "./making";
@@ -522,6 +523,7 @@ export function endTurn(state: GameState, rng?: Rng): GameState {
   const heatTurn = processHeatTurn(current);
   current.heat = heatTurn.heat;
   logs.push(...heatTurn.logs);
+  const judgedHeat = heatTurn.heat.level;
 
   if (heatTurn.incomePenalty > 0 && current.playerFamily) {
     const penalty = Math.floor(current.lastNetIncome * heatTurn.incomePenalty);
@@ -556,6 +558,13 @@ export function endTurn(state: GameState, rng?: Rng): GameState {
   }
 
   current.bribes = tickBribes(current.bribes);
+
+  // The note is judged on the quiet week, then the next one is named from
+  // the bribes that are still running.
+  const advised = tickConsigliere(current, judgedHeat);
+  current = advised.state;
+  logs.push(...advised.logs);
+
   current = applyWarrantConsequences(current);
 
   const ratWeek = advanceRatAffair(current, random);

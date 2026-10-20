@@ -1,5 +1,5 @@
 import { useMemo, useRef } from "react";
-import { useFrame, useThree } from "@react-three/fiber";
+import { useFrame, useThree, type ThreeEvent } from "@react-three/fiber";
 import * as THREE from "three";
 import type { Mesh } from "three";
 import type { CityLayout } from "@/engine/cityLayout";
@@ -56,7 +56,9 @@ function DistrictShape({ territory, shape }: { territory: Territory; shape: Dist
   const baseColor = territory.owner ? FAMILY_HEX[territory.owner] : MAP_STATUS.neutral;
   const hatch = useMemo(() => (openLot ? getDistrictHatch() : null), [openLot]);
 
-  const pick = (e: { stopPropagation: () => void }) => {
+  const pick = (e: ThreeEvent<MouseEvent>) => {
+    // A drag is navigation. Only a left click that barely moved selects.
+    if (e.button !== 0 || e.delta > 6) return;
     e.stopPropagation();
     selectTerritory(territory.id);
   };
@@ -78,7 +80,7 @@ function DistrictShape({ territory, shape }: { territory: Territory; shape: Dist
 
   return (
     <group>
-      <mesh geometry={shape.fill} position={[0, 0.03, 0]} onPointerDown={pick}>
+      <mesh geometry={shape.fill} position={[0, 0.03, 0]} onClick={pick}>
         <meshBasicMaterial
           color={baseColor}
           transparent
@@ -88,7 +90,7 @@ function DistrictShape({ territory, shape }: { territory: Territory; shape: Dist
         />
       </mesh>
 
-      <mesh geometry={shape.border} position={[0, 0.04, 0]} onPointerDown={pick}>
+      <mesh geometry={shape.border} position={[0, 0.04, 0]}>
         <meshBasicMaterial
           color={baseColor}
           transparent
@@ -99,7 +101,7 @@ function DistrictShape({ territory, shape }: { territory: Territory; shape: Dist
       </mesh>
 
       {hatch && (
-        <mesh geometry={shape.fill} position={[0, 0.035, 0]} onPointerDown={pick}>
+        <mesh geometry={shape.fill} position={[0, 0.035, 0]}>
           <meshBasicMaterial
             map={hatch}
             color="#dfe4ea"
@@ -112,7 +114,7 @@ function DistrictShape({ territory, shape }: { territory: Territory; shape: Dist
       )}
 
       {isSelected && (
-        <mesh ref={pulseRef} geometry={shape.border} position={[0, 0.05, 0]} onPointerDown={pick}>
+        <mesh ref={pulseRef} geometry={shape.border} position={[0, 0.05, 0]}>
           <meshBasicMaterial
             color={unclaimed ? "#c5cad3" : "#ffffff"}
             transparent
@@ -124,7 +126,7 @@ function DistrictShape({ territory, shape }: { territory: Territory; shape: Dist
       )}
 
       {isVendetta && (
-        <mesh ref={flashRef} geometry={shape.border} position={[0, 0.055, 0]} onPointerDown={pick}>
+        <mesh ref={flashRef} geometry={shape.border} position={[0, 0.055, 0]}>
           <meshBasicMaterial
             color={MAP_STATUS.vendetta}
             transparent

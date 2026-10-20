@@ -266,20 +266,26 @@ export function hasActiveIntel(state: VisibilityState, territoryId: string): boo
   return present.some((c) => {
     if (c.family === state.playerFamily) return false;
     const k = intel.known[c.id];
-    return !!k && k.territoryId === territoryId;
+    // A car seen passing is not a look at the block.
+    return !!k && k.territoryId === territoryId && k.source !== "sighting";
   });
 }
 
-/** True when any present rival was spotted by surveillance within maxAge turns. */
+/**
+ * True when a present rival was spotted by surveillance within maxAge turns.
+ * With `crewId`, only that man counts.
+ */
 export function hasFreshCasing(
   state: VisibilityState,
   territoryId: string,
   maxAge = 2,
+  crewId?: string,
 ): boolean {
   const intel = state.intel ?? emptyIntel();
   const present = crewPresentIn(state as LocationState, territoryId);
   return present.some((c) => {
     if (c.family === state.playerFamily) return false;
+    if (crewId && c.id !== crewId) return false;
     const k = intel.known[c.id];
     if (!k || k.territoryId !== territoryId) return false;
     if (k.source !== "surveillance") return false;

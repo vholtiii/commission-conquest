@@ -218,6 +218,7 @@ export default function HitPlanner() {
   ]);
 
   const oddsBreakdown = draftOp ? calculateHitOddsBreakdown(state, draftOp) : null;
+  const cased = territory ? hasFreshCasing(state, territory.id) : false;
   const defenders = draftOp ? defendersFor(state, draftOp) : 0;
   const atRisk = draftOp ? exposedCrewIds(draftOp).length : 0;
   const firefightEst = draftOp ? estimateFirefightRisk(state, draftOp) : 0;
@@ -346,24 +347,12 @@ export default function HitPlanner() {
           <p className="mb-1.5 text-[10px] text-muted-foreground">
             Case the district, bribe cops, or strike blind. Only known faces appear below.
           </p>
-          {territory &&
-            hasFreshCasing(
-              {
-                crew,
-                territories,
-                routes: state.routes,
-                operations: state.operations,
-                playerFamily,
-                intel: state.intel,
-                turn: state.turn,
-              },
-              territory.id,
-            ) && (
-              <div className="mb-1.5 rounded border border-sky-500/30 bg-sky-950/30 px-2 py-1 text-[10px] text-sky-200">
-                Cased T{state.intel?.reports?.[territory.id]?.turn ?? state.turn} — intel bonus
-                active (+6% odds, lower tip-off)
-              </div>
-            )}
+          {cased && (
+            <div className="mb-1.5 rounded border border-sky-500/30 bg-sky-950/30 px-2 py-1 text-[10px] text-sky-200">
+              Cased T{state.intel?.reports?.[territory.id]?.turn ?? state.turn}. A man your lookout
+              saw is +6% odds with a lower tip-off.
+            </div>
+          )}
           <div className="space-y-1">
             {rivalTargets.length === 0 && (
               <p className="text-xs text-muted-foreground">
@@ -608,7 +597,7 @@ export default function HitPlanner() {
           )}
           <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 border-t border-panel-border/50 pt-1.5 text-[10px] text-muted-foreground">
             <span>
-              Defenders: <span className="text-foreground">{defenders}</span>
+              Defenders: <span className="text-foreground">{cased ? defenders : "unknown"}</span>
             </span>
             <span>
               Crew at risk: <span className="text-foreground">{atRisk}</span>
@@ -616,7 +605,12 @@ export default function HitPlanner() {
                 <span className="text-heat"> (~{Math.round(firefightEst * 100)}% fire)</span>
               )}
             </span>
-            {cover && cover.men > 0 && (
+            {cover && cover.men > 0 && !cased && (
+              <span className="col-span-2 text-heat">
+                There's a {draftOp?.targetFamily} safehouse nearby. Case the block to know who's in it.
+              </span>
+            )}
+            {cover && cover.men > 0 && cased && (
               <span className="col-span-2 text-heat">
                 {cover.men} {cover.men === 1 ? "man" : "men"} in the {cover.from[0]!.territory.name} safehouse
                 {cover.from[0]!.hops === 0 ? "" : " next door"} (Lv {cover.from[0]!.level}) will return fire

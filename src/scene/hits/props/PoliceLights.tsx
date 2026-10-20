@@ -1,7 +1,8 @@
 import { useRef } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
-import { SedanFleet, type SedanSpec } from "@/scene/Sedan";
+import { type SedanSpec } from "@/scene/Sedan";
+import { ReelSedan } from "@/scene/ReelSedan";
 
 interface LightsProps {
   active: boolean;
@@ -44,7 +45,7 @@ export function PaddyWagon({ active, x, z, rot }: WagonProps) {
   const car: SedanSpec = { x, z, rot, color: "#14233f", accent: "#8a1a1a", lamps: true, scale: 1.05 };
   return (
     <group>
-      <SedanFleet cars={[car]} />
+      <ReelSedan cars={[car]} />
       <PoliceLights active at={[x, 0.4, z]} />
     </group>
   );

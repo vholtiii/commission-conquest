@@ -1,13 +1,15 @@
+import { useMemo, useRef } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
 import { FAMILY_HEX, type FamilyName } from "@/types/game";
-import { SedanFleet, type SedanSpec } from "@/scene/Sedan";
+import { type SedanSpec } from "@/scene/Sedan";
+import { ReelSedan } from "@/scene/ReelSedan";
 import Goon from "./props/Goon";
 import MuzzleFlash from "./props/MuzzleFlash";
 import GlassShards from "./props/GlassShards";
 import Smoke from "./props/Smoke";
 import { PaddyWagon, PoliceLights } from "./props/PoliceLights";
-import { coverageShot, handheld, moveCam, reelSide, type Coverage } from "./cameraRig";
+import { bodyThenPull, coverageShot, facingOf, handheld, moveCam, reelSide, type Coverage } from "./cameraRig";
 import Headlamps from "./props/Headlamps";
 import Blood from "./props/Blood";
 import Bystanders from "./props/Bystanders";
@@ -17,8 +19,21 @@ function paint(family: FamilyName): string {
   return FAMILY_HEX[family] ?? "#1c1c1e";
 }
 
+/** Where along the route the sedan is. Rolls in, brakes at the storefront, pulls away. */
+function travelAt(phase: string, local: number, stalled: boolean): number {
+  const travel =
+    phase === "roll" ? local * 0.72 : phase === "pass" ? 0.72 + 0.2 * (1 - (1 - local) * (1 - local)) : 0.92;
+  const escape = phase === "getaway" && !stalled ? local * local * 0.08 : 0;
+  return Math.min(0.999, travel + escape);
+}
+
+/** Yaw for a sedan (nose +X) travelling along `tangent`. */
+function headingOf(tangent: THREE.Vector3): number {
+  return Math.atan2(-tangent.z, tangent.x);
+}
+
 /** Sedan rolls the route, slows at the storefront, and sprays — or stalls. */
-export default function DriveByCinematic({ cinematic, site, phase, local, shake }: SceneProps) {
+export default function DriveByCinematic({ cinematic, site, phase, clock, shake }: SceneProps) {
   const { camera } = useThree();
   const controls = useThree((s) => s.controls as unknown as { target: THREE.Vector3; update: () => void } | null);
   const c = cinematic.result.complication;
@@ -29,43 +44,24 @@ export default function DriveByCinematic({ cinematic, site, phase, local, shake 
   const witnessed = cinematic.perspective === "witnessed";
   const returnFire =
     !witnessed && cinematic.result.defenders > 0 && (phase === "spray" || phase === "getaway");
+  const stalls = c === "stall" || police;
 
-  const travel =
-    phase === "roll" ? local * 0.72 : phase === "pass" ? 0.72 + local * 0.18 : phase === "spray" ? 0.92 : 0.92;
-  const escape = phase === "getaway" && c !== "stall" && !police ? local * 0.08 : 0;
-  const t = Math.min(0.999, travel + escape);
-  const pos = site.curve.getPointAt(t);
-  const tangent = site.curve.getTangentAt(t);
-  const rot = Math.atan2(tangent.x, tangent.z);
+  const rig = useRef<THREE.Group>(null);
+  const tmp = useMemo(() => ({ pos: new THREE.Vector3(), tan: new THREE.Vector3(), focus: new THREE.Vector3() }), []);
 
-  const stalled = (c === "stall" || police) && phase === "getaway";
-  const cars: SedanSpec[] = [
-    {
-      x: pos.x,
-      z: pos.z,
-      rot,
-      color: paint(cinematic.attackerFamily),
-      lamps: true,
-    },
-  ];
-  if (c === "blocked_lane" && (phase === "pass" || phase === "spray" || phase === "getaway")) {
-    cars.push({
-      x: site.road.x + 1.6,
-      z: site.road.z + 1.2,
-      rot: rot + Math.PI / 2,
-      color: "#d6c9a8",
-      lamps: false,
-    });
-  }
+  // Where the car sits while the guns are out. Fixed, so the flashes line up.
+  const spray = useMemo(() => {
+    const pos = site.approach.getPointAt(0.92);
+    const rot = headingOf(site.approach.getTangentAt(0.92));
+    return { pos, rot };
+  }, [site]);
+
+  const stalled = stalls && phase === "getaway";
+  const cars: SedanSpec[] = [{ x: 0, z: 0, rot: 0, color: paint(cinematic.attackerFamily), lamps: true }];
   if (c === "escort" && !witnessed && phase !== "roll") {
-    cars.push({
-      x: pos.x - tangent.z * 1.3,
-      z: pos.z + tangent.x * 1.3,
-      rot,
-      color: "#3f1a1e",
-      lamps: true,
-    });
+    cars.push({ x: 0, z: 1.3, rot: 0, color: "#3f1a1e", lamps: true });
   }
+  const blockedLane = c === "blocked_lane" && (phase === "pass" || phase === "spray" || phase === "getaway");
 
   const markDown = killed && (phase === "spray" || phase === "getaway");
   const markSpot: [number, number, number] = [
@@ -73,31 +69,62 @@ export default function DriveByCinematic({ cinematic, site, phase, local, shake 
     0,
     site.building.z + Math.cos(site.facing) * 1.2,
   ];
-  const muzzle: [number, number, number] = [pos.x, 0.7, pos.z];
+  const muzzle: [number, number, number] = [spray.pos.x, 0.7, spray.pos.z];
 
-  useFrame(() => {
-    const coverage: Coverage =
-      phase === "roll" ? "wide" : phase === "pass" ? "medium" : phase === "spray" ? "close" : "pull";
-    const focus = phase === "spray" ? new THREE.Vector3(markSpot[0], 0, markSpot[2]) : phase === "pass" ? site.building.clone() : pos.clone();
-    const shot = coverageShot(focus, phase === "spray" ? site.facing : rot, coverage, {
-      drift: local,
-      side: reelSide(cinematic.operationId),
-    });
-    moveCam(camera, controls, shot.pos, shot.look, phase === "spray" ? 0.5 : 0.12);
-    if (phase === "pass") handheld(camera, 0.01);
-    if (phase === "spray") shake.current = Math.max(shake.current, 0.08);
+  useFrame((_, dt) => {
+    const { phase: ph, local: lc, progress } = clock.current;
+    const t = travelAt(ph, lc, stalls);
+    site.approach.getPointAt(t, tmp.pos);
+    site.approach.getTangentAt(t, tmp.tan);
+    const rot = headingOf(tmp.tan);
+    if (rig.current) {
+      rig.current.position.set(tmp.pos.x, 0, tmp.pos.z);
+      rig.current.rotation.y = rot;
+    }
+
+    const side = reelSide(cinematic.operationId);
+    const shotOpts = { drift: progress, side };
+    let shot;
+    if (ph === "getaway" && killed) {
+      tmp.focus.set(markSpot[0], 0, markSpot[2]);
+      shot = bodyThenPull(tmp.focus, site.facing, lc, shotOpts);
+    } else {
+      const coverage: Coverage =
+        ph === "roll" ? "wide" : ph === "pass" ? "medium" : ph === "spray" ? "close" : "pull";
+      if (ph === "spray") tmp.focus.set(markSpot[0], 0, markSpot[2]);
+      else if (ph === "pass") tmp.focus.copy(site.building);
+      else tmp.focus.copy(tmp.pos);
+      // The sedan's own yaw is a quarter turn off this rig. Trail it from behind.
+      const trailing = ph === "roll" || ph === "pass" || ph === "getaway";
+      const facing = trailing ? facingOf(tmp.tan) + Math.PI : site.facing;
+      shot = coverageShot(tmp.focus, facing, coverage, shotOpts);
+    }
+    const carMoving = ph === "roll" || ph === "pass" || (ph === "getaway" && !stalls);
+    moveCam(camera, controls, shot.pos, shot.look, ph === "spray" ? 0.5 : carMoving ? 0.3 : 0.12, dt);
+    if (ph === "pass") handheld(camera, 0.01);
+    if (ph === "spray") shake.current = Math.max(shake.current, 0.08);
   });
 
   return (
     <group>
-      <SedanFleet cars={cars} />
-      <Headlamps cars={cars.filter((car) => car.lamps).map((car) => ({ x: car.x, z: car.z, rot: car.rot, y: car.y }))} />
+      <group ref={rig} position={[spray.pos.x, 0, spray.pos.z]} rotation={[0, spray.rot, 0]}>
+        <ReelSedan cars={cars} />
+        <Headlamps cars={cars.map((car) => ({ x: car.x, z: car.z, rot: car.rot }))} />
+        <Smoke active={returnFire && phase === "getaway"} at={[0, 0.4, 0]} loop />
+        <Smoke active={phase === "getaway" && !stalled} at={[-0.9, 0.15, 0]} loop size={0.65} />
+        <PoliceLights active={stalled} at={[0, 0.5, 0]} />
+      </group>
+      {blockedLane && (
+        <ReelSedan
+          cars={[{ x: site.road.x + 1.6, z: site.road.z + 1.2, rot: spray.rot + Math.PI / 2, color: "#d6c9a8", lamps: false }]}
+        />
+      )}
       <Bystanders
         at={[site.road.x, 0, site.road.z]}
         facing={site.facing}
         flee={phase === "spray" || phase === "getaway"}
       />
-      <Blood active={markDown} at={markSpot} />
+      <Blood active={markDown} at={markSpot} facing={site.facing} />
       <Goon
         position={markSpot}
         rot={site.facing}
@@ -116,15 +143,12 @@ export default function DriveByCinematic({ cinematic, site, phase, local, shake 
         <MuzzleFlash active={phase === "spray" || phase === "getaway"} from={markSpot} to={muzzle} shots={4} />
       )}
       <GlassShards active={phase === "spray"} at={[site.building.x, 0, site.building.z]} />
-      <Smoke active={returnFire && phase === "getaway"} at={[pos.x, 0.4, pos.z]} loop />
-      <Smoke
-        active={phase === "getaway" && !stalled}
-        at={[pos.x - tangent.x * 0.9, 0.15, pos.z - tangent.z * 0.9]}
-        loop
-        size={0.65}
+      <PaddyWagon
+        active={police && phase === "getaway"}
+        x={site.road.x + 2}
+        z={site.road.z - 1.5}
+        rot={spray.rot + Math.PI / 2}
       />
-      <PoliceLights active={stalled} at={[pos.x, 0.5, pos.z]} />
-      <PaddyWagon active={police && phase === "getaway"} x={site.road.x + 2} z={site.road.z - 1.5} rot={rot + Math.PI / 2} />
     </group>
   );
 }

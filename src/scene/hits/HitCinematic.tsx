@@ -32,6 +32,7 @@ import DriveByCinematic from "./DriveByCinematic";
 import AmbushCinematic from "./AmbushCinematic";
 import SitdownBetrayalCinematic from "./SitdownBetrayalCinematic";
 import SummonsCinematic from "./SummonsCinematic";
+import type { ReelClock } from "./sceneProps";
 
 interface Props {
   layout: CityLayout;
@@ -126,6 +127,7 @@ export default function HitCinematic({ layout, controlsRef }: Props) {
   const finishedRef = useRef(false);
   const lastCue = useRef<string>("");
   const shake = useRef(0);
+  const reelClock = useRef<ReelClock>({ phase: "", local: 0, progress: 0 });
   const [live, setLive] = useState<{ phase: PhaseDef; local: number } | null>(null);
 
   useEffect(() => {
@@ -133,6 +135,7 @@ export default function HitCinematic({ layout, controlsRef }: Props) {
     finishedRef.current = false;
     lastCue.current = "";
     shake.current = 0;
+    reelClock.current = { phase: phases[0]?.name ?? "", local: 0, progress: 0 };
     useReelHold.getState().setHeld(false);
     setLive(phases[0] ? { phase: phases[0], local: 0 } : null);
     setSfxVolume(sfxVolume);
@@ -188,6 +191,9 @@ export default function HitCinematic({ layout, controlsRef }: Props) {
     const elapsed = clock.getElapsedTime() - startTime.current;
     const total = totalDuration(phases);
     const at = phaseAt(phases, elapsed);
+    reelClock.current.phase = at.phase.name;
+    reelClock.current.local = at.local;
+    reelClock.current.progress = total > 0 ? Math.min(1, elapsed / total) : 1;
     if (lastCue.current !== at.phase.name) {
       const first = lastCue.current === "";
       lastCue.current = at.phase.name;
@@ -212,8 +218,8 @@ export default function HitCinematic({ layout, controlsRef }: Props) {
   });
 
   const { camera } = useThree();
-  useFrame(() => {
-    applyShake(camera, shake);
+  useFrame((_, dt) => {
+    applyShake(camera, shake, dt);
   });
 
   if (!current || !site || !live) return null;
@@ -226,7 +232,7 @@ export default function HitCinematic({ layout, controlsRef }: Props) {
         facing={site.facing}
         amount={reelRain(month, current.result.complication)}
       />
-      <Scene cinematic={current} site={site} phase={live.phase.name} local={live.local} shake={shake} />
+      <Scene cinematic={current} site={site} phase={live.phase.name} local={live.local} clock={reelClock} shake={shake} />
     </group>
   );
 }

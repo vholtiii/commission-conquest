@@ -56,9 +56,12 @@ export default function CityScene() {
         dpr={low ? 1 : [1, 1.75]}
         camera={{ position: [0, 34, 30], fov: 42, near: 0.1, far: 300 }}
         onPointerMissed={(e) => {
-          // Only a plain left click on empty ground deselects; a right/middle
-          // drag that ends on nothing is the player orbiting the camera.
-          if (e.button !== 0) return;
+          // A pan that ends on water must keep the selection. Only a left
+          // click that barely moved clears it. R3F already skips this when
+          // the pointer moved more than a couple of pixels; delta is on the
+          // event when the pointer system measured one.
+          const delta = (e as MouseEvent & { delta?: number }).delta ?? 0;
+          if (e.button !== 0 || delta > 6) return;
           if (!cinematicPlaying) selectTerritory(null);
         }}
         style={{ width: "100%", height: "100%", display: "block" }}

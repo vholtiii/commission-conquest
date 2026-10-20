@@ -416,6 +416,8 @@ export interface Operation {
   resolved: boolean;
   /** Turn the job resolved (exclusive of still-armed bombs). */
   resolvedTurn?: number;
+  /** Turn the job was ordered. */
+  plannedTurn?: number;
   /** Why the attacker ordered this (recorded at plan time; copied onto the Incident). */
   motive?: Motive;
   /** Player hit declared as the answer to an open case; judged justified / wrong target on resolve. */
@@ -866,6 +868,26 @@ export interface RatAffair {
 }
 
 /** One associate sitting the week out before the books open. */
+export type ConsigliereKind = "chair" | "heat" | "books" | "bleeding" | "road" | "absent";
+
+/** One job the consigliere names for the week. Finishing it pays respect. */
+export interface ConsigliereNote {
+  id: string;
+  kind: ConsigliereKind;
+  /** The turn the player has to answer it. */
+  issuedTurn: number;
+  line: string;
+  /** The man the job is about. */
+  crewId?: string;
+  /** The rival the job is about. */
+  family?: FamilyName;
+  /** Heat line to stay under, or to drop back under. */
+  heatLine?: number;
+  heatAim?: "stay" | "drop";
+  /** Where Show me opens. Absent on the week the seat is empty. */
+  show?: "crew" | "corruption" | "commission";
+}
+
 export interface MakingCeremony {
   crewId: string;
   /** The turn the skill card is dealt. */
@@ -1415,6 +1437,10 @@ export interface GameState {
   }[];
   /** The first-weeks card was closed. Older saves leave this unset, so the card can still appear. */
   onboardingDismissed?: boolean;
+  /** The consigliere's job for this week. Empty when he has nothing, or no one holds the seat. */
+  consigliereNote?: ConsigliereNote | null;
+  /** When a job may be named again. A missed target rests longer than a finished kind. */
+  consigliereRest?: Record<string, number>;
   relations: RelationsMatrix;
   /** Sit-downs, tribute, and non-aggression pacts. */
   diplomacy: DiplomacyState;

@@ -12,13 +12,20 @@ import { placementBonus } from "../districtFeatures";
 import { playerLeaderless } from "../interregnum";
 import { racketIncome } from "../economy";
 import { valueScore } from "../territoryValue";
-import { autoPlayer } from "./autoPlayer";
+import { autoPlayer, type SimStrategy } from "./autoPlayer";
+
+export interface WeekSnapshot {
+  turn: number;
+  wealth: Record<string, number>;
+  districts: Record<string, number>;
+}
 
 export interface SimRequest {
   seed: number;
   family: FamilyName;
   difficulty: GameSettings["difficulty"];
   gameLength: GameLength;
+  strategy?: SimStrategy;
 }
 
 export interface SimResult {
@@ -26,6 +33,7 @@ export interface SimResult {
   family: FamilyName;
   difficulty: GameSettings["difficulty"];
   gameLength: GameLength;
+  strategy?: SimStrategy;
   outcome: "won" | "lost" | "unfinished";
   reason?: string;
   turn: number;
@@ -52,6 +60,18 @@ export interface SimResult {
   placeBase: number;
   placeExtra: number;
   openingSpread: number;
+  /** Rival reels aimed at the player, summed across the game. */
+  hitsTaken: number;
+  districtsLost: number;
+  districtsGained: number;
+  peakClean: number;
+  peakDirty: number;
+  /** Weeks the player's heat sat at 100. */
+  heatCapWeeks: number;
+  peakHeat: number;
+  /** Longest run of weeks where nobody could order a hit. */
+  longestQuiet: number;
+  timeline: WeekSnapshot[];
 }
 
 function finite(n: unknown): boolean {
@@ -126,6 +146,28 @@ export function simulateGame(request: SimRequest): SimResult {
   let heatSamples = 0;
   let placeBase = 0;
   let placeExtra = 0;
+  let hitsTaken = 0;
+  let districtsLost = 0;
+  let districtsGained = 0;
+  let peakClean = state.money;
+  let peakDirty = state.dirtyMoney;
+  let heatCapWeeks = 0;
+  let peakHeat = state.heat.level;
+  let longestQuiet = 0;
+  let quietRun = 0;
+  const timeline: WeekSnapshot[] = [];
+  const ownedBy = (s: GameState) =>
+    new Set(s.territories.filter((t) => t.owner === s.playerFamily).map((t) => t.id));
+  const snap = (s: GameState): WeekSnapshot => {
+    const wealth: Record<string, number> = {};
+    const districts: Record<string, number> = {};
+    for (const name of ALL_FAMILY_NAMES) {
+      wealth[name] = familyWealth(s, name);
+      districts[name] = s.territories.filter((t) => t.owner === name).length;
+    }
+    return { turn: s.turn, wealth, districts };
+  };
+  timeline.push(snap(state));
   let wasLeaderless = false;
   const seenRegency = new Set<string>();
   let openRivalClock: string | null = null;
@@ -139,11 +181,27 @@ export function simulateGame(request: SimRequest): SimResult {
 
   try {
     while (!state.victory.won && !state.victory.lost && state.turn <= limit) {
-      state = autoPlayer(state, rng);
+      const held = ownedBy(state);
+      state = autoPlayer(state, rng, request.strategy ?? "balanced");
       const before = state.turnLog.length;
       const started = performance.now();
       state = endTurn(state, rng);
       slowest = Math.max(slowest, performance.now() - started);
+      hitsTaken += state.incomingHitReel?.length ?? 0;
+      const heldAfter = ownedBy(state);
+      for (const id of held) if (!heldAfter.has(id)) districtsLost++;
+      for (const id of heldAfter) if (!held.has(id)) districtsGained++;
+      peakClean = Math.max(peakClean, state.money);
+      peakDirty = Math.max(peakDirty, state.dirtyMoney);
+      if (state.heat.level >= 100) heatCapWeeks++;
+      peakHeat = Math.max(peakHeat, state.heat.level);
+      if (handsDown(state)) {
+        quietRun++;
+        longestQuiet = Math.max(longestQuiet, quietRun);
+      } else {
+        quietRun = 0;
+      }
+      if (state.turn % 5 === 0) timeline.push(snap(state));
       checkNumbers(state, problems);
       const leaderlessNow = playerLeaderless(state);
       if (leaderlessNow && !wasLeaderless) playerRegencies++;
@@ -200,6 +258,8 @@ export function simulateGame(request: SimRequest): SimResult {
     problems.push(error instanceof Error ? error.message : String(error));
   }
 
+  if (timeline[timeline.length - 1]?.turn !== state.turn) timeline.push(snap(state));
+
   if (!state.victory.won && !state.victory.lost) problems.push(`unfinished at turn ${state.turn}`);
   if (slowest >= 250) problems.push(`slowest endTurn ${slowest.toFixed(1)}ms`);
   roundTrip(state, problems);
@@ -241,6 +301,15 @@ export function simulateGame(request: SimRequest): SimResult {
     placeBase,
     placeExtra,
     openingSpread,
+    hitsTaken,
+    districtsLost,
+    districtsGained,
+    peakClean,
+    peakDirty,
+    heatCapWeeks,
+    peakHeat,
+    longestQuiet,
+    timeline,
   };
 }
 

@@ -11,19 +11,11 @@ Both packs are released by Kenney (www.kenney.nl) under the CC0 1.0
 Universal license (public domain — no attribution required, though credit
 is appreciated): https://creativecommons.org/publicdomain/zero/1.0/
 
-These models are OPTIONAL. Commission Conquest's city scene
-(`src/scene/KenneyProps.tsx`) tries to load GLB files from this folder
-(e.g. `car-sedan.glb`) via `useGLTF`. If the files are not present, the
-scene automatically falls back to simple procedural boxes for cars and
-lamp posts, so the game runs fine without downloading anything.
+Shipped from Kenney's Car Kit (CC0 1.0), pack line current as of the 3.1 notes
+on kenney.nl. The sedan faces +Z in the file and is about 2.55 long.
 
-To add real Kenney props:
-  1. Download the "City Kit (Commercial)" and/or "Car Kit" packs from
-     kenney.nl.
-  2. Convert/export the desired models to `.glb` format.
-  3. Drop them in this folder, e.g.:
-       public/models/kenney/car-sedan.glb
-       public/models/kenney/lamp-post.glb
-       public/models/kenney/building-*.glb
-  4. Update the paths referenced in `src/scene/KenneyProps.tsx` if you use
-     different filenames.
+  car-sedan.glb
+  Textures/colormap.png   referenced by the GLB as Textures/colormap.png
+
+Cinematic cars load these. The open-map street fleet stays procedural.
+Other Kenney kits can be dropped in this folder the same way.

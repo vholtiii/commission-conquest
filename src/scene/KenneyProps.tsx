@@ -1,5 +1,5 @@
-import { Component, Suspense, useMemo, type ReactNode } from "react";
-import { Instance, Instances, useGLTF } from "@react-three/drei";
+import { useMemo } from "react";
+import { Instance, Instances } from "@react-three/drei";
 import type { CityLayout } from "@/engine/cityLayout";
 import { hash2 } from "./sceneTheme";
 import { SEDAN_PALETTE, SedanFleet, type SedanSpec } from "./Sedan";
@@ -8,21 +8,7 @@ interface Props {
   layout: CityLayout;
 }
 
-/** Catches useGLTF load failures (missing Kenney assets) and renders the procedural fallback instead. */
-class ModelErrorBoundary extends Component<{ fallback: ReactNode; children: ReactNode }, { hasError: boolean }> {
-  state = { hasError: false };
-  static getDerivedStateFromError() {
-    return { hasError: true };
-  }
-  componentDidCatch() {
-    // Kenney model pack not present — procedural fallback handles visuals.
-  }
-  render() {
-    return this.state.hasError ? this.props.fallback : this.props.children;
-  }
-}
-
-/** Procedural parked sedans + lamp posts, used whenever Kenney GLBs are unavailable. */
+/** Procedural parked sedans + lamp posts. Cinematic cars load the Kenney sedan separately. */
 function ProceduralProps({ layout }: Props) {
   const { cars, lamps } = useMemo(() => {
     const roadBlocks = layout.blocks.filter((b) => b.kind === "road");
@@ -74,30 +60,8 @@ function ProceduralProps({ layout }: Props) {
   );
 }
 
-/** Attempts to load Kenney City/Car Kit GLBs; throws if missing so the ErrorBoundary can fall back. */
-function GltfProps({ layout }: Props) {
-  const { scene: carScene } = useGLTF("/models/kenney/car-sedan.glb") as unknown as { scene: import("three").Group };
-
-  const cars = useMemo(() => {
-    const roadBlocks = layout.blocks.filter((b) => b.kind === "road");
-    return roadBlocks.filter((_, i) => i % 6 === 0);
-  }, [layout]);
-
-  return (
-    <group>
-      {cars.map((b, i) => (
-        <primitive key={i} object={carScene.clone()} position={[b.worldX, 0, b.worldZ]} scale={0.5} />
-      ))}
-    </group>
-  );
-}
-
 export default function KenneyProps({ layout }: Props) {
-  return (
-    <ModelErrorBoundary fallback={<ProceduralProps layout={layout} />}>
-      <Suspense fallback={null}>
-        <GltfProps layout={layout} />
-      </Suspense>
-    </ModelErrorBoundary>
-  );
+  // The Kenney sedan is for the cinematic handful of cars. Street dressing stays
+  // instanced so a full map does not become one draw call per parked car.
+  return <ProceduralProps layout={layout} />;
 }

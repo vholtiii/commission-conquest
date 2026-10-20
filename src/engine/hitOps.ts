@@ -28,7 +28,7 @@ import { safehouseCapacity } from "./safehouse";
 import { isLegitBusiness } from "./economy";
 import { emptyIntel, hasFreshCasing, recordIntel, revealDistrict } from "./intel";
 import { coverFire, getawayCover, isLaidLow, laidLowHouse, safehouseHitPenalty } from "./safehouse";
-import { buildLookoutReport, runCasing, rungToOutcome, type CasingResult } from "./lookout";
+import { buildLookoutReport, effectiveLookout, runCasing, rungToOutcome, type CasingResult } from "./lookout";
 import { applySuccession } from "./succession";
 import { territoryHops } from "./territoryHops";
 import { isDefunct, scatterFamily, settleRivalChair } from "./defection";
@@ -318,6 +318,7 @@ export function calculateHitOddsBreakdown(
 
   if (op.surveilled) other += 0.12;
   if (op.blind) intel -= 0.12;
+  if (freshOnMark(state, op)) intel += FRESH_CASING_ODDS;
 
   // Casing clues. The routine is the main payoff, and it only pays if you match it.
   // Does not stack with Surveil-first (the hit team cased it themselves).
@@ -447,6 +448,18 @@ export function estimateFirefightRisk(state: GameState, op: Operation): number {
   return Math.min(0.4, raw * mult);
 }
 
+export const FRESH_CASING_ODDS = 0.06;
+export const FRESH_CASING_TIP = 0.03;
+
+/**
+ * A standalone lookout put eyes on this mark in the last two weeks. Player
+ * jobs only (casing intel is the player's), and never on top of Surveil-first.
+ */
+export function freshOnMark(state: GameState, op: Operation): boolean {
+  if (op.family !== state.playerFamily || op.surveilled || !op.targetCrewId) return false;
+  return hasFreshCasing(state, op.targetTerritoryId, 2, op.targetCrewId);
+}
+
 /** Player casing is intel; a rival's is a surveillance job on that block. */
 function venueCasedBy(state: GameState, family: FamilyName, territoryId: string): boolean {
   if (family === state.playerFamily) return hasFreshCasing(state, territoryId);
@@ -477,6 +490,7 @@ export function tipOffChance(state: GameState, op: Operation): number {
 
   if (approach === "car_bomb" || approach === "sitdown_betrayal") chance *= 0.7;
   if (op.blind) chance *= 0.6;
+  if (freshOnMark(state, op)) chance -= FRESH_CASING_TIP;
   // A meeting this turn: extra eyes (entourage) and a cased venue both smell a setup.
   if (approach === "sitdown_betrayal" || approach === "car_bomb") {
     const meeting = (state.sitdowns ?? []).find(
@@ -684,6 +698,7 @@ export function planHit(
     blind: !!params.blind,
     pendingTurns: params.pendingTurns ?? 1,
     resolved: false,
+    plannedTurn: state.turn,
   };
 }
 
@@ -1679,6 +1694,29 @@ export function resolvePendingOperations(
       }
       continue;
     }
+    const block = current.territories.find((t) => t.id === op.targetTerritoryId);
+    const changedHands = block?.owner !== op.targetFamily;
+    if (changedHands || !effectiveLookout(current, op)) {
+      if (op.lookoutId) current = releaseCrewHome(current, [op.lookoutId], op.id);
+      current = {
+        ...current,
+        operations: current.operations.map((o) =>
+          o.id === op.id ? { ...o, resolved: true, pendingTurns: 0, resolvedTurn: current.turn } : o,
+        ),
+      };
+      if (op.family === current.playerFamily) {
+        tipLogs.push({
+          id: `surv_off_${op.id}_${current.turn}`,
+          turn: current.turn,
+          category: "hit",
+          text: changedHands
+            ? `The casing on ${block?.name ?? "the block"} is off. It isn't ${op.targetFamily} ground anymore.`
+            : `The casing on ${block?.name ?? "the block"} is off. Nobody was out there to look.`,
+          family: op.family,
+        });
+      }
+      continue;
+    }
     const stateBefore = current;
     const casing = runCasing(current, op, rng);
     current = casing.state;
@@ -1726,14 +1764,10 @@ export function resolvePendingOperations(
     .map((o) => {
       if (o.resolved || o.pendingTurns <= 0) return o;
       const nextTurns = o.pendingTurns - 1;
-      const becameReady = nextTurns === 0 && o.kind === "hit";
       const finishedCasing = o.kind === "hit" && o.pendingTurns > 1 && nextTurns <= 1;
       if (finishedCasing) casingFinished.push(o);
-      return {
-        ...o,
-        pendingTurns: nextTurns,
-        surveilled: o.surveilled || becameReady || finishedCasing,
-      };
+      // `surveilled` is earned below, once the casing actually comes back.
+      return { ...o, pendingTurns: nextTurns };
     })
     // Resolved ops linger a few weeks: the reel, deal settlement, sit-down
     // classification and "bleeding" all look them up by id after the fact.
@@ -1755,6 +1789,12 @@ export function resolvePendingOperations(
 
     const fallout = applyCasingFallout(current, o, casing);
     current = fallout.state;
+    if (casing.lookout && casing.roll.copTrouble !== "arrested") {
+      current = {
+        ...current,
+        operations: current.operations.map((op) => (op.id === o.id ? { ...op, surveilled: true } : op)),
+      };
+    }
 
     if (o.family === current.playerFamily) {
       current = revealDistrict(current, o.targetTerritoryId);

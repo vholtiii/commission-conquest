@@ -652,13 +652,20 @@ export function generateClues(state: GameState, rng: Rng, opts: ClueGenOptions):
     }
   }
 
-  if (opts.poisoned) poisonOne(clues, rng, garrison);
+  if (opts.poisoned) {
+    poisonOne(clues, rng, garrison, (approach) => (mark ? routineText(mark, approach, territory, rng) : undefined));
+  }
 
   return clues;
 }
 
 /** Falsify one clue in place. Prefers the ones that get people killed. */
-function poisonOne(clues: CasingClue[], rng: Rng, garrison: number): void {
+function poisonOne(
+  clues: CasingClue[],
+  rng: Rng,
+  garrison: number,
+  retell: (approach: HitApproach) => string | undefined,
+): void {
   const window = clues.find((c) => c.kind === "garrison_window");
   if (window) {
     window.value = Math.max(garrison, (window.value ?? 1) + 2); // "they'll all be gone"
@@ -670,6 +677,7 @@ function poisonOne(clues: CasingClue[], rng: Rng, garrison: number): void {
   if (routine && routine.approach) {
     const others = APPROACHES.filter((a) => a !== routine.approach);
     routine.approach = rng.pick(others);
+    routine.text = retell(routine.approach) ?? routine.text;
     routine.poisoned = true;
     return;
   }

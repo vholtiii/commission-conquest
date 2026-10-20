@@ -280,7 +280,7 @@ District value is how many rackets you can build there — derived from the Voro
 
 ## Hits (`src/engine/hitOps.ts`)
 
-A boss's death quiets the city for three weeks (`MOURNING_WEEKS`). Nobody orders or lands a hit. Another death starts those three weeks over. A death that leaves the chair empty — the six-week crisis — quiets the city for two weeks instead.
+A boss's death quiets the city for three weeks (`MOURNING_WEEKS`). Nobody orders or lands a hit. Another death starts those three weeks over. A death that leaves the chair empty — the five-week crisis — quiets the city for two weeks instead.
 
 Approaches:
 
@@ -422,7 +422,7 @@ Each turn, after the AI has planned, the street may whisper about a pending riva
 
 **Moving anyone else.** The same panel has **Send a man here…**, a list of your active men who are free to travel (idle, garrisoned or running a racket elsewhere, and not on a job or a trip). Picking one garrisons him here at once. Every made man's car sits on the west kerb of the avenue nearest his district, queued behind the boss's by rank, and when he changes district the car drives there — down the avenue, along a street, up the next avenue, lamps on — then parks (`CrewSedans.tsx`). Paint is rank: boss black with the family colour and a halo (a shade larger than the rest), underboss and consigliere black with a muted family stripe, capo silver, soldier brown, hitman blacked out with no chrome, no whitewalls and no lamps. Associates have no car. Six cars fit a kerb — the boss's at the middle, the rest alternating south and north of it — and if a neighbouring district's row already parked on that stretch, a car walks further along the avenue rather than sit on top of another; the rest are round the corner. Ambient street dressing parks on the east kerb only, so it never ends up under a crew car. Rival cars stay boss-only and follow the visibility rules below.
 
-**Underground.** A boss holding court anywhere but his HQ (and not on a public trip) is underground (`isBossUnderground`). A rival planning a hit on him only has his real address if the job was cased (`surveilled`) or the street leaks it (`BOSS_UNDERGROUND_LEAK`, 40%); otherwise they plan on the HQ everyone knows and find nobody. A crew sent to the wrong kerb has no car to wire, so a car bomb picked for a guessed address becomes an ambush there. The cost is the HQ losing his presence as a defender.
+**Underground.** A boss holding court anywhere but his HQ (and not on a public trip) is underground (`isBossUnderground`). A rival planning a hit on him only has his real address if the job was cased (`surveilled`) or the street leaks it (`BOSS_UNDERGROUND_LEAK`, 65%); otherwise they plan on the HQ everyone knows and find nobody. A crew sent to the wrong kerb has no car to wire, so a car bomb picked for a guessed address becomes an ambush there. The cost is the HQ losing his presence as a defender.
 
 ### Blind hits
 
@@ -462,7 +462,11 @@ Rival portraits are hidden by default. Map shows family-colored squares only.
 
 **Lookout reports:** Casing resolves on the next end-turn (tip-off roll + report same turn). Outcome is clean / spotted / spotted_wounded (full intel still recorded when spotted). Report shows faces, garrison, defense, rackets, rival ops staged there, sample ambush odds before→after, and tip-off risk. Persists in `intel.reports[territoryId]` and District / Operations panels.
 
-**Fresh casing bonus (standalone lookout, not Surveil-first):** +6% hit odds when the mark was spotted by surveillance within 2 turns; −3% tip-off chance on that district. Does not stack with the Surveil-first `surveilled` (+12%) flag.
+**Fresh casing bonus (standalone lookout, not Surveil-first):** a player hit on a named mark gets +6% odds and −3% tip-off when that same man was spotted by surveillance within 2 turns (`freshOnMark`). Another man on the same block gets nothing, and a car sighting doesn't count. Does not stack with the Surveil-first `surveilled` (+12%) flag.
+
+**Surveil-first.** The hit earns `surveilled` only when the casing comes back: the effective lookout was on his feet and the cops didn't arrest him. A casing that fails leaves the hit to go in blind of that bonus. Rival hits never pick it up from the clock; a covert family that cased the job (60%) plans it with `surveilled` from the start.
+
+**Casing guards.** A standalone casing is the lookout's job alone: if he's jailed, wounded or dead by resolve, nobody files a report and the job is called off. It is also called off when the block has changed hands. `caseDistrict` refuses a finished family's block and a block you're already casing. Exact defenders, safehouse cover in the Hit Planner, and the unknown headcount on the map and district panel show only with fresh casing on the block; without it they read "unknown", "a safehouse nearby" or "maybe more". A rival's crew sheet shows his face, role and traits; loyalty, XP and skills are for your own men. A poisoned routine clue is retold for the false approach, so its text always matches the approach it claims.
 
 AI shifts garrison ~20%/turn so stale intel expires. Commission panel shows HQ + known/total counts.
 
@@ -482,7 +486,7 @@ A new game sets `aiAggression` from the difficulty button (`aggressionForDifficu
 
 Bosses travel. Each turn an AI boss has a ~25% chance (expansionist/volatile +10, covert −10, only 5% if a tipped-off car bomb is aimed at his family) to spend the week in another district he owns, weighted toward racket-heavy and leaderless blocks, and drives home the week after. Both legs can spring a car bomb. A headless family stays frozen until an interim boss takes the chair.
 
-When the AI aims a hit at a boss it plans on `believedBossSite`: his real location if he is at his HQ, on a public trip, or the job is cased (covert families case 60% of the time); a boss underground elsewhere is found only on a 40% leak, otherwise the crew is sent to the HQ (and a car bomb picked for that guess is downgraded to an ambush — no car to wire).
+When the AI aims a hit at a boss it plans on `believedBossSite`: his real location if he is at his HQ, on a public trip, or the job is cased (covert families case 60% of the time); a boss underground elsewhere is found only on a 65% leak, otherwise the crew is sent to the HQ (and a car bomb picked for that guess is downgraded to an ambush — no car to wire).
 
 ## Economy (`src/engine/economy.ts` + `src/engine/liquor.ts`)
 
@@ -519,7 +523,18 @@ Thresholds:
 
 **Arrest odds (`WARRANT`, `arrestRisk`).** At the end of the week, once family heat is at 60 or more, every active man of yours wanted above 5 is on the list and has an 8% chance of being picked up; below either line the chance is 0. The UI prints that chance in parentheses after his wanted on his crew sheet (when you select him), the top bar (boss), and district garrison and safehouse rows — red when he's on the list. The family roster shows names only. It turns **green** when something is working his odds down, with the tooltip spelling out what: cops / captains / mayor bribes paid (their heat cooling per week), lying low in a safehouse (wanted shed per week), or running a legit front (wanted shed per week). Those don't change the 8% roll itself; they pull the heat or his wanted back under the lines.
 
-Bribe tiers: cops / captains / chiefs / mayor (cost, duration, success rate modified by respect/fear/heat).
+Bribe tiers: cops / captains / chiefs / mayor, paid in clean cash. Success rate is the tier base (80 / 60 / 40 / 25%) + respect/400 + fear/400 − heat/250, held to 5–95% (`bribeSuccessRate`); the Corruption panel prints it. A failed buy still costs 40% of the price (`BRIBE_FAIL_FEE`) and +5 heat, and a toast says which way it went. A tier already on the payroll can't be bought again until it runs out.
+
+| Tier | Cost | Weeks | On purchase | While active |
+|------|------|-------|-------------|--------------|
+| Cops | $500 | 3 | Heat −5 | Cools 2 more a week, new heat −25%; every face in one chosen rival district is named |
+| Captains | $2,000 | 5 | Heat −2 | Cools 1 more a week, new heat −10% |
+| Chiefs | $8,000 | 7 | Heat −2 | One chosen family's faces named; liquor stash raids and shipment seizures ×0.6; laundering audits ×0.7 |
+| Mayor | $25,000 | 10 | Heat −8 | Cools 3 more a week, new heat −15%; raids and seizures ×0.4; audits ×0.5; judge odds about +0.35 |
+
+The generation cuts add up and are capped at 75%. **The mattresses leak:** with the chiefs or the mayor on the payroll the address of your mattress houses is an open secret (`mattressLeaked`). Hits aimed into those districts lose the −12% district penalty and rival trucks driving through them are no longer ambushed.
+
+The heat clock on the top bar counts the whole week the economy books against you (rackets, dumped cash and washes, after the bribe cut), the same number the turn applies.
 
 ## Events (`src/engine/events.ts`)
 
@@ -555,9 +570,9 @@ Length is chosen next to difficulty on a new game (short 30 turns, medium 50, lo
 
 **Summit** on the final turn, after the other checks: lead either track by 10% and you win; trail both by more than 10% and you lose; within 10% on both, more districts than every rival wins, otherwise you lose.
 
-**Lose:** six weeks pass with no boss after the chair emptied; or both cash pools stay negative for 3 weeks. A ready underboss still takes the chair the week the boss dies, and the game goes on.
+**Lose:** five weeks pass with no boss after the chair emptied; or both cash pools stay negative for 3 weeks. A ready underboss still takes the chair the week the boss dies, and the game goes on.
 
-**Leaderless** (`interregnum.ts`): if nobody is ready, the family fractures once (about a third of its districts, never the home seat, and shaky soldiers walk) and has six weeks to crown an underboss. During those weeks income is 75%, loyalty drops 3 a week, and the family cannot capture or order a hit. Promoting a capo to underboss waives the hit requirement, asks level 3 and loyalty 25, and a wounded capo can still be named. The $2,500 can come from either pocket. It steps down an underboss who cannot take the chair. A made soldier of level 4 can be named underboss. An underboss with loyalty 30 who has held the rank a week becomes boss. A man named that same week does not also take the loyalty drip. A rival gets the same clock: each week a 50% chance to name his best capo, wounded or not, and if the clock runs out the outfit scatters and the men join the player's pool. Only one family holds the clock; another rival waits his turn, and the player takes the slot if he needs it. Rivals aim at a leaderless family more often.
+**Leaderless** (`interregnum.ts`): if nobody is ready, the family fractures once (about a third of its districts, never the home seat, and shaky soldiers walk) and has five weeks to crown an underboss. During those weeks income is 75%, loyalty drops 3 a week, and the family cannot capture or order a hit. Promoting a capo to underboss waives the hit requirement, asks level 3 and loyalty 25, and a wounded capo can still be named. The $2,500 can come from either pocket. It steps down an underboss who cannot take the chair. A made soldier of level 4 can be named underboss. An underboss with loyalty 30 who has held the rank a week becomes boss. A man named that same week does not also take the loyalty drip. A rival gets the same clock: each week a 50% chance to name his best capo, wounded or not, and if the clock runs out the outfit scatters and the men join the player's pool. Only one family holds the clock; another rival waits his turn, and the player takes the slot if he needs it. Rivals aim at a leaderless family more often.
 
 **Succession:** the underboss keeps his loyalty at the boss's funeral (`funeralLoyaltyHit` skips the heir), so a ready heir stays ready at the moment he is needed. Rivals pay the same street price the player does for a recruit. After week 10 their treasury takes the real weekly net, and a broke family lets an associate go or drops an unmanaged joint a level. Each rival has a heat meter: vice, hits, captures, and car bombs raise it, it cools by 4 a week, and past 40 the precinct may raid a joint or pinch a soldier. Past 50 they buy the cops off. A fresh lookout report says whether that family's police attention is low, watched, or hot.
 

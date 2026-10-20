@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { HandCoins } from "lucide-react";
 import { useGameStore } from "@/engine/store";
+import { BRIBE_FAIL_FEE, bribeSuccessRate } from "@/engine/bribes";
 import { ALL_FAMILY_NAMES } from "@/data/families";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -12,16 +13,27 @@ type BribeKey = "cops" | "captains" | "chiefs" | "mayor";
 const BRIBE_INFO: Record<BribeKey, { label: string; blurb: string; cost: number }> = {
   cops: {
     label: "Beat Cops",
-    blurb: "Watch one rival district — reveals faces for 3 turns.",
+    blurb:
+      "3 weeks. Heat −5 now, cools 2 more a week, new heat −25%. They name every face in one rival district.",
     cost: 500,
   },
-  captains: { label: "Precinct Captains", blurb: "Longer heat relief and eased raids.", cost: 2000 },
+  captains: {
+    label: "Precinct Captains",
+    blurb: "5 weeks. Heat −2 now, cools 1 more a week, new heat −10%.",
+    cost: 2000,
+  },
   chiefs: {
     label: "Police Chiefs",
-    blurb: "Open the books on a whole family for 7 turns.",
+    blurb:
+      "7 weeks. Opens the books on one family. Liquor raids and seizures ×0.6, laundering audits ×0.7. Heat −2 now. Rivals learn where your mattresses are.",
     cost: 8000,
   },
-  mayor: { label: "City Hall", blurb: "Best heat relief and shuts down investigations.", cost: 25000 },
+  mayor: {
+    label: "City Hall",
+    blurb:
+      "10 weeks. Heat −8 now, cools 3 more a week, new heat −15%. Liquor raids and seizures ×0.4, audits ×0.5, and the judge is far likelier to deal. Rivals learn where your mattresses are.",
+    cost: 25000,
+  },
 };
 
 const ORDER: BribeKey[] = ["cops", "captains", "chiefs", "mayor"];
@@ -33,6 +45,8 @@ export default function CorruptionPanel() {
   const territories = useGameStore((s) => s.territories);
   const playerFamily = useGameStore((s) => s.playerFamily);
   const selectedTerritoryId = useGameStore((s) => s.selectedTerritoryId);
+  const reputation = useGameStore((s) => s.reputation);
+  const heat = useGameStore((s) => s.heat);
 
   const rivalDistricts = territories.filter(
     (t) => t.owner && t.owner !== playerFamily && t.discovered,
@@ -49,6 +63,10 @@ export default function CorruptionPanel() {
   return (
     <PanelShell title="Corruption" subtitle="Grease the right palms">
       <div className="space-y-2.5">
+        <p className="text-[11px] text-muted-foreground">
+          Paid in clean cash. Respect and fear raise the odds and heat lowers them. A bribe that
+          falls through still costs {Math.round(BRIBE_FAIL_FEE * 100)}% of the price and +5 heat.
+        </p>
         {ORDER.map((key) => {
           const info = BRIBE_INFO[key];
           const status = bribes[key];
@@ -115,7 +133,14 @@ export default function CorruptionPanel() {
                 </select>
               )}
               <div className="mt-2 flex items-center justify-between">
-                <span className="text-xs text-money">{formatMoney(info.cost)}</span>
+                <span className="text-xs text-money">
+                  {formatMoney(info.cost)}
+                  {!status.isActive && (
+                    <span className="ml-2 text-muted-foreground">
+                      {Math.round(bribeSuccessRate({ reputation, heat }, key) * 100)}% to land
+                    </span>
+                  )}
+                </span>
                 <Button
                   size="sm"
                   variant="secondary"

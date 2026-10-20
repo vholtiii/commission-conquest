@@ -23,6 +23,22 @@ const BRIBE_BASE_RATE = {
   mayor: 0.25,
 } as const;
 
+/** A failed buy still costs this share of the price. */
+export const BRIBE_FAIL_FEE = 0.4;
+
+type PoliceTier = Exclude<keyof GameState["bribes"], "judge">;
+
+/** Odds the money lands: respect and fear help, heat hurts. */
+export function bribeSuccessRate(
+  state: Pick<GameState, "reputation" | "heat">,
+  type: PoliceTier,
+): number {
+  const respectBonus = state.reputation.respect / 400;
+  const fearBonus = state.reputation.fear / 400;
+  const heatPenalty = state.heat.level / 250;
+  return Math.max(0.05, Math.min(0.95, BRIBE_BASE_RATE[type] + respectBonus + fearBonus - heatPenalty));
+}
+
 function judgeCost(wanted: number): number {
   return 6000 + 2000 * Math.max(0, wanted);
 }
@@ -119,6 +135,7 @@ export function attemptBribe(
   targetTerritory?: string,
 ): GameState {
   if (type === "judge") return attemptJudgeBribe(state);
+  if (state.bribes[type]?.isActive) return state;
   const cost = BRIBE_COSTS[type];
   if (state.money < cost) {
     return {
@@ -164,19 +181,13 @@ export function attemptBribe(
     };
   }
 
-  const respectBonus = state.reputation.respect / 400;
-  const fearBonus = state.reputation.fear / 400;
-  const heatPenalty = state.heat.level / 250;
-  const rate = Math.max(
-    0.05,
-    Math.min(0.95, BRIBE_BASE_RATE[type] + respectBonus + fearBonus - heatPenalty),
-  );
+  const rate = bribeSuccessRate(state, type);
   const success = Math.random() < rate;
 
   if (!success) {
     return {
       ...state,
-      money: state.money - Math.floor(cost * 0.4),
+      money: state.money - Math.floor(cost * BRIBE_FAIL_FEE),
       heat: {
         ...state.heat,
         level: Math.min(100, state.heat.level + 5),
@@ -188,7 +199,7 @@ export function attemptBribe(
           id: `log_bribe_fail_${state.turn}_${type}`,
           turn: state.turn,
           category: "heat",
-          text: `The ${type} bribe fell through — word is spreading.`,
+          text: `The ${type} bribe fell through. They kept $${Math.floor(cost * BRIBE_FAIL_FEE)} and word is spreading.`,
         },
       ],
     };

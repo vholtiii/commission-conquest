@@ -1,10 +1,11 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { Users, ShieldAlert, Landmark, TrendingUp, TrendingDown, Wine, Award, Flame, Footprints } from "lucide-react";
 import { useGameStore } from "@/engine/store";
 import { getFamilyDef } from "@/data/families";
 import { getBoss } from "@/engine/crew";
 import { successionReadinessReasons } from "@/engine/succession";
 import { influenceTick } from "@/engine/victory";
+import { heatForecast } from "@/engine/heat";
 import { totalCapacity, totalCrates } from "@/engine/liquor";
 import { nextRecruitTier, recruitTier } from "@/engine/recruiting";
 import { Button } from "@/components/ui/button";
@@ -44,6 +45,10 @@ export default function TopBar() {
   const dirtyMoney = useGameStore((s) => s.dirtyMoney);
   const lastNetIncome = useGameStore((s) => s.lastNetIncome);
   const heat = useGameStore((s) => s.heat);
+  const bribes = useGameStore((s) => s.bribes);
+  const streetLawyerUntil = useGameStore((s) => s.streetLawyerUntil);
+  const counselUntil = useGameStore((s) => s.counselUntil);
+  const launderPlan = useGameStore((s) => s.launderPlan);
   const influence = useGameStore((s) => s.influence);
   const reputation = useGameStore((s) => s.reputation);
   const territories = useGameStore((s) => s.territories);
@@ -97,6 +102,12 @@ export default function TopBar() {
   const stored = totalCrates(liquorState, playerFamily);
   const cap = totalCapacity(liquorState, playerFamily);
   const liquorNet = liquorLedger ? liquorLedger.cashIn - liquorLedger.cashOut : null;
+  const heatClock = useMemo(
+    () => heatForecast(useGameStore.getState()),
+    // The economy reads the whole state; these are what move its heat.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [territories, turn, crew, playerFamily, heat, bribes, streetLawyerUntil, counselUntil, dirtyMoney, launderPlan],
+  );
 
   const blocked =
     !!activeEvent ||
@@ -206,6 +217,9 @@ export default function TopBar() {
           value={heat.level}
           format={(n) => String(Math.round(n))}
           valueClassName="text-heat"
+          sub={heatClock.label}
+          subClassName={heatClock.urgent ? "text-amber-400" : undefined}
+          title={heatClock.detail}
         />
         <AnimatedStat
           icon={<Award className="h-3.5 w-3.5 text-steel-light" />}
@@ -274,6 +288,7 @@ function AnimatedStat({
   valueClassName?: string;
   sub?: string;
   subClassName?: string;
+  title?: string;
 }) {
   const anim = useAnimatedNumber(value);
   const chipText = anim.flash ? (chip ? chip(anim.delta) : signedCount(anim.delta)) : "";
@@ -296,6 +311,7 @@ function Stat({
   subClassName,
   flash,
   chipText,
+  title,
 }: {
   icon?: React.ReactNode;
   label: string;
@@ -305,9 +321,10 @@ function Stat({
   subClassName?: string;
   flash?: StatFlash;
   chipText?: string;
+  title?: string;
 }) {
   return (
-    <div className="relative flex flex-col items-center leading-none">
+    <div className="relative flex flex-col items-center leading-none" title={title}>
       <div className="flex items-center gap-1 text-[10px] uppercase tracking-wide text-muted-foreground">
         {icon}
         {label}

@@ -657,7 +657,7 @@ export function pickMessageTarget(state: GameState, victim: FamilyName): CrewMem
     .sort((a, b) => b.w - a.w)[0]?.c;
 }
 
-const MESSAGE_THRESHOLD: Record<string, number> = {
+export const MESSAGE_THRESHOLD: Record<string, number> = {
   volatile: 1,
   smuggler: 1,
   expansionist: 2,

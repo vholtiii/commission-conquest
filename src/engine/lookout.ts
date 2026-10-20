@@ -138,7 +138,9 @@ function collectRivalOps(
 export function effectiveLookout(state: GameState, op: Operation): CrewMember | undefined {
   if (op.lookoutId) {
     const l = state.crew.find((c) => c.id === op.lookoutId);
-    if (l) return l;
+    if (l && l.status === "active") return l;
+    // A standalone casing is his job alone. Nobody else picks it up.
+    if (op.kind === "surveillance") return undefined;
   }
   const crew = hitCrewIds(op)
     .map((id) => state.crew.find((c) => c.id === id))

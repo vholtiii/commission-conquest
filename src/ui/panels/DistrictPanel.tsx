@@ -569,7 +569,9 @@ export default function DistrictPanel() {
           )}
           {isRival && unknown > 0 && (
             <div className="mt-2 rounded border border-dashed border-panel-border bg-panel/40 px-2 py-1.5 text-[11px] text-muted-foreground">
-              Unknown presence: {unknown} figure{unknown === 1 ? "" : "s"}
+              {hasFreshCasing(locState, territory.id)
+                ? `Unknown presence: ${unknown} figure${unknown === 1 ? "" : "s"}`
+                : "More of them may be here. Case the block for a count."}
             </div>
           )}
           {isRival && intel?.reports?.[territory.id] && (() => {
@@ -603,7 +605,7 @@ export default function DistrictPanel() {
                 </p>
                 {fresh && !stale ? (
                   <Badge className="bg-money/20 text-[9px] text-money">
-                    Fresh intel: +6% hit odds
+                    Fresh intel: +6% odds on a man he saw
                   </Badge>
                 ) : (
                   <p className="text-[10px] text-amber-300/80">

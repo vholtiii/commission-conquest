@@ -13,6 +13,7 @@ import {
   emptyIntel,
   familyHq,
   hasActiveIntel,
+  hasFreshCasing,
   hiddenCountIn,
   visibleCrewIn,
 } from "@/engine/intel";
@@ -548,7 +549,11 @@ function TerritoryMarker({ territory, cx, cz }: { territory: Territory; cx: numb
               ) : (
                 <div>
                   Known: {knownCount}
-                  {unknownCount > 0 ? ` · Unknown: ${unknownCount}?` : ""}
+                  {unknownCount > 0
+                    ? hasFreshCasing(locationState, territory.id)
+                      ? ` · Unknown: ${unknownCount}?`
+                      : " · maybe more"
+                    : ""}
                 </div>
               )}
               {isHq && <div className="text-amber-300">Headquarters</div>}

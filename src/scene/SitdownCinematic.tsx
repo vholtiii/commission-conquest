@@ -18,7 +18,7 @@ import {
   stopAll,
   tyreSqueal,
 } from "@/audio/sfx";
-import { SedanFleet } from "./Sedan";
+import { ReelSedan } from "./ReelSedan";
 import Person from "./Person";
 import { moveCam } from "./hits/cameraRig";
 import { reelRain } from "./hits/reelLook";
@@ -69,6 +69,7 @@ function chase(
   controls: { target: THREE.Vector3; update: () => void } | null,
   pos: THREE.Vector3,
   ahead: THREE.Vector3,
+  dt: number,
 ) {
   const dir = ahead.clone().sub(pos);
   if (dir.lengthSq() < 0.04) dir.set(1, 0, 0);
@@ -77,8 +78,11 @@ function chase(
   back.y = 1.55;
   const look = pos.clone();
   look.y = 0.55;
-  moveCam(camera, controls, back, look, 0.16);
+  moveCam(camera, controls, back, look, 0.16, dt);
 }
+
+/** The sedan's nose is +X in car space; the rig's +Z points down the road. */
+const CAR_YAW = -Math.PI / 2;
 
 /** Two families drive up, get out, and leave by how the table ended. The card stays in the UI. */
 export default function SitdownCinematic({ layout, controlsRef }: Props) {
@@ -233,19 +237,24 @@ export default function SitdownCinematic({ layout, controlsRef }: Props) {
       const travelT = DRIVE.depart + DRIVE.travel;
       const u = t < DRIVE.depart ? 0 : t < travelT ? (t - DRIVE.depart) / DRIVE.travel : 1;
       const arriveK = t < travelT ? 0 : Math.min(1, (t - travelT) / DRIVE.arrive);
-      const playerAt = playerHasPath ? playerCurve.getPointAt(Math.min(0.98, u * 0.92 + (u >= 1 ? 0.08 : 0))) : playerPark;
-      const rivalAt = rivalHasPath ? rivalCurve.getPointAt(Math.min(0.98, u * 0.92 + (u >= 1 ? 0.08 : 0))) : rivalPark;
-      const parkedPlayer = u >= 1 ? playerPark : playerAt;
-      const parkedRival = u >= 1 ? rivalPark : rivalAt;
-      place(playerRef.current, parkedPlayer, u >= 1 ? door : playerCurve.getPointAt(Math.min(1, u + 0.08)));
-      place(rivalRef.current, parkedRival, u >= 1 ? door : rivalCurve.getPointAt(Math.min(1, u + 0.08)));
+      // Off the route and into the space: a braking curve, not a jump cut.
+      const park = 1 - (1 - arriveK) * (1 - arriveK);
+      const ride = Math.min(0.92, u * 0.92);
+      const playerAt = playerHasPath ? playerCurve.getPointAt(ride) : playerPark.clone();
+      const rivalAt = rivalHasPath ? rivalCurve.getPointAt(ride) : rivalPark.clone();
+      const playerAhead = playerHasPath ? playerCurve.getPointAt(Math.min(1, ride + 0.08)) : door;
+      const rivalAhead = rivalHasPath ? rivalCurve.getPointAt(Math.min(1, ride + 0.08)) : door;
+      const parkedPlayer = u >= 1 ? playerAt.lerp(playerPark, park) : playerAt;
+      const parkedRival = u >= 1 ? rivalAt.lerp(rivalPark, park) : rivalAt;
+      place(playerRef.current, parkedPlayer, u >= 1 ? playerAhead.clone().lerp(door, park) : playerAhead);
+      place(rivalRef.current, parkedRival, u >= 1 ? rivalAhead.clone().lerp(door, park) : rivalAhead);
 
       stageParty(arriveK, 0, outcome, false);
-      if (u < 0.4 && playerHasPath) chase(camera, controls, parkedPlayer, playerCurve.getPointAt(Math.min(1, u + 0.12)));
-      else if (u < 0.68 && rivalHasPath) chase(camera, controls, parkedRival, rivalCurve.getPointAt(Math.min(1, u + 0.12)));
+      if (u < 0.4 && playerHasPath) chase(camera, controls, parkedPlayer, playerCurve.getPointAt(Math.min(1, ride + 0.12)), step);
+      else if (u < 0.68 && rivalHasPath) chase(camera, controls, parkedRival, rivalCurve.getPointAt(Math.min(1, ride + 0.12)), step);
       else {
         const eye = venue.clone().add(new THREE.Vector3(6.2, 3.1, 6.2));
-        moveCam(camera, controls, eye, door, 0.12);
+        moveCam(camera, controls, eye, door, 0.12, step);
       }
 
       if (t >= DRIVE_TOTAL && !opened.current) {
@@ -263,14 +272,16 @@ export default function SitdownCinematic({ layout, controlsRef }: Props) {
       stageParty(1, 0, outcome, true);
       const dist = 8.2 - Math.min(2.2, tableClock.current * 0.12);
       const eye = venue.clone().add(new THREE.Vector3(dist * 0.72, 2.5, dist * 0.72));
-      moveCam(camera, controls, eye, door, 0.06);
+      moveCam(camera, controls, eye, door, 0.06, step);
     }
 
     if (phase === "exit") {
       clock.current += step;
       const k = Math.min(1, clock.current / EXIT_TOTAL);
       const violent = outcome === "betrayed" || outcome === "trap";
-      const go = outcome === "handshake" ? Math.max(0, (k - 0.5) / 0.5) : violent ? 0 : k;
+      const leave = outcome === "handshake" ? Math.max(0, (k - 0.5) / 0.5) : violent ? 0 : k;
+      // Pulls away from a stop: slow first, then gone.
+      const go = leave * leave;
       const playerOff = playerPark.clone().add(new THREE.Vector3(-7.5 * go, 0, 0.4 * go));
       const rivalOff = rivalPark.clone().add(new THREE.Vector3(7.5 * go, 0, -0.3 * go));
       place(playerRef.current, playerOff, playerOff.clone().add(new THREE.Vector3(-1, 0, 0)));
@@ -282,7 +293,7 @@ export default function SitdownCinematic({ layout, controlsRef }: Props) {
         engine(1.6);
       }
       const eye = venue.clone().add(new THREE.Vector3(6.4 - k, 2.8, 6.4));
-      moveCam(camera, controls, eye, door, 0.1);
+      moveCam(camera, controls, eye, door, 0.1, step);
       if (k >= 1 && !finished.current) {
         finished.current = true;
         useGameStore.getState().completeSitdownCinematic();
@@ -343,12 +354,12 @@ export default function SitdownCinematic({ layout, controlsRef }: Props) {
     <group>
       <ReelAtmosphere center={venue} facing={facing} amount={reelRain(useGameStore.getState().date.month)} />
       <group ref={playerRef}>
-        <SedanFleet cars={[{ x: 0, z: 0, rot: Math.PI / 2, color: playerColor, lamps: lampsOn }]} />
-        {lampsOn && <Headlamps cars={[{ x: 0, z: 0, rot: Math.PI / 2 }]} />}
+        <ReelSedan cars={[{ x: 0, z: 0, rot: CAR_YAW, color: playerColor, lamps: lampsOn }]} />
+        {lampsOn && <Headlamps cars={[{ x: 0, z: 0, rot: CAR_YAW }]} />}
       </group>
       <group ref={rivalRef}>
-        <SedanFleet cars={[{ x: 0, z: 0, rot: Math.PI / 2, color: rivalColor, lamps: lampsOn }]} />
-        {lampsOn && <Headlamps cars={[{ x: 0, z: 0, rot: Math.PI / 2 }]} />}
+        <ReelSedan cars={[{ x: 0, z: 0, rot: CAR_YAW, color: rivalColor, lamps: lampsOn }]} />
+        {lampsOn && <Headlamps cars={[{ x: 0, z: 0, rot: CAR_YAW }]} />}
       </group>
       <mesh position={[door.x, 2.15, door.z]}>
         <boxGeometry args={[1.5, 1.05, 0.12]} />

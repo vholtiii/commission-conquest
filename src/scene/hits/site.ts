@@ -13,6 +13,8 @@ export interface HitSite {
   origin: THREE.Vector3;
   center: THREE.Vector3;
   curve: THREE.CatmullRomCurve3;
+  /** The last 14 world units of `curve`, ending at the kerb. The drive-by uses this. */
+  approach: THREE.CatmullRomCurve3;
 }
 
 function pointFor(layout: CityLayout, territoryId: string): THREE.Vector3 {
@@ -41,6 +43,7 @@ export function siteFor(layout: CityLayout, cinematic: HitCinematic): HitSite {
   if (pts.length === 0) pts.push(road.clone(), road.clone().add(new THREE.Vector3(2, 0, 0)));
   if (pts.length === 1) pts.push(road.clone());
   pts[pts.length - 1] = road.clone();
+  const curve = new THREE.CatmullRomCurve3(pts, false, "catmullrom", 0.25);
 
   return {
     road,
@@ -48,6 +51,22 @@ export function siteFor(layout: CityLayout, cinematic: HitCinematic): HitSite {
     facing,
     origin: pts[0]!.clone(),
     center,
-    curve: new THREE.CatmullRomCurve3(pts, false, "catmullrom", 0.25),
+    curve,
+    approach: tailCurve(curve, road),
   };
+}
+
+/** The last `keep` world units of a path, rebuilt so it still ends on `end`. */
+function tailCurve(full: THREE.CatmullRomCurve3, end: THREE.Vector3, keep = 14): THREE.CatmullRomCurve3 {
+  const length = full.getLength();
+  const span = Math.min(keep, length);
+  const start = length - span;
+  const steps = 8;
+  const pts: THREE.Vector3[] = [];
+  for (let i = 0; i <= steps; i++) {
+    const u = length < 1e-4 ? 0 : (start + (span * i) / steps) / length;
+    pts.push(full.getPointAt(Math.min(1, u)));
+  }
+  pts[pts.length - 1] = end.clone();
+  return new THREE.CatmullRomCurve3(pts, false, "catmullrom", 0.25);
 }

@@ -1,5 +1,5 @@
 /**
- * The chair is empty. The family fractures once, then has six weeks to put
+ * The chair is empty. The family fractures once, then has five weeks to put
  * an underboss in the seat. Fail that and the player loses, or a rival
  * outfit scatters.
  */
@@ -10,7 +10,7 @@ import { promoteToBoss } from "./succession";
 import { promoteCrew } from "./crew";
 import { releaseToPool, scatterFamily, walkToRival } from "./defection";
 
-export const INTERREGNUM_WEEKS = 6;
+export const INTERREGNUM_WEEKS = 5;
 
 export function playerLeaderless(state: Pick<GameState, "playerFamily" | "interregnum">): boolean {
   return !!state.playerFamily && state.interregnum?.family === state.playerFamily;
@@ -62,7 +62,7 @@ function crownable(c: CrewMember, turn: number): boolean {
   );
 }
 
-/** Fracture once and start the six-week clock. A second family, while one clock is running, collapses the old way. */
+/** Fracture once and start the five-week clock. A second family, while one clock is running, collapses the old way. */
 export function startInterregnum(
   state: GameState,
   family: FamilyName,

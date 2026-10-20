@@ -11,7 +11,7 @@ describe("leaderless family", () => {
     const started = startInterregnum(game, "Moretti", "killed", createRng(1));
     const after = started.state.territories.filter((t) => t.owner === "Moretti").length;
     expect(after).toBeLessThan(before);
-    expect(started.state.interregnum?.deadline).toBe(game.turn + 6);
+    expect(started.state.interregnum?.deadline).toBe(game.turn + 5);
     const crowned = tickInterregnum(
       {
         ...started.state,
@@ -27,7 +27,7 @@ describe("leaderless family", () => {
     expect(crowned.state.crew.some((c) => c.family === "Moretti" && c.role === "boss" && c.status !== "dead")).toBe(true);
   });
 
-  it("ends the game when the six weeks run out", () => {
+  it("ends the game when the five weeks run out", () => {
     const game = startGame(buildInitialState(6, { startMode: "classic" }), "Moretti");
     const started = startInterregnum({ ...game, turn: 12 }, "Moretti", "killed", createRng(3));
     const due = {
@@ -40,5 +40,23 @@ describe("leaderless family", () => {
     const ticked = tickInterregnum(due, createRng(4));
     expect(ticked.state.interregnum?.family).toBe("Moretti");
     expect(checkVictory(ticked.state).lost).toBe(true);
+  });
+
+  it("a new game drops the old empty chair and the rat leak", () => {
+    const game = startGame(buildInitialState(7, { startMode: "classic" }), "Moretti");
+    const started = startInterregnum(
+      { ...game, ratLeakTurn: 3, ratLeakCrewId: "crew_rat", ratLeakWeeks: 4 },
+      "Moretti",
+      "killed",
+      createRng(5),
+    );
+    const fresh = { ...started.state, ...buildInitialState(9, { startMode: "classic" }) };
+    expect(fresh.interregnum).toBeNull();
+    expect(fresh.ratLeakTurn).toBeUndefined();
+    expect(fresh.ratLeakCrewId).toBeUndefined();
+    expect(fresh.ratLeakWeeks).toBeUndefined();
+    expect(fresh.onboardingDismissed).toBe(false);
+    expect(fresh.headlines).toEqual([]);
+    expect(fresh.history).toEqual([]);
   });
 });

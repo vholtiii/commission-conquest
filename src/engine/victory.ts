@@ -148,8 +148,8 @@ export function checkVictory(state: GameState): VictoryState {
         lost: true,
         reason:
           reg.cause === "put_away"
-            ? "Six weeks with no boss. The family never recovered from the Tombs."
-            : "Six weeks with no boss. The chair stayed empty.",
+            ? "Five weeks with no boss. The family never recovered from the Tombs."
+            : "Five weeks with no boss. The chair stayed empty.",
       };
     }
   } else {
