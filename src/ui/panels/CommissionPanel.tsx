@@ -35,7 +35,7 @@ import { Button } from "@/components/ui/button";
 import PanelShell from "./PanelShell";
 import Tip from "@/ui/Tip";
 import { titleCase, formatMoney } from "../formatters";
-import { familyInfluence, familyWealth, STREAK_START_TURN } from "@/engine/victory";
+import { DIRTY_WEIGHT, familyInfluence, familyWealth, STREAK_START_TURN, wealthFloor } from "@/engine/victory";
 import { leadTurnsFor } from "@/engine/tempo";
 import { commissionMinutes, minuteAge, minuteFamily, rivalFeuds, seatChips } from "@/engine/commissionMinutes";
 import {
@@ -870,6 +870,7 @@ function Standings() {
     wealth: familyWealth(snapshot, f),
     districts: territories.filter((t) => t.owner === f).length,
   })).sort((a, b) => b.influence - a.influence || b.wealth - a.wealth);
+  const wealthTip = `${DIRTY_WEIGHT < 1 ? `Dirty cash counts at ${Math.round(DIRTY_WEIGHT * 100)}%. ` : ""}Bar: ${formatMoney(wealthFloor(turn))} this week, rising every week, and double the next family.`;
 
   return (
     <div className="mb-3 rounded-md border border-panel-border bg-panel/50 px-3 py-2">
@@ -899,19 +900,23 @@ function Standings() {
                 {gone ? " — finished" : ""}
               </span>
             </span>
-            <span className="shrink-0 tabular-nums text-muted-foreground">
-              {row.influence} standing · {formatMoney(row.wealth)} · {row.districts} blocks
-            </span>
+            <Tip content={wealthTip}>
+              <span className="shrink-0 tabular-nums text-muted-foreground">
+                {row.influence} standing · {formatMoney(Math.round(row.wealth))} · {row.districts} blocks
+              </span>
+            </Tip>
           </div>
           );
         })}
       </div>
-      <p className="mt-1.5 text-[10px] text-muted-foreground">
-        {turn < STREAK_START_TURN
-          ? `Sudden death opens turn ${STREAK_START_TURN}`
-          : `Sudden death ${victory?.influenceLeadTurns ?? 0}/${leadTurns} standing · ${victory?.wealthLeadTurns ?? 0}/${leadTurns} wealth`}
-        {(victory?.bankruptTurns ?? 0) > 0 ? ` · broke ${victory.bankruptTurns}/3` : ""}
-      </p>
+      <Tip content={wealthTip}>
+        <p className="mt-1.5 text-[10px] text-muted-foreground">
+          {turn < STREAK_START_TURN
+            ? `Sudden death opens turn ${STREAK_START_TURN}`
+            : `Sudden death ${victory?.influenceLeadTurns ?? 0}/${leadTurns} standing · ${victory?.wealthLeadTurns ?? 0}/${leadTurns} wealth`}
+          {(victory?.bankruptTurns ?? 0) > 0 ? ` · broke ${victory.bankruptTurns}/3` : ""}
+        </p>
+      </Tip>
     </div>
   );
 }

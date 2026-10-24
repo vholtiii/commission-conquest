@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Users, ShieldAlert, Landmark, TrendingUp, TrendingDown, Wine, Award, Flame, Footprints } from "lucide-react";
 import { useGameStore } from "@/engine/store";
 import { getFamilyDef } from "@/data/families";
@@ -8,6 +8,7 @@ import { influenceTick } from "@/engine/victory";
 import { heatForecast } from "@/engine/heat";
 import { totalCapacity, totalCrates } from "@/engine/liquor";
 import { nextRecruitTier, recruitTier } from "@/engine/recruiting";
+import { looseEndsSummary, unfinishedBusiness, type LooseEnd } from "@/engine/unfinishedBusiness";
 import { Button } from "@/components/ui/button";
 import { formatDate, formatDelta, formatMoney } from "./formatters";
 import WantedTag from "./WantedTag";
@@ -46,8 +47,7 @@ export default function TopBar() {
   const lastNetIncome = useGameStore((s) => s.lastNetIncome);
   const heat = useGameStore((s) => s.heat);
   const bribes = useGameStore((s) => s.bribes);
-  const streetLawyerUntil = useGameStore((s) => s.streetLawyerUntil);
-  const counselUntil = useGameStore((s) => s.counselUntil);
+  const lawyerRetainer = useGameStore((s) => s.lawyerRetainer);
   const launderPlan = useGameStore((s) => s.launderPlan);
   const influence = useGameStore((s) => s.influence);
   const reputation = useGameStore((s) => s.reputation);
@@ -62,8 +62,24 @@ export default function TopBar() {
   const pendingRuling = useGameStore((s) => (s.pendingRulings?.length ?? 0) > 0);
   const pendingReports = useGameStore((s) => (s.pendingReports?.length ?? 0) > 0);
   const nextTurn = useGameStore((s) => s.nextTurn);
+  const setPanel = useGameStore((s) => s.setPanel);
+  const selectTerritory = useGameStore((s) => s.selectTerritory);
   const phase = useTurnTransition((s) => s.phase);
   const timers = useRef<number[]>([]);
+  const [looseEnds, setLooseEnds] = useState<LooseEnd[] | null>(null);
+
+  useEffect(() => {
+    setLooseEnds(null);
+  }, [turn]);
+
+  useEffect(() => {
+    if (!looseEnds) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setLooseEnds(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [looseEnds]);
 
   useEffect(() => {
     const bucket = timers.current;
@@ -106,7 +122,7 @@ export default function TopBar() {
     () => heatForecast(useGameStore.getState()),
     // The economy reads the whole state; these are what move its heat.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [territories, turn, crew, playerFamily, heat, bribes, streetLawyerUntil, counselUntil, dirtyMoney, launderPlan],
+    [territories, turn, crew, playerFamily, heat, bribes, lawyerRetainer, dirtyMoney, launderPlan],
   );
 
   const blocked =
@@ -144,8 +160,16 @@ export default function TopBar() {
     });
   };
 
+  const proceed = () => {
+    startAmbience();
+    setAmbienceVolume(useGameStore.getState().settings.ambienceVolume ?? 0.4);
+    endTurn();
+    const books = useGameStore.getState().weekBooks;
+    if (books && books.net > 0) coins();
+  };
+
   return (
-    <header className="panel-surface flex h-14 w-full shrink-0 items-center justify-between gap-4 border-b px-4">
+    <header className="panel-surface relative z-50 flex h-14 w-full shrink-0 items-center justify-between gap-4 border-b px-4">
       <div className="flex min-w-0 items-center gap-3">
         <span
           className="h-2.5 w-2.5 shrink-0 rounded-full"
@@ -249,21 +273,72 @@ export default function TopBar() {
         />
       </div>
 
-      <Button
-        variant="default"
-        size="lg"
-        className="shrink-0 bg-steel font-ui font-bold uppercase tracking-wide text-white hover:bg-steel-light disabled:opacity-40"
-        disabled={blocked || phase !== "idle"}
-        onClick={() => {
-          startAmbience();
-          setAmbienceVolume(useGameStore.getState().settings.ambienceVolume ?? 0.4);
-          endTurn();
-          const books = useGameStore.getState().weekBooks;
-          if (books && books.net > 0) coins();
-        }}
-      >
-        Next Turn
-      </Button>
+      <div className="relative shrink-0">
+        <Button
+          variant="default"
+          size="lg"
+          className="bg-steel font-ui font-bold uppercase tracking-wide text-white hover:bg-steel-light disabled:opacity-40"
+          disabled={blocked || phase !== "idle"}
+          title="Shift+click to skip the loose-ends check"
+          onClick={(e) => {
+            const s = useGameStore.getState();
+            if (!e.shiftKey && s.settings.confirmEndTurn !== false && !looseEnds) {
+              const ends = unfinishedBusiness(s);
+              if (ends.length > 0) {
+                setLooseEnds(ends);
+                return;
+              }
+            }
+            proceed();
+          }}
+        >
+          Next Turn
+        </Button>
+        {looseEnds && (
+          <div
+            role="dialog"
+            aria-label="Loose ends before the week closes"
+            className="panel-surface absolute right-0 top-full z-50 mt-2 w-72 rounded-md border border-panel-border p-3 text-xs shadow-xl"
+          >
+            <p className="font-semibold text-foreground">{looseEndsSummary(looseEnds)}.</p>
+            <p className="mt-0.5 text-[11px] text-muted-foreground">End the week anyway?</p>
+            <ul className="mt-2 space-y-1">
+              {looseEnds.map((end) => (
+                <li key={end.id}>
+                  <button
+                    type="button"
+                    className="flex w-full items-center justify-between gap-2 rounded border border-panel-border bg-panel/50 px-2 py-1 text-left text-[11px] hover:bg-panel-elevated"
+                    onClick={() => {
+                      setLooseEnds(null);
+                      if (end.action.kind === "territory") selectTerritory(end.action.territoryId);
+                      else setPanel(end.action.panel);
+                    }}
+                  >
+                    <span>{end.label}</span>
+                    <span className="shrink-0 text-[10px] uppercase tracking-wide text-muted-foreground">Show</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+            <div className="mt-3 flex justify-end gap-2">
+              <Button type="button" size="sm" variant="ghost" onClick={() => setLooseEnds(null)}>
+                Not now
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                className="bg-steel text-white hover:bg-steel-light"
+                onClick={() => {
+                  setLooseEnds(null);
+                  proceed();
+                }}
+              >
+                End week anyway
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
     </header>
   );
 }

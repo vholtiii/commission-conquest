@@ -913,6 +913,8 @@ export function processShipments(
         category: "delivery",
         text: `Police seized a ${ship.crates}-crate whisky shipment bound for ${dest.name}.`,
         family: state.playerFamily ?? undefined,
+        territoryId: dest.id,
+        tone: "warning",
       });
       continue;
     }
@@ -932,6 +934,8 @@ export function processShipments(
         category: "delivery",
         text: `${ship.crates} crates arrived in ${dest.name}; ${dep.overflow} sold on the street for $${street}.`,
         family: state.playerFamily ?? undefined,
+        territoryId: dest.id,
+        tone: "money",
       });
     } else {
       logs.push({
@@ -940,6 +944,8 @@ export function processShipments(
         category: "delivery",
         text: `${ship.crates} crates of whisky landed in ${dest.name}.`,
         family: state.playerFamily ?? undefined,
+        territoryId: dest.id,
+        tone: "money",
       });
     }
   }
@@ -1039,6 +1045,8 @@ export function processStashRaids(
     category: "heat",
     text: `Treasury raid on ${pick.t.name}: ${wd.moved} crates seized; warehouses frozen 1 turn.`,
     family: state.playerFamily,
+    territoryId: pick.t.id,
+    tone: "warning",
   });
 
   let crew = state.crew;

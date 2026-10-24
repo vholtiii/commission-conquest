@@ -349,6 +349,7 @@ export function generateRumors(state: GameState, rng: Rng): RumorGenResult {
       category: "hit",
       text: r.text,
       family: player,
+      tone: "intel",
     });
   }
 

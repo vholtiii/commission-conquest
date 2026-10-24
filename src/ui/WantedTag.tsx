@@ -12,10 +12,9 @@ export function useArrestRisk(member: CrewMember): ArrestRisk {
   const playerFamily = useGameStore((s) => s.playerFamily);
   const ratLeakTurn = useGameStore((s) => s.ratLeakTurn);
   const ratLeakWeeks = useGameStore((s) => s.ratLeakWeeks);
-  const streetLawyerUntil = useGameStore((s) => s.streetLawyerUntil ?? 0);
-  const counselUntil = useGameStore((s) => s.counselUntil ?? 0);
+  const lawyerRetainer = useGameStore((s) => s.lawyerRetainer);
   return arrestRisk(
-    { heat, bribes, territories, turn, playerFamily, ratLeakTurn, ratLeakWeeks, streetLawyerUntil, counselUntil },
+    { heat, bribes, territories, turn, playerFamily, ratLeakTurn, ratLeakWeeks, lawyerRetainer },
     member,
   );
 }

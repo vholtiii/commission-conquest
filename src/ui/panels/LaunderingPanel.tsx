@@ -2,8 +2,8 @@ import { Banknote } from "lucide-react";
 import { RACKET_LABELS } from "@/types/game";
 import { useGameStore } from "@/engine/store";
 import {
-  auditChance,
   auditModifiersLabel,
+  SCRUTINY_NEAR_CAP,
   isLegitBusiness,
   isLaunderSiteSetUp,
   isRacketFrozen,
@@ -11,22 +11,24 @@ import {
   launderCut,
   launderManagerMods,
   launderSiteStatus,
-  sortLaunderFillOrder,
+  launderSlack,
   type LaunderSitePlan,
 } from "@/engine/economy";
 import { RACKET_VISUALS } from "@/data/racketVisuals";
 import { bossPresentIn } from "@/engine/bossPresence";
 import { emptyIntel } from "@/engine/intel";
+import { lawyerAuditReads } from "@/engine/auditReads";
+import { activeRetainer, lawyerShortName } from "@/engine/lawyer";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import PanelShell from "./PanelShell";
 import { formatMoney } from "../formatters";
 import PortraitAvatar from "../PortraitAvatar";
 
-function riskLabel(p: number): { text: string; className: string } {
-  if (p <= 0) return { text: "Safe", className: "bg-money/20 text-money" };
-  if (p < 0.25) return { text: `Risky ${(p * 100).toFixed(0)}%`, className: "bg-amber-500/20 text-amber-300" };
-  return { text: `Reckless ${(p * 100).toFixed(0)}%`, className: "bg-heat/20 text-heat" };
+function loadLabel(ratio: number): { text: string; className: string } {
+  if (ratio > 1) return { text: "Over cap", className: "bg-heat/20 text-heat" };
+  if (ratio >= SCRUTINY_NEAR_CAP) return { text: "Near cap", className: "bg-amber-500/20 text-amber-300" };
+  return { text: "Under cap", className: "bg-money/20 text-money" };
 }
 
 export default function LaunderingPanel() {
@@ -44,6 +46,8 @@ export default function LaunderingPanel() {
   const suggestSafeSpread = useGameStore((s) => s.suggestSafeSpread);
   const setupLaunderSite = useGameStore((s) => s.setupLaunderSite);
   const stopLaunderSite = useGameStore((s) => s.stopLaunderSite);
+  const pauseLaunderSite = useGameStore((s) => s.pauseLaunderSite);
+  const lawyerRetainer = useGameStore((s) => s.lawyerRetainer);
   const selectTerritory = useGameStore((s) => s.selectTerritory);
   const setPanel = useGameStore((s) => s.setPanel);
   const routes = useGameStore((s) => s.routes);
@@ -57,12 +61,17 @@ export default function LaunderingPanel() {
     chiefsActive: bribes.chiefs.isActive,
   };
   const mods = auditModifiersLabel(ctx, turn);
+  const snapshot = useGameStore.getState();
+  const reads = new Map(lawyerAuditReads(snapshot).map((r) => [r.racketId, r]));
+  const retainer = activeRetainer({ lawyerRetainer, turn });
+  const lawyer = lawyerShortName(snapshot);
 
   type SiteRow = LaunderSitePlan & { territoryId: string; districtName: string };
 
+  const slack = launderSlack(useGameStore.getState());
+  const totalCap = slack.totalCap;
   const setUpSites: SiteRow[] = [];
   const available: SiteRow[] = [];
-  let totalCap = 0;
 
   for (const t of territories) {
     if (t.owner !== playerFamily) continue;
@@ -85,9 +94,6 @@ export default function LaunderingPanel() {
         bossHere,
       };
       if (isLaunderSiteSetUp(r)) {
-        if (!isRacketFrozen(r, turn) && launderSiteStatus(r, turn) === "ready") {
-          totalCap += cap;
-        }
         setUpSites.push(row);
       } else {
         available.push(row);
@@ -95,13 +101,7 @@ export default function LaunderingPanel() {
     }
   }
 
-  const activeOrdered = sortLaunderFillOrder(
-    setUpSites.filter(
-      (s) =>
-        !isRacketFrozen(s.racket, turn) &&
-        launderSiteStatus(s.racket, turn) === "ready",
-    ),
-  );
+  const activeOrdered = slack.sites;
   const settingUp = setUpSites.filter(
     (s) =>
       !isRacketFrozen(s.racket, turn) &&
@@ -110,13 +110,7 @@ export default function LaunderingPanel() {
   const frozen = setUpSites.filter((s) => isRacketFrozen(s.racket, turn));
   const displaySites = [...activeOrdered, ...settingUp, ...frozen];
 
-  let routed = 0;
-  let expectedClean = 0;
-  for (const s of activeOrdered) {
-    const amount = Math.min(s.plan, Math.max(0, dirtyMoney - routed));
-    routed += amount;
-    expectedClean += Math.floor(amount * (1 - launderCut(s.racket.type)));
-  }
+  const { routed, expectedClean } = slack;
 
   const maxShare =
     routed > 0
@@ -173,15 +167,8 @@ export default function LaunderingPanel() {
                   const status = launderSiteStatus(r, turn);
                   const Icon = RACKET_VISUALS[r.type].Icon;
                   const cut = launderCut(r.type);
-                  const p = frozenBiz || status !== "ready"
-                    ? 0
-                    : auditChance(
-                        r,
-                        site.plan,
-                        { ...ctx, manager: site.manager, scrutinyPrev: r.scrutiny, bossHere: site.bossHere },
-                        turn,
-                      );
-                  const risk = riskLabel(p);
+                  const load = loadLabel(site.ratio);
+                  const read = reads.get(r.id);
                   const projected = Math.floor(site.plan * (1 - cut));
                   const modsMgr = launderManagerMods(site.manager);
                   const fillIdx = activeOrdered.findIndex((s) => s.racket.id === r.id);
@@ -227,8 +214,8 @@ export default function LaunderingPanel() {
                               Setting up — active next turn
                             </Badge>
                           )}
-                          {!frozenBiz && status === "ready" && (
-                            <Badge className={risk.className}>{risk.text}</Badge>
+                          {!frozenBiz && status === "ready" && site.plan > 0 && (
+                            <Badge className={load.className}>{load.text}</Badge>
                           )}
                           <Button
                             type="button"
@@ -271,6 +258,31 @@ export default function LaunderingPanel() {
                           <> · out ~{formatMoney(projected)}</>
                         )}
                       </p>
+
+                      {!frozenBiz && (
+                        <div className="mb-1 flex items-center justify-between gap-2 text-[10px]">
+                          {read ? (
+                            <>
+                              <span className={read.advice === "pause" ? "text-heat" : "text-amber-300"}>
+                                {read.tag}
+                              </span>
+                              {site.plan > 0 && (
+                                <button
+                                  type="button"
+                                  className="shrink-0 text-muted-foreground underline hover:text-foreground"
+                                  onClick={() => pauseLaunderSite(r.id)}
+                                >
+                                  Pause
+                                </button>
+                              )}
+                            </>
+                          ) : (
+                            <span className="text-muted-foreground">
+                              {retainer ? `${lawyer}: nothing on this one` : "No one is watching your books"}
+                            </span>
+                          )}
+                        </div>
+                      )}
 
                       {!frozenBiz && (
                         <div className="flex items-center gap-2">

@@ -1,7 +1,8 @@
 import type { BribeStatus, CrewMember, GameState, HeatState, TurnLogEntry } from "@/types/game";
 import { getFamilyDef } from "@/data/families";
 import { jailInCrew } from "./jail";
-import { isLegitBusiness, isRacketFrozen, legitCoverWantedDrop, processEconomyTurn, STREET_LAWYER_HEAT_DECAY, COUNSEL_HEAT_DECAY } from "./economy";
+import { isLegitBusiness, isRacketFrozen, legitCoverWantedDrop, processEconomyTurn } from "./economy";
+import { activeRetainer, RETAINERS, retainerHeatDecay } from "./lawyer";
 import { SAFEHOUSE, laidLowHouse } from "./safehouse";
 
 /** When the law starts picking men up at the end of the week. */
@@ -41,8 +42,7 @@ type ArrestState = Pick<
   | "playerFamily"
   | "ratLeakTurn"
   | "ratLeakWeeks"
-  | "streetLawyerUntil"
-  | "counselUntil"
+  | "lawyerRetainer"
 >;
 
 /** A spared rat keeps talking for this many weeks, unless a harsher leak says otherwise. */
@@ -84,17 +84,11 @@ export function arrestRisk(state: ArrestState, m: CrewMember): ArrestRisk {
     });
   }
 
-  if ((state.streetLawyerUntil ?? 0) > state.turn) {
+  const retainer = activeRetainer(state);
+  if (retainer) {
     reducers.push({
-      label: "street lawyer",
-      effect: `−${STREET_LAWYER_HEAT_DECAY} heat/wk`,
-    });
-  }
-
-  if ((state.counselUntil ?? 0) > state.turn) {
-    reducers.push({
-      label: "counsel",
-      effect: `−${COUNSEL_HEAT_DECAY} heat/wk`,
+      label: `${RETAINERS[retainer].label.toLowerCase()} lawyer`,
+      effect: `−${RETAINERS[retainer].heatDecay} heat/wk`,
     });
   }
 
@@ -237,12 +231,10 @@ export interface HeatTurnResult {
  * own cooling. One number, so the forecast and the turn can't drift apart.
  */
 export function quietHeatDecay(
-  state: Pick<GameState, "bribes" | "turn" | "streetLawyerUntil" | "counselUntil" | "playerFamily">,
+  state: Pick<GameState, "bribes" | "turn" | "lawyerRetainer" | "playerFamily">,
 ): number {
   const bribeFx = aggregateBribeEffects(state.bribes);
-  let decay = 2 + bribeFx.heatReduction;
-  if ((state.streetLawyerUntil ?? 0) > state.turn) decay += STREET_LAWYER_HEAT_DECAY;
-  if ((state.counselUntil ?? 0) > state.turn) decay += COUNSEL_HEAT_DECAY;
+  let decay = 2 + bribeFx.heatReduction + retainerHeatDecay(state);
   if (state.playerFamily) {
     const bonus = getFamilyDef(state.playerFamily).bonuses.heatReduction ?? 0;
     if (bonus) decay += Math.floor(bonus * 10);
@@ -403,6 +395,7 @@ export function processHeatTurn(state: GameState): HeatTurnResult {
       turn: state.turn,
       category: "heat",
       text: "Judges sign warrants — crews are laying low.",
+      tone: "warning",
     });
   }
 
@@ -412,6 +405,7 @@ export function processHeatTurn(state: GameState): HeatTurnResult {
       turn: state.turn,
       category: "heat",
       text: "Federal agents build a RICO case against the commission.",
+      tone: "warning",
     });
   }
 

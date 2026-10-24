@@ -67,13 +67,33 @@ export default function MenuPanel() {
             />
             Post-processing
           </label>
-          <div className="mt-1.5 flex gap-1.5">
+          <label className="mt-1.5 flex items-center gap-2 rounded-md border border-panel-border bg-panel/50 px-3 py-2 text-xs">
+            <Checkbox
+              checked={settings.confirmEndTurn !== false}
+              onCheckedChange={(v) => updateSettings({ confirmEndTurn: !!v })}
+            />
+            Warn about loose ends before ending the week
+          </label>
+          <div
+            role="group"
+            aria-label="Graphics quality"
+            className="mt-1.5 flex items-center gap-1.5 rounded-md border border-panel-border bg-panel/50 px-3 py-1.5 text-xs"
+          >
+            <span className="shrink-0 pr-1">Graphics</span>
             {(["auto", "high", "low"] as const).map((g) => (
               <button
                 key={g}
                 type="button"
+                aria-pressed={(settings.graphics ?? "auto") === g}
+                title={
+                  g === "auto"
+                    ? "Balanced; drops to Light if the frame rate dips"
+                    : g === "high"
+                      ? "Ambient occlusion, soft shadows, sharper image. Needs a strong GPU"
+                      : "Fastest: lower resolution, no bloom or anti-aliasing"
+                }
                 onClick={() => updateSettings({ graphics: g })}
-                className={`flex-1 rounded-md border px-2 py-1.5 text-[11px] capitalize ${
+                className={`flex-1 rounded-md border px-2 py-1 text-[11px] capitalize ${
                   (settings.graphics ?? "auto") === g
                     ? "border-steel bg-steel/20 text-steel-light"
                     : "border-panel-border bg-panel/50 hover:bg-panel-elevated"

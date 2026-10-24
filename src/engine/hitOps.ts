@@ -140,6 +140,30 @@ export function hitXpSeat(
   return crewId === leadId ? "lead" : "shooter";
 }
 
+/** At or below this the lead goes in on whoever is there; at or above ABORT_SMARTS_HIGH he walks. */
+export const ABORT_SMARTS_LOW = 30;
+export const ABORT_SMARTS_HIGH = 70;
+
+/** Chance the lead calls the job off when the named mark isn't on the block. */
+export function abortChance(smarts: number): number {
+  if (smarts <= ABORT_SMARTS_LOW) return 0;
+  if (smarts >= ABORT_SMARTS_HIGH) return 1;
+  return (smarts - ABORT_SMARTS_LOW) / (ABORT_SMARTS_HIGH - ABORT_SMARTS_LOW);
+}
+
+/** The man who makes the call on the street: bomb maker, negotiator, or the lead gun. */
+export function hitLead(
+  op: Pick<Operation, "shooterIds" | "approach" | "bombMakerId" | "negotiatorId">,
+  crew: CrewMember[],
+  state?: Pick<GameState, "mattresses" | "turn">,
+): CrewMember | undefined {
+  const byId = (id?: string) => (id ? crew.find((c) => c.id === id) : undefined);
+  if (op.approach === "car_bomb" && op.bombMakerId) return byId(op.bombMakerId);
+  if (op.approach === "sitdown_betrayal" && op.negotiatorId) return byId(op.negotiatorId);
+  const leadId = op.shooterIds.find((id) => hitXpSeat(op, id, crew, state) === "lead");
+  return byId(leadId);
+}
+
 /** Lead gun 30/50, other shooters 20/35, the wheel and the rest of the crew 15/25. */
 export function hitResolveXp(targetDead: boolean, seat: HitXpSeat = "lead"): number {
   if (seat === "lead") return targetDead ? 50 : 30;
@@ -706,9 +730,10 @@ function pickBlindTarget(
   state: GameState,
   op: Operation,
   rng: Rng,
+  excludeId?: string,
 ): CrewMember | undefined {
   const present = crewPresentIn(state, op.targetTerritoryId).filter(
-    (c) => c.family === op.targetFamily && c.status === "active" && !isLaidLow(c),
+    (c) => c.family === op.targetFamily && c.status === "active" && !isLaidLow(c) && c.id !== excludeId,
   );
   if (present.length === 0) return undefined;
   const weight = (c: CrewMember) =>
@@ -844,7 +869,29 @@ export function resolveHit(
       plannedTarget.status === "jailed" ||
       plannedTarget.status === "held" ||
       (!commissionHit && resolveCrewTerritoryId(state, plannedTarget.id) !== op.targetTerritoryId));
-  const markAbsent = !emptyBlock && (markMoved || (tippedOff && rng.chance(0.35)));
+  const markMissing = !emptyBlock && (markMoved || (tippedOff && rng.chance(0.35)));
+
+  // The player's crew is on the block and the man isn't. A sharp lead walks
+  // them home; a dull one goes in on whoever is standing there.
+  let crewCall: "aborted" | "went_blind" | undefined;
+  const markGoneForGood =
+    !!plannedTarget &&
+    (plannedTarget.status === "dead" || plannedTarget.status === "jailed" || plannedTarget.status === "held");
+  if (markMissing && op.family === state.playerFamily && !markGoneForGood && !commissionHit) {
+    const lead = hitLead(op, state.crew, state);
+    if (rng.chance(abortChance(lead?.skills.smarts ?? 0))) {
+      crewCall = "aborted";
+    } else {
+      const picked = pickBlindTarget(state, op, rng, plannedTarget?.id);
+      if (picked) {
+        crewCall = "went_blind";
+        workingOp = { ...workingOp, targetCrewId: picked.id, blind: true };
+      }
+    }
+  }
+  const markAbsent = markMissing && crewCall !== "went_blind";
+  const struckBlind = blind || crewCall === "went_blind";
+  const aborted = crewCall === "aborted";
 
   const copClues = copCluesFor(state, workingOp, TRUTH);
   const successChance = calculateHitOdds(state, workingOp, TRUTH);
@@ -930,8 +977,10 @@ export function resolveHit(
       break;
     case "target_escaped":
       fearGain = 0;
-      heatGain += 6;
-      if (emptyBlock) {
+      heatGain = aborted ? 0 : heatGain + 6;
+      if (aborted) {
+        headline = `${targetName} wasn't there. The crew saw it and walked away clean.`;
+      } else if (emptyBlock) {
         headline = `Blind hit on ${districtName} found nothing.`;
       } else if (markHidden) {
         headline = `${targetName} was nowhere on the street — he's gone to ground.`;
@@ -945,8 +994,12 @@ export function resolveHit(
       break;
   }
 
+  if (crewCall === "went_blind") {
+    headline = `The mark wasn't there, so they went in on whoever was. ${headline}`;
+  }
+
   // Blind reputation: fear up, respect/influence down
-  if (blind) {
+  if (struckBlind) {
     if (targetDead) fearGain = Math.round(fearGain * 1.4);
     else fearGain += 4;
   }
@@ -955,7 +1008,7 @@ export function resolveHit(
   const firefightNames: string[] = [];
   const cover = coverFire(state, workingOp.targetFamily, workingOp.targetTerritoryId);
   const guns = defenders + cover.weight;
-  if (!emptyBlock && guns > 0 && spec.garrisonExposure > 0 && exposed.length > 0) {
+  if (!emptyBlock && !aborted && guns > 0 && spec.garrisonExposure > 0 && exposed.length > 0) {
     let mult = 1;
     if (outcome === "clean_kill") mult *= 0.5;
     else if (outcome === "messy_kill") mult *= 1.0;
@@ -963,7 +1016,7 @@ export function resolveHit(
     if (op.surveilled) mult *= 0.7;
     if (op.lookoutId) mult *= 0.8;
     if (tippedOff) mult *= 1.6;
-    if (blind) mult *= 0.9;
+    if (struckBlind) mult *= 0.9;
 
     const perChance = Math.min(
       0.4,
@@ -1008,19 +1061,23 @@ export function resolveHit(
   // The dead don't keep their travel plans.
   crew = crew.map((c) => (c.status === "dead" && c.awayAt ? { ...c, awayAt: undefined } : c));
 
-  for (const sid of hitCrewIds(op)) {
-    const granted = grantXpToCrew(crew, sid, hitResolveXp(targetDead, hitXpSeat(op, sid, crew, state)));
-    crew = granted.crew.map((c) =>
-      c.id === sid ? { ...c, hits: c.hits + 1 } : c,
-    );
+  if (!aborted) {
+    for (const sid of hitCrewIds(op)) {
+      const granted = grantXpToCrew(crew, sid, hitResolveXp(targetDead, hitXpSeat(op, sid, crew, state)));
+      crew = granted.crew.map((c) =>
+        c.id === sid ? { ...c, hits: c.hits + 1 } : c,
+      );
+    }
   }
-  const hitPractice = applyHitPractice(crew, op, outcome, state.turn, state.playerFamily);
+  const hitPractice = aborted
+    ? { crew, logs: [] as TurnLogEntry[] }
+    : applyHitPractice(crew, op, outcome, state.turn, state.playerFamily);
   crew = hitPractice.crew;
 
   // A message hit is a point made, not a war declared: half the standing lost.
   const isMessage = op.intent === "message";
   let relations = state.relations;
-  if (!commissionHit && op.family !== op.targetFamily) {
+  if (!commissionHit && !aborted && op.family !== op.targetFamily) {
     relations = setRelationDelta(relations, op.family, op.targetFamily, isMessage ? -12 : -25);
     if (outcome === "clean_kill" || outcome === "messy_kill") {
       relations = setRelationDelta(relations, op.family, op.targetFamily, isMessage ? -8 : -15);
@@ -1052,17 +1109,23 @@ export function resolveHit(
     beats[2] = { phase: "execution", text: "The crew packs up with nothing to show." };
     complication = "mark_absent";
   }
+  if (aborted) {
+    beats = [...beats];
+    beats[1] = { phase: "complication", text: `No sign of ${targetName} on the block.` };
+    beats[2] = { phase: "execution", text: "The lead calls it off before anyone reaches for a gun." };
+    complication = "crew_aborted";
+  }
 
   // Blind reputation deltas
-  let respectDelta = targetDead ? 8 : -3;
+  let respectDelta = targetDead ? 8 : aborted ? 0 : -3;
   let influenceDelta = 0;
   let streetDelta = 0;
-  if (isMessage) {
+  if (isMessage && !aborted) {
     // Nobody admires a message; the street just learns you'll send one.
     respectDelta = targetDead ? 3 : -2;
     streetDelta = targetDead ? 4 : 0;
   }
-  if (blind) {
+  if (struckBlind) {
     respectDelta -= 6;
     influenceDelta -= 5;
     streetDelta -= 3;
@@ -1094,11 +1157,12 @@ export function resolveHit(
     headline,
     successChance,
     revealedIds,
-    blind,
+    blind: struckBlind,
     respectDelta,
     influenceDelta,
     complication,
     markAbsent: markAbsent || emptyBlock,
+    crewCall,
     trap,
     strikeTerritoryId: workingOp.targetTerritoryId,
     loyaltyDelta: ours && loyal.gained.length > 0 ? loyaltyAmount : undefined,

@@ -5,6 +5,10 @@ import { dinnerActive } from "../dinner";
 import {
   canManageRacket,
   createRacket,
+  isLaunderSiteSetUp,
+  isLegitBusiness,
+  isRacketFrozen,
+  launderCap,
   RACKET_BUILD_COST,
   racketPayment,
 } from "../economy";
@@ -71,6 +75,31 @@ function assignManagers(state: GameState): GameState {
     }
   }
   return { ...state, crew, territories };
+}
+
+/** Share of a front's cap the sim washes: under the near-cap band, so scrutiny stays down. */
+const SIM_WASH_SHARE = 0.7;
+
+function planLaundering(state: GameState): GameState {
+  const family = state.playerFamily;
+  if (!family) return state;
+  const plan = { ...(state.launderPlan ?? {}) };
+  let changed = false;
+  const territories = state.territories.map((t) => {
+    if (t.owner !== family) return t;
+    let touched = false;
+    const rackets = t.rackets.map((r) => {
+      if (!isLegitBusiness(r.type) || isRacketFrozen(r, state.turn) || plan[r.id] != null) return r;
+      const manager = r.managerId ? state.crew.find((c) => c.id === r.managerId && c.status === "active") : null;
+      plan[r.id] = Math.floor(launderCap(r, manager, state.turn) * SIM_WASH_SHARE);
+      changed = true;
+      if (isLaunderSiteSetUp(r)) return r;
+      touched = true;
+      return { ...r, launderReadyTurn: state.turn + 1 };
+    });
+    return touched ? { ...t, rackets } : t;
+  });
+  return changed ? { ...state, territories, launderPlan: plan } : state;
 }
 
 function maybeBuild(state: GameState, rng: Rng): GameState {
@@ -299,6 +328,7 @@ export function autoPlayer(state: GameState, rng: Rng, strategy: SimStrategy = "
   let next = maybeNameHeir(state);
   next = assignManagers(next);
   if (style.build) next = maybeBuild(next, rng);
+  next = planLaundering(next);
   next = maybeRecruit(next, style.recruitCap);
   if (style.lookoutEvery > 0) next = maybeLookout(next, rng, style.lookoutEvery);
   if (style.capture !== "never") next = maybeCapture(next, rng, style.capture, style.captureMen);

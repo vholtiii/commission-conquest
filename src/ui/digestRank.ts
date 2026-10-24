@@ -1,4 +1,46 @@
-import type { FamilyName, TurnLogEntry } from "@/types/game";
+import type { FamilyName, LogTone, Territory, TurnLogEntry } from "@/types/game";
+
+export interface DigestTarget {
+  territoryId?: string;
+  crewId?: string;
+  tone: LogTone;
+}
+
+export function inferTone(log: TurnLogEntry): LogTone {
+  if (log.tone) return log.tone;
+  if (
+    log.id.startsWith("log_raid_") ||
+    log.id.startsWith("log_audit_") ||
+    log.id.startsWith("log_frozen_") ||
+    log.category === "heat"
+  ) {
+    return "warning";
+  }
+  if (log.id.startsWith("log_case_") || log.id.startsWith("log_rumor")) return "intel";
+  if (log.category === "hit" || log.category === "combat") return "violence";
+  if (log.category === "economy" || log.category === "delivery") return "money";
+  return "intel";
+}
+
+/**
+ * Where a log line points on the map: the tagged block, a block id at the end
+ * of the log id (log_raid_<turn>_<territoryId>), or the first block named in the text.
+ */
+export function digestTarget(
+  log: TurnLogEntry,
+  territories: Pick<Territory, "id" | "name">[],
+): DigestTarget {
+  const tone = inferTone(log);
+  if (log.territoryId || log.crewId) {
+    return { territoryId: log.territoryId, crewId: log.crewId, tone };
+  }
+  const byId = territories.find((t) => log.id.endsWith(`_${t.id}`));
+  if (byId) return { territoryId: byId.id, tone };
+  const named = [...territories]
+    .sort((a, b) => b.name.length - a.name.length)
+    .find((t) => t.name && log.text.includes(t.name));
+  return { territoryId: named?.id, tone };
+}
 
 function mentionsPlayer(text: string, player: FamilyName): boolean {
   return (

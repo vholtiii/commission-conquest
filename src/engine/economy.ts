@@ -23,6 +23,7 @@ import { penalizeRacketFreeze } from "./practice";
 import { crewIncomeMult } from "./crews";
 import { BOSS_PRESENCE, bossPresenceDistrict } from "./bossPresence";
 import { DINNER_INCOME_MULT, dinnerActive } from "./dinner";
+import { currentRate } from "./lawyer";
 import {
   applyWarehouseShrinkage,
   depositCrates,
@@ -246,8 +247,9 @@ export function lawyerOffer(state: GameState): LawyerQuote {
   const washFallsShort = washReturn < deficit;
   const readyTurn = state.lawyerReadyTurn ?? 0;
   const cooling = state.turn < readyTurn;
-  const cleanReturn = Math.min(deficit, Math.floor(Math.max(0, state.dirtyMoney) / 2));
-  const dirtySpent = cleanReturn * 2;
+  const perClean = 2 * currentRate(state);
+  const cleanReturn = Math.min(deficit, Math.floor(Math.max(0, state.dirtyMoney) / perClean));
+  const dirtySpent = Math.ceil(cleanReturn * perClean);
   return {
     inTheRed,
     washFallsShort,
@@ -279,11 +281,6 @@ export const BOSS_PLEA_COST = 8000;
 export const BOSS_PLEA_HEAT = 8;
 export const BOSS_PLEA_WEEKS = 2;
 
-/** House counsel on a heat retainer. */
-export const COUNSEL_COST = 4800;
-export const COUNSEL_WEEKS = 4;
-export const COUNSEL_HEAT_DECAY = 3;
-
 /** Smallest pile he will rush into clean cash. */
 export const WASH_MIN = 2000;
 const WASH_FIRST = 5000;
@@ -303,13 +300,17 @@ export interface WashQuote {
   loyalty: number;
 }
 
-/** What a rush wash of `amount` dirty cash gives back. Null when the pile is under $2,000. */
-export function washQuote(amount: number): WashQuote | null {
+/**
+ * What a rush wash of `amount` dirty cash gives back at the lawyer's `rate`.
+ * Null when the pile is under $2,000.
+ */
+export function washQuote(amount: number, rate = 1): WashQuote | null {
   const pile = Math.floor(amount);
   if (pile < WASH_MIN) return null;
   const first = Math.min(pile, WASH_FIRST);
   const rest = pile - first;
-  const cut = Math.floor(first * WASH_FIRST_CUT) + Math.floor(rest * WASH_REST_CUT);
+  const base = Math.floor(first * WASH_FIRST_CUT) + Math.floor(rest * WASH_REST_CUT);
+  const cut = Math.min(pile, Math.floor(base * rate));
   const loyalty =
     pile < WASH_LOYALTY_AT
       ? 0
@@ -320,43 +321,6 @@ export function washQuote(amount: number): WashQuote | null {
     clean: pile - cut,
     heatOff: Math.min(WASH_HEAT_CAP, Math.floor(pile / WASH_HEAT_STEP)),
     loyalty,
-  };
-}
-
-/** Dirty cash, up front, for four weeks on the street lawyer's books. */
-export const STREET_LAWYER_COST = 2400;
-/** Weeks he stays hired. `streetLawyerUntil = turn + this`. */
-export const STREET_LAWYER_WEEKS = 4;
-/** Heat the week he walks a man out. */
-export const STREET_LAWYER_BAIL_HEAT = 3;
-/** Extra heat decay each week the retainer is live. */
-export const STREET_LAWYER_HEAT_DECAY = 1;
-
-export interface StreetLawyerQuote {
-  /** Retainer is live this turn. */
-  onTheBooks: boolean;
-  /** First turn he drops off. 0 when he has never been hired. */
-  until: number;
-  /** One bail is still open on this retainer. */
-  bailOpen: boolean;
-  /** Dirty cash covers a new hire and he is not already retained. */
-  canHire: boolean;
-  /** He is off the books and dirty cash is short of the retainer. */
-  shortCash: boolean;
-}
-
-export function streetLawyerQuote(
-  state: Pick<GameState, "turn" | "dirtyMoney" | "streetLawyerUntil" | "streetLawyerBailUsed">,
-): StreetLawyerQuote {
-  const until = state.streetLawyerUntil ?? 0;
-  const onTheBooks = state.turn < until;
-  const shortCash = state.dirtyMoney < STREET_LAWYER_COST;
-  return {
-    onTheBooks,
-    until,
-    bailOpen: onTheBooks && !state.streetLawyerBailUsed,
-    canHire: !onTheBooks && !shortCash,
-    shortCash: !onTheBooks && shortCash,
   };
 }
 
@@ -473,6 +437,14 @@ export interface AuditChanceCtx {
   bossHere?: boolean;
 }
 
+/** Heat, the mayor or chiefs, and the manager's books: how hard Treasury leans. */
+export function scrutinyPressure(ctx: Pick<AuditChanceCtx, "heatLevel" | "mayorActive" | "chiefsActive" | "manager">): number {
+  const heatMult = 1 + Math.max(0, ctx.heatLevel - 40) / 100;
+  const bribeMult = ctx.mayorActive ? 0.5 : ctx.chiefsActive ? 0.7 : 1;
+  const { auditMult } = launderManagerMods(ctx.manager);
+  return heatMult * bribeMult * auditMult;
+}
+
 export function auditChance(
   racket: Racket,
   amount: number,
@@ -483,12 +455,40 @@ export function auditChance(
   if (cap <= 0 || amount <= cap) return 0;
   const over = amount / cap - 1;
   const scrutinyPrev = ctx.scrutinyPrev ?? racket.scrutiny ?? 0;
-  const heatMult = 1 + Math.max(0, ctx.heatLevel - 40) / 100;
-  const bribeMult = ctx.mayorActive ? 0.5 : ctx.chiefsActive ? 0.7 : 1;
-  const { auditMult } = launderManagerMods(ctx.manager);
-  const p =
-    (0.35 * over + 0.15 * scrutinyPrev) * heatMult * bribeMult * auditMult;
+  const p = (0.35 * over + 0.15 * scrutinyPrev) * scrutinyPressure(ctx);
   return Math.max(0, Math.min(0.65, p));
+}
+
+/** Scrutiny at which Treasury opens a file on a front. */
+export const AUDIT_THRESHOLD = 1;
+/** Washing above this share of the cap starts to draw looks. */
+export const SCRUTINY_NEAR_CAP = 0.75;
+export const AUDIT_LEAD_MIN = 1;
+export const AUDIT_LEAD_MAX = 3;
+/** Without a lawyer, the only warning is a rumor this often. */
+export const AUDIT_RUMOR_CHANCE = 0.3;
+const SCRUTINY_NEAR_RATE = 0.12;
+const SCRUTINY_OVER_BASE = 0.35;
+const SCRUTINY_OVER_RATE = 0.6;
+const SCRUTINY_COOL = 0.15;
+const SCRUTINY_COOL_PAUSED = 0.35;
+
+/**
+ * A front's scrutiny after one week washing `ratio` of its cap (0 = paused).
+ * Near the cap it creeps, over the cap it jumps, under 75% it cools, paused cools fastest.
+ */
+export function nextScrutiny(prev: number, ratio: number, pressure: number): number {
+  let next: number;
+  if (ratio > 1) {
+    next = prev + (SCRUTINY_OVER_BASE + SCRUTINY_OVER_RATE * (ratio - 1)) * pressure;
+  } else if (ratio >= SCRUTINY_NEAR_CAP) {
+    next = prev + (0.04 + (SCRUTINY_NEAR_RATE * (ratio - SCRUTINY_NEAR_CAP)) / (1 - SCRUTINY_NEAR_CAP)) * pressure;
+  } else if (ratio > 0) {
+    next = prev - SCRUTINY_COOL;
+  } else {
+    next = prev - SCRUTINY_COOL_PAUSED;
+  }
+  return Math.max(0, Math.round(next * 100) / 100);
 }
 
 export function auditModifiersLabel(ctx: AuditChanceCtx, turn: number): string {
@@ -1132,6 +1132,81 @@ export function collectLaunderSites(
   return sortLaunderFillOrder(sites);
 }
 
+export interface LaunderSlack {
+  /** Ready, unfrozen fronts in fill order, with this week's plan. */
+  sites: LaunderSitePlan[];
+  totalCap: number;
+  routed: number;
+  expectedClean: number;
+  /** Dirty cash no plan will touch this week. */
+  unrouted: number;
+  /** Room left under the caps of ready fronts. */
+  spareCap: number;
+}
+
+/** What the current plan does with this week's dirty cash, read before the week closes. */
+export function launderSlack(state: GameState): LaunderSlack {
+  const empty: LaunderSlack = {
+    sites: [],
+    totalCap: 0,
+    routed: 0,
+    expectedClean: 0,
+    unrouted: Math.max(0, state.dirtyMoney),
+    spareCap: 0,
+  };
+  if (!state.playerFamily) return empty;
+  const plan = state.launderPlan ?? {};
+  const bossBlock = bossPresenceDistrict(state, state.playerFamily);
+  const sites: LaunderSitePlan[] = [];
+  for (const t of state.territories) {
+    if (t.owner !== state.playerFamily) continue;
+    const bossHere = t.id === bossBlock;
+    for (const r of t.rackets) {
+      if (!isLegitBusiness(r.type) || isRacketFrozen(r, state.turn)) continue;
+      if (!isLaunderSiteActive(r, state.turn)) continue;
+      const manager = r.managerId
+        ? state.crew.find((c) => c.id === r.managerId && c.status === "active") ?? null
+        : null;
+      const cap = Math.max(
+        1,
+        launderCap(r, manager, state.turn, bossHere, placementBonus(t, r, t.rackets).launderMult),
+      );
+      const amount = Math.max(0, Math.floor(plan[r.id] ?? 0));
+      sites.push({
+        racket: r,
+        territoryId: t.id,
+        districtName: t.name,
+        manager,
+        bossHere,
+        plan: amount,
+        cap,
+        ratio: amount / cap,
+      });
+    }
+  }
+  const ordered = sortLaunderFillOrder(sites);
+  const dirty = Math.max(0, state.dirtyMoney);
+  let routed = 0;
+  let expectedClean = 0;
+  let totalCap = 0;
+  let spareCap = 0;
+  for (const s of ordered) {
+    totalCap += s.cap;
+    const amount = Math.min(s.plan, Math.max(0, dirty - routed));
+    routed += amount;
+    expectedClean += Math.floor(amount * (1 - launderCut(s.racket.type)));
+    spareCap += Math.max(0, s.cap - amount);
+  }
+  return {
+    sites: ordered,
+    totalCap,
+    routed,
+    expectedClean,
+    unrouted: Math.max(0, dirty - routed),
+    spareCap,
+  };
+}
+
 export function processLaundering(
   state: GameState,
   territories: Territory[],
@@ -1166,76 +1241,116 @@ export function processLaundering(
   const chiefsActive = state.bribes.chiefs.isActive;
   const heatLevel = state.heat.level;
 
+  const washed = new Map<string, { site: LaunderSitePlan; amount: number; cleaned: number }>();
   for (const site of sites) {
     const amount = Math.min(site.plan, dirtyRemaining);
     if (amount <= 0) continue;
-
     const cut = launderCut(site.racket.type);
-    const over = Math.max(0, amount / site.cap - 1);
-    const scrutinyPrev = site.racket.scrutiny ?? 0;
-    const p = auditChance(
-      site.racket,
-      amount,
-      {
-        heatLevel,
-        mayorActive,
-        chiefsActive,
-        manager: site.manager,
-        scrutinyPrev,
-        bossHere: site.bossHere,
-      },
-      state.turn,
-    );
-
-    const rng = createRng(
-      hashString(`${state.seed}:${state.turn}:${site.racket.id}`),
-    );
-    const audited = over > 0 && rng.chance(p);
-
+    const cleaned = Math.floor(amount * (1 - cut));
     dirtyRemaining -= amount;
     dirtyDelta -= amount;
+    moneyDelta += cleaned;
+    totalOut += cleaned;
     siteCount += 1;
     cutSum += cut;
     totalIn += amount;
+    washed.set(site.racket.id, { site, amount, cleaned });
+  }
 
-    if (audited) {
-      const freezeTurns = over < 0.5 ? 1 : over < 1.5 ? 2 : 3;
-      const seized = over < 0.5 ? Math.floor(amount * 0.5) : amount;
-      const returned = amount - seized;
-      const heatAdd = 4 * freezeTurns;
-      heatDelta += heatAdd;
-      if (returned > 0) {
-        const cleaned = Math.floor(returned * (1 - cut));
-        moneyDelta += cleaned;
-        totalOut += cleaned;
+  // Treasury's side of the books: scrutiny moves on every front set up to wash,
+  // a file opens past the line, and lands one to three weeks later.
+  const hasRetainer = (state.lawyerRetainer?.until ?? 0) > state.turn;
+  for (const t of territories) {
+    if (t.owner !== state.playerFamily) continue;
+    for (const r of t.rackets) {
+      if (!isLaunderSiteSetUp(r)) continue;
+      const frozen = isRacketFrozen(r, state.turn);
+      const wash = washed.get(r.id);
+      const prev = r.scrutiny ?? 0;
+      let scrutiny = prev;
+      if (wash) {
+        const pressure = scrutinyPressure({
+          heatLevel,
+          mayorActive,
+          chiefsActive,
+          manager: wash.site.manager,
+        });
+        scrutiny = nextScrutiny(prev, wash.amount / wash.site.cap, pressure);
+      } else if (!frozen) {
+        scrutiny = nextScrutiny(prev, 0, 1);
       }
-      racketUpdates.set(site.racket.id, {
-        frozenUntil: state.turn + freezeTurns,
-        scrutiny: 0,
-      });
-      const label = RACKET_LABELS[site.racket.type];
-      audits.push({
-        racketId: site.racket.id,
-        territoryId: site.territoryId,
-        label,
-        districtName: site.districtName,
-        freezeTurns,
-        seized,
-        heat: heatAdd,
-      });
-      logs.push({
-        id: `log_audit_${state.turn}_${site.racket.id}`,
-        turn: state.turn,
-        category: "economy",
-        text: `Treasury audit: ${label} in ${site.districtName} frozen ${freezeTurns} turn(s); $${seized} seized.`,
-        family: state.playerFamily,
-      });
-    } else {
-      const cleaned = Math.floor(amount * (1 - cut));
-      moneyDelta += cleaned;
-      totalOut += cleaned;
-      const scrutiny = Math.round((scrutinyPrev * 0.5 + over) * 100) / 100;
-      racketUpdates.set(site.racket.id, { scrutiny });
+      const patch: Partial<Racket> = {};
+      if (scrutiny !== prev) patch.scrutiny = scrutiny;
+
+      const label = RACKET_LABELS[r.type];
+      let due = r.auditDueTurn;
+      if (due == null && scrutiny >= AUDIT_THRESHOLD && !frozen) {
+        const rng = createRng(hashString(`${state.seed}:${state.turn}:${r.id}:file`));
+        due = state.turn + rng.int(AUDIT_LEAD_MIN, AUDIT_LEAD_MAX);
+        patch.auditOpenedTurn = state.turn;
+        patch.auditDueTurn = due;
+        if (!hasRetainer && rng.chance(AUDIT_RUMOR_CHANCE)) {
+          logs.push({
+            id: `log_audit_rumor_${state.turn}_${r.id}`,
+            turn: state.turn,
+            category: "economy",
+            text: `Word downtown: Treasury men were asking about the ${label} in ${t.name}.`,
+            family: state.playerFamily,
+            territoryId: t.id,
+            tone: "warning",
+          });
+        }
+      } else if (due != null && state.turn >= due) {
+        patch.auditOpenedTurn = undefined;
+        patch.auditDueTurn = undefined;
+        if (scrutiny >= AUDIT_THRESHOLD / 2) {
+          const freezeTurns = scrutiny < 1.25 ? 1 : scrutiny < 2 ? 2 : 3;
+          let seized: number;
+          if (wash) {
+            seized = scrutiny < 1.5 ? Math.floor(wash.amount * 0.5) : wash.amount;
+            const kept = Math.floor((wash.amount - seized) * (1 - launderCut(r.type)));
+            moneyDelta -= wash.cleaned - kept;
+            totalOut -= wash.cleaned - kept;
+          } else {
+            seized = Math.min(dirtyRemaining, Math.floor(Math.max(0, scrutiny) * 1000));
+            dirtyRemaining -= seized;
+            dirtyDelta -= seized;
+          }
+          const heatAdd = 4 * freezeTurns;
+          heatDelta += heatAdd;
+          patch.frozenUntil = state.turn + freezeTurns;
+          patch.scrutiny = 0;
+          audits.push({
+            racketId: r.id,
+            territoryId: t.id,
+            label,
+            districtName: t.name,
+            freezeTurns,
+            seized,
+            heat: heatAdd,
+          });
+          logs.push({
+            id: `log_audit_${state.turn}_${r.id}`,
+            turn: state.turn,
+            category: "economy",
+            text: `Treasury audit: ${label} in ${t.name} frozen ${freezeTurns} turn(s); $${seized} seized.`,
+            family: state.playerFamily,
+            territoryId: t.id,
+            tone: "warning",
+          });
+        } else {
+          logs.push({
+            id: `log_audit_closed_${state.turn}_${r.id}`,
+            turn: state.turn,
+            category: "economy",
+            text: `Treasury closed the file on the ${label} in ${t.name}. The books looked dull enough.`,
+            family: state.playerFamily,
+            territoryId: t.id,
+            tone: "money",
+          });
+        }
+      }
+      if (Object.keys(patch).length > 0) racketUpdates.set(r.id, patch);
     }
   }
 

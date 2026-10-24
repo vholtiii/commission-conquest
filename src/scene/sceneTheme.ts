@@ -2,14 +2,65 @@
 
 import * as THREE from "three";
 
+/** Resolved render quality. `auto` is `settings.graphics === "auto"` while the frame rate holds. */
+export type GraphicsTier = "low" | "auto" | "high";
+
+export const TIER_DPR: Record<GraphicsTier, number | [number, number]> = {
+  low: 0.85,
+  auto: 1,
+  high: [1, 1.25],
+};
+
+export const TIER_SHADOW_MAP: Record<GraphicsTier, number> = {
+  low: 1024,
+  auto: 1536,
+  high: 2048,
+};
+
 export const BUILDING_PALETTE = {
-  brick: "#8B5A4A",
-  brownstone: "#6B4E3D",
-  limestone: "#C4B59A",
-  warehouse: "#5C5C5C",
+  sootBrick: "#5a3c34",
+  redBrick: "#8b4a3c",
+  tanBrick: "#a07a5a",
+  terracotta: "#cdb795",
+  granite: "#8a8a86",
+  brownstone: "#6b4e3d",
+  limestone: "#c4b59a",
+  sandstone: "#b39a72",
+  warehouse: "#5c5c5c",
+} as const;
+
+export const ROOF_PALETTE = {
+  tar: "#1f1d1c",
+  gravel: "#3a3835",
+  copper: "#4f7a6a",
+  slate: "#2c3036",
 } as const;
 
 export const BUILDING_PALETTE_LIST = Object.values(BUILDING_PALETTE);
+
+export type BuildingArchetype = "tenement" | "brownstone" | "warehouse" | "tower" | "commercial";
+
+type Weighted = ReadonlyArray<readonly [string, number]>;
+
+const P = BUILDING_PALETTE;
+const ARCHETYPE_PALETTE: Record<BuildingArchetype, Weighted> = {
+  tenement: [[P.redBrick, 3], [P.sootBrick, 3], [P.tanBrick, 2], [P.brownstone, 1]],
+  brownstone: [[P.brownstone, 5], [P.sootBrick, 1], [P.sandstone, 1]],
+  warehouse: [[P.warehouse, 3], [P.sootBrick, 2], [P.redBrick, 2], [P.granite, 1]],
+  tower: [[P.limestone, 3], [P.granite, 2], [P.terracotta, 2], [P.sandstone, 1]],
+  commercial: [[P.redBrick, 2], [P.tanBrick, 2], [P.terracotta, 2], [P.limestone, 1], [P.sootBrick, 1]],
+};
+
+function pickWeighted(list: Weighted, r: number): string {
+  let total = 0;
+  for (const [, w] of list) total += w;
+  let acc = 0;
+  for (const [c, w] of list) {
+    acc += w / total;
+    if (r < acc) return c;
+  }
+  return list[list.length - 1]![0];
+}
 
 export const ROAD_COLOR = "#2a2b2e";
 export const WATER_COLOR = "#3d86b0";
@@ -24,12 +75,21 @@ export function hash2(x: number, y: number, seed = 0): number {
   return ((h >>> 0) % 100000) / 100000;
 }
 
-export function pickPalette(gx: number, gz: number, seed: number): string {
-  const r = hash2(gx, gz, seed);
-  if (r < 0.32) return BUILDING_PALETTE.brick;
-  if (r < 0.58) return BUILDING_PALETTE.brownstone;
-  if (r < 0.82) return BUILDING_PALETTE.limestone;
-  return BUILDING_PALETTE.warehouse;
+export function pickPalette(
+  gx: number,
+  gz: number,
+  seed: number,
+  archetype: BuildingArchetype = "tenement",
+): string {
+  return pickWeighted(ARCHETYPE_PALETTE[archetype], hash2(gx, gz, seed));
+}
+
+/** Roof finish by archetype: tar on walk-ups, gravel on warehouses, copper on some towers. */
+export function pickRoof(gx: number, gz: number, seed: number, archetype: BuildingArchetype): string {
+  const r = hash2(gx, gz, seed + 29);
+  if (archetype === "tower") return r < 0.2 ? ROOF_PALETTE.copper : ROOF_PALETTE.slate;
+  if (archetype === "warehouse") return ROOF_PALETTE.gravel;
+  return r < 0.8 ? ROOF_PALETTE.tar : ROOF_PALETTE.gravel;
 }
 
 export function lerp(a: number, b: number, t: number): number {
@@ -41,8 +101,12 @@ export function clamp(v: number, min: number, max: number): number {
 }
 
 export interface SeasonLook {
+  /** Below-horizon sky and the clear colour. */
   background: THREE.Color;
-  fog: THREE.Color;
+  /** Sky at the horizon. Fog uses it too, so the far city fades into the sky. */
+  horizon: THREE.Color;
+  /** Sky overhead. */
+  zenith: THREE.Color;
   sunColor: THREE.Color;
   sunIntensity: number;
   skyColor: THREE.Color;
@@ -53,7 +117,8 @@ export interface SeasonLook {
 
 function look(
   background: string,
-  fog: string,
+  horizon: string,
+  zenith: string,
   sunColor: string,
   sunIntensity: number,
   skyColor: string,
@@ -63,7 +128,8 @@ function look(
 ): SeasonLook {
   return {
     background: new THREE.Color(background),
-    fog: new THREE.Color(fog),
+    horizon: new THREE.Color(horizon),
+    zenith: new THREE.Color(zenith),
     sunColor: new THREE.Color(sunColor),
     sunIntensity,
     skyColor: new THREE.Color(skyColor),
@@ -73,11 +139,14 @@ function look(
   };
 }
 
-/** Peaks: mid-January, mid-April, mid-July, mid-October. Spring matches the original noon light. */
-const WINTER = look("#0c1218", "#1a2838", "#d5e2f2", 0.9, "#8ea4be", "#1c1816", 0.3, 26);
-const SPRING = look("#11141a", "#11141a", "#ffd9a8", 1.35, "#cbd7e8", "#241d16", 0.22, 45);
-const SUMMER = look("#16130e", "#2a2218", "#ffb060", 1.55, "#f0d2a8", "#2c2218", 0.2, 62);
-const AUTUMN = look("#14110e", "#241c16", "#ffc48a", 1.15, "#d8c4a4", "#261c16", 0.24, 34);
+/**
+ * Peaks: mid-January, mid-April, mid-July, mid-October. Spring matches the original noon light.
+ * Winter is steel, spring slate, summer dusty amber, autumn bruised orange.
+ */
+const WINTER = look("#1a222c", "#4a5a6c", "#1a2638", "#d5e2f2", 0.9, "#8ea4be", "#1c1816", 0.3, 26);
+const SPRING = look("#1c1f26", "#4a5260", "#1c2230", "#ffd9a8", 1.35, "#cbd7e8", "#241d16", 0.22, 45);
+const SUMMER = look("#221d16", "#6a5844", "#262630", "#ffb060", 1.55, "#f0d2a8", "#2c2218", 0.2, 62);
+const AUTUMN = look("#201814", "#664636", "#221c26", "#ffc48a", 1.15, "#d8c4a4", "#261c16", 0.24, 34);
 
 const SEASON_KEYS: Array<{ day: number; look: SeasonLook }> = [
   { day: 15, look: WINTER },
@@ -99,7 +168,8 @@ function dayOfYear(month: number, day: number): number {
 function lerpLook(a: SeasonLook, b: SeasonLook, t: number): SeasonLook {
   return {
     background: a.background.clone().lerp(b.background, t),
-    fog: a.fog.clone().lerp(b.fog, t),
+    horizon: a.horizon.clone().lerp(b.horizon, t),
+    zenith: a.zenith.clone().lerp(b.zenith, t),
     sunColor: a.sunColor.clone().lerp(b.sunColor, t),
     sunIntensity: a.sunIntensity + (b.sunIntensity - a.sunIntensity) * t,
     skyColor: a.skyColor.clone().lerp(b.skyColor, t),

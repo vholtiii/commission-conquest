@@ -90,7 +90,9 @@ export type HitComplication =
   | "toast"
   | "tipped"
   | "trap"
-  | "mark_absent";
+  | "mark_absent"
+  /** The mark wasn't there and the lead called it off before a shot was fired. */
+  | "crew_aborted";
 
 export type AiPersonality = "economic" | "expansionist" | "covert" | "smuggler" | "volatile";
 
@@ -152,8 +154,13 @@ export interface CrewMember {
   roleSinceTurn?: number;
   /** While status is "held": turn he is released (exclusive). */
   heldUntilTurn?: number;
-  /** While the boss is jailed: the turn the family passes if he is still inside (exclusive). */
+  /**
+   * While jailed. The boss: the turn the family passes if he is still inside.
+   * Anyone else: the turn his sentence is up and he walks.
+   */
   jailedUntilTurn?: number;
+  /** The lawyer already fought this sentence. */
+  caseFought?: boolean;
   /** Underboss running the family while the real boss is in jail. Role stays underboss. */
   actingBoss?: boolean;
   /** Alive behind bars for good. Counted as gone; no funeral to hold. */
@@ -243,8 +250,12 @@ export interface Racket {
   upgradedTurn?: number;
   /** Frozen by Treasury audit until this turn (exclusive). */
   frozenUntil?: number;
-  /** Accumulated over-wash scrutiny (decays when under cap). */
+  /** Treasury's interest in the books: builds washing near or over the cap, cools when eased off. */
   scrutiny?: number;
+  /** Treasury opened a file this week. Hidden from the player; the lawyer reads it. */
+  auditOpenedTurn?: number;
+  /** The week the file lands. Hidden from the player. */
+  auditDueTurn?: number;
   /**
    * Turn when this legit business becomes an active laundering site.
    * Undefined = not set up. Set to turn+1 on setup; ready once turn >= this.
@@ -787,6 +798,8 @@ export interface HitResult {
   complication?: HitComplication;
   /** The mark never arrived (tipped, moved, or an empty block). */
   markAbsent?: boolean;
+  /** The named mark was gone and the lead decided on the spot: walk away, or hit whoever was there. */
+  crewCall?: "aborted" | "went_blind";
   /** The target family was waiting. */
   trap?: boolean;
   /** Block the strike actually landed on (a boss bomb travels with him). */
@@ -929,6 +942,26 @@ export interface TurnLogEntry {
   suspect?: FamilyName;
   /** Hit lines: the family on the receiving end. */
   victim?: FamilyName;
+  /** Where it happened, so the digest can fly the camera there. */
+  territoryId?: string;
+  /** Who it happened to. */
+  crewId?: string;
+  tone?: LogTone;
+}
+
+export type LogTone = "violence" | "money" | "intel" | "warning";
+
+export type RetainerTier = "street" | "house" | "top";
+
+export interface LawyerRetainer {
+  tier: RetainerTier;
+  until: number;
+}
+
+export interface MapPulse {
+  territoryId: string;
+  tone: LogTone;
+  nonce: number;
 }
 
 export interface DiplomacyState {
@@ -1216,6 +1249,13 @@ export interface IntelState {
   alerted: Record<string, number>;
   /** Lookouts whose face a family knows: lookoutId → family + expiry. */
   burned: Record<string, BurnedLookout>;
+  /** Where each rival man spent the last few weeks (newest last). */
+  presence?: Record<string, PresenceMark[]>;
+}
+
+export interface PresenceMark {
+  turn: number;
+  territoryId: string;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1371,6 +1411,8 @@ export interface GameSettings {
   ambienceVolume?: number;
   /** random deals opening districts each seed. classic keeps the map file. */
   startMode?: "random" | "classic";
+  /** Ask before ending a week with idle men, unmanaged rackets, and the like. Defaults to on. */
+  confirmEndTurn?: boolean;
 }
 
 /** How many districts each family has grabbed on a given turn. */
@@ -1400,12 +1442,14 @@ export interface GameState {
   launderNudgeShown: boolean;
   /** First turn house counsel will take another retainer. 0 means he will answer. */
   lawyerReadyTurn: number;
-  /** First turn the street lawyer is off the books. 0 means he was never hired. */
-  streetLawyerUntil: number;
-  /** The one bail on the current retainer has been used. */
-  streetLawyerBailUsed: boolean;
-  /** First turn house counsel's heat retainer lapses. 0 means he was never kept. */
-  counselUntil: number;
+  /** The family lawyer's retainer; `until` is exclusive. */
+  lawyerRetainer?: LawyerRetainer | null;
+  /** Multiplier on his fees: rises with each job, cools back to 1 week by week. */
+  lawyerRate?: number;
+  /** One lawyer per game. */
+  lawyerName?: string;
+  /** The man whose case the lawyer's office opened on. */
+  lawyerFocusCrewId?: string | null;
   /** The week a name was quieted. Once a week. */
   lawyerWantedTurn: number;
   /** The jailed-until week of the sentence the boss's plea was spent on. 0 means none. */
@@ -1557,6 +1601,8 @@ export interface GameState {
   /** Increments on each fly request so camera re-triggers for the same district. */
   flyToNonce: number;
   hitFxTerritoryId: string | null;
+  /** A ring on the map pointing at what a digest line was about. */
+  mapPulse?: MapPulse | null;
   /** Brief FX when a racket is built or upgraded. */
   buildFx: BuildFxState | null;
   /** Hit cinematics waiting to play (FIFO): ours, then incoming. */

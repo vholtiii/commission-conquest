@@ -103,10 +103,9 @@ export default function DistrictPanel() {
   const heat = useGameStore((s) => s.heat);
   const rivalHeat = useGameStore((s) => s.rivalHeat);
   const bribes = useGameStore((s) => s.bribes);
-  const streetLawyerUntil = useGameStore((s) => s.streetLawyerUntil ?? 0);
-  const counselUntil = useGameStore((s) => s.counselUntil ?? 0);
+  const lawyerRetainer = useGameStore((s) => s.lawyerRetainer);
   const [caseLookoutId, setCaseLookoutId] = useState("");
-  const riskState = { heat, bribes, territories, turn, playerFamily, streetLawyerUntil, counselUntil };
+  const riskState = { heat, bribes, territories, turn, playerFamily, lawyerRetainer };
 
   const territory = territories.find((t) => t.id === selectedTerritoryId);
   if (!territory || !playerFamily) return null;

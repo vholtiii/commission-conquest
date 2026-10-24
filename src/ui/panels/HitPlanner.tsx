@@ -2,9 +2,17 @@ import { useEffect, useMemo, useState } from "react";
 import type { HitApproach, Operation } from "@/types/game";
 import { FAMILY_HEX, MAP_STATUS } from "@/types/game";
 import { useGameStore } from "@/engine/store";
-import { calculateHitOddsBreakdown, defendersFor, estimateFirefightRisk, getawayRisk, territoryHops } from "@/engine/hitOps";
+import {
+  abortChance,
+  calculateHitOddsBreakdown,
+  defendersFor,
+  estimateFirefightRisk,
+  getawayRisk,
+  hitLead,
+  territoryHops,
+} from "@/engine/hitOps";
 import { resolveCrewTerritoryId } from "@/engine/crewLocation";
-import { emptyIntel, hasFreshCasing, namedHitTargets } from "@/engine/intel";
+import { emptyIntel, hasFreshCasing, namedHitTargets, presenceOnBlock } from "@/engine/intel";
 import { isMessageTargetRole, routeDisputeWith } from "@/engine/passage";
 import { attributeCinematic, attributionLabel } from "@/engine/attribution";
 import { coverFire, getawayCover, isLaidLow, laidLowHouse, safehouseHitPenalty } from "@/engine/safehouse";
@@ -243,6 +251,8 @@ export default function HitPlanner() {
     missing.length === 0 &&
     (blind || (!!targetCrewId && rivalTargets.length > 0));
   const spec = approachSpec(approach);
+  const lead = draftOp ? hitLead(draftOp, crew, state) : undefined;
+  const leadAbort = lead ? abortChance(lead.skills.smarts) : 0;
 
   function clearRoles() {
     setShooterIds([]);
@@ -385,6 +395,19 @@ export default function HitPlanner() {
                     </Tip>
                   );
                 })()}
+                {(() => {
+                  const seen = presenceOnBlock(state, c.id, territory.id);
+                  if (seen.of === 0) return null;
+                  const tone =
+                    seen.weeks >= 5 ? "text-emerald-400" : seen.weeks >= 3 ? "text-amber-300" : "text-heat";
+                  return (
+                    <Tip content={`On this block ${seen.weeks} of the last ${seen.of} weeks. A man who keeps to his block is there when the crew shows up.`}>
+                      <span className={`text-[9px] ${tone}`}>
+                        {seen.weeks}/{seen.of} wks
+                      </span>
+                    </Tip>
+                  );
+                })()}
                 <span className="ml-auto text-[10px] text-muted-foreground">{titleCase(c.role)}</span>
               </button>
             ))}
@@ -516,6 +539,16 @@ export default function HitPlanner() {
               </div>
             );
           })}
+          {!blind && lead && (
+            <p className="text-[10px] text-muted-foreground">
+              Lead: <span className="text-foreground">{lead.name}</span> (smarts {lead.skills.smarts}){" "}
+              {leadAbort >= 0.99
+                ? "will walk away clean if the mark is gone."
+                : leadAbort <= 0.01
+                  ? "will likely go in anyway if the mark is gone."
+                  : `walks away about ${Math.round(leadAbort * 100)}% of the time if the mark is gone; otherwise he hits whoever is there.`}
+            </p>
+          )}
           {rideAlong.length > 0 && (
             <div>
               <div className="mb-1 text-[11px] font-medium">Comes with him</div>
@@ -756,7 +789,13 @@ export function HitResultModal() {
             {incoming && (
               <Badge className="bg-heat/25 text-heat">Incoming — {who}</Badge>
             )}
-            {r.blind && (
+            {r.crewCall === "aborted" && (
+              <Badge className="bg-steel/25 text-steel-light">Called off</Badge>
+            )}
+            {r.crewCall === "went_blind" && (
+              <Badge className="bg-heat/25 text-heat">Went in blind</Badge>
+            )}
+            {r.blind && r.crewCall !== "went_blind" && (
               <Badge className="bg-heat/25 text-heat">Blind</Badge>
             )}
             {r.tippedOff && (
@@ -782,6 +821,16 @@ export function HitResultModal() {
             </p>
           ))}
         </div>
+        {r.crewCall === "aborted" && (
+          <p className="mt-2 text-xs text-muted-foreground">
+            The lead read the block and pulled the crew out. No heat, no standing lost, but the week is spent.
+          </p>
+        )}
+        {r.crewCall === "went_blind" && (
+          <p className="mt-2 text-xs text-amber-300">
+            The lead didn&apos;t wait for orders. Blind-hit odds and the blind hit to your standing applied.
+          </p>
+        )}
         {markFate && <p className="mt-2 text-xs text-heat">{markFate}</p>}
         {incoming && detail.length > 0 && (
           <div className="mb-1 mt-2 text-[10px] uppercase text-muted-foreground">Their losses</div>

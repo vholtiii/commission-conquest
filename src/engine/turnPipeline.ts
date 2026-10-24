@@ -40,11 +40,13 @@ import { advanceMaking } from "./making";
 import { decayRelations } from "./relations";
 import { activePactKeys, expirePacts } from "./diplomacy";
 import { pruneManagers, tickAssignmentXp, grantXpToCrew, bumpLoyalty } from "./crew";
-import { emptyIntel, pruneIntel } from "./intel";
+import { emptyIntel, pruneIntel, recordPresence } from "./intel";
 import { pruneGrudges, releaseHeldCrew } from "./casing";
 import { generateCrewRequests, tickCrewMentoring } from "./crews";
 import { tickBossPresence } from "./bossPresence";
 import { familyHeadless, tickJails } from "./jail";
+import { coolRate } from "./lawyer";
+import { newFlagLogs } from "./auditReads";
 import { checkVictory, familyInfluence, familyWealth, influenceTick, rivalStandingDrivers } from "./victory";
 import { generateRumors } from "./rumors";
 import { tickIncidents } from "./incidents";
@@ -121,6 +123,8 @@ export function resolvePlayerHits(
       turn: current.turn,
       category: "hit",
       text: result.headline,
+      territoryId: result.strikeTerritoryId ?? op.targetTerritoryId,
+      tone: "violence",
     });
     const origin =
       op.originTerritoryId ||
@@ -651,6 +655,7 @@ export function endTurn(state: GameState, rng?: Rng): GameState {
   const jailed = tickJails(current, random);
   current = jailed.state;
   logs.push(...jailed.logs);
+  if ((current.lawyerRate ?? 1) > 1) current = { ...current, lawyerRate: coolRate(current.lawyerRate) };
   // A boss who died in the Tombs: a ready consigliere takes the chair, or the men scatter.
   for (const family of ALL_FAMILY_NAMES) {
     if (family === current.playerFamily) continue;
@@ -731,6 +736,7 @@ export function endTurn(state: GameState, rng?: Rng): GameState {
   current = presence.state;
   logs.push(...presence.logs);
 
+  current = recordPresence(current);
   current = pruneIntel(current);
   current = pruneGrudges(current);
 
@@ -746,6 +752,7 @@ export function endTurn(state: GameState, rng?: Rng): GameState {
       c.status === "dead" ? c : { ...c, lastSiteId: resolveCrewTerritoryId(current, c.id) ?? undefined },
     ),
   };
+  logs.push(...newFlagLogs(state, current));
   const families = {} as NonNullable<typeof current.history>[number]["families"];
   for (const name of ALL_FAMILY_NAMES) {
     families[name] = {

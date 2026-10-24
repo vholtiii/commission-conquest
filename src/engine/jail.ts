@@ -37,15 +37,29 @@ function withActing(crew: CrewMember[], family: FamilyName, turn: number): CrewM
   });
 }
 
+export const MIN_SENTENCE = 3;
+export const MAX_SENTENCE = 6;
+
+/** Weeks a man below the boss draws: 3, plus one for every two wanted, capped at 6. */
+export function sentenceWeeks(wanted: number): number {
+  return Math.min(MAX_SENTENCE, Math.max(MIN_SENTENCE, MIN_SENTENCE + Math.floor(Math.max(0, wanted) / 2)));
+}
+
 /**
- * Send a crew member to jail. Soldiers stay jailed. The boss gets a 4-turn
- * window and, if an underboss is ready, that man runs the family without taking the title.
+ * Send a crew member to jail. Men below the boss draw a sentence by how wanted
+ * they are. The boss gets a 4-turn window and, if an underboss is ready, that
+ * man runs the family without taking the title.
  */
 export function jailInCrew(crew: CrewMember[], crewId: string, turn: number): CrewMember[] {
   const member = crew.find((c) => c.id === crewId);
   if (!member || member.status === "dead" || member.status === "jailed") return crew;
   if (member.role !== "boss") {
-    return crew.map((c) => (c.id === crewId ? { ...c, status: "jailed" as const } : c));
+    const until = turn + sentenceWeeks(member.wanted);
+    return crew.map((c) =>
+      c.id === crewId
+        ? { ...c, status: "jailed" as const, jailedUntilTurn: until, caseFought: undefined }
+        : c,
+    );
   }
   const until = turn + JAIL_TURNS;
   const next = crew.map((c) =>
@@ -60,13 +74,63 @@ export function jailMember(state: GameState, crewId: string): GameState {
   return { ...state, crew: jailInCrew(state.crew, crewId, state.turn) };
 }
 
-/** The street lawyer posted bail. A non-boss walks, wanted unchanged, back to idle. */
+/** Bail posted. A non-boss walks, wanted unchanged, back to idle. */
 export function releaseMember(crew: CrewMember[], crewId: string): CrewMember[] {
   return crew.map((c) =>
     c.id === crewId && c.status === "jailed" && c.role !== "boss"
-      ? { ...c, status: "active" as const, assignment: { type: "idle" as const } }
+      ? {
+          ...c,
+          status: "active" as const,
+          assignment: { type: "idle" as const },
+          jailedUntilTurn: undefined,
+          caseFought: undefined,
+        }
       : c,
   );
+}
+
+/** Your men below the boss whose sentence is up walk out, a little less wanted. */
+function releaseServed(state: GameState): { state: GameState; logs: TurnLogEntry[] } {
+  const player = state.playerFamily;
+  if (!player) return { state, logs: [] };
+  const logs: TurnLogEntry[] = [];
+  const crew = state.crew.map((c) => {
+    if (c.family !== player || c.role === "boss" || c.status !== "jailed") return c;
+    if (c.jailedUntilTurn == null || state.turn < c.jailedUntilTurn) return c;
+    logs.push({
+      id: `log_jail_out_${c.id}_${state.turn}`,
+      turn: state.turn,
+      category: "system",
+      text: `${c.name} walks out of the Tombs.`,
+      family: player,
+      crewId: c.id,
+      tone: "intel",
+    });
+    return {
+      ...c,
+      status: "active" as const,
+      assignment: { type: "idle" as const },
+      jailedUntilTurn: undefined,
+      caseFought: undefined,
+      wanted: Math.max(0, c.wanted - 1),
+    };
+  });
+  return { state: logs.length > 0 ? { ...state, crew } : state, logs };
+}
+
+/** Older saves jailed soldiers with no end date. */
+export function backfillSentences(crew: CrewMember[], turn: number): CrewMember[] {
+  return crew.map((c) =>
+    c.status === "jailed" && c.role !== "boss" && c.jailedUntilTurn == null
+      ? { ...c, jailedUntilTurn: turn + MIN_SENTENCE }
+      : c,
+  );
+}
+
+/** Your men who went inside between two snapshots. */
+export function newlyJailed(before: CrewMember[], after: CrewMember[], family: FamilyName): CrewMember[] {
+  const wasInside = new Set(before.filter((c) => c.status === "jailed").map((c) => c.id));
+  return after.filter((c) => c.family === family && c.status === "jailed" && !wasInside.has(c.id));
 }
 
 /** The judge came through. The boss walks out and the stand-in steps back. */
@@ -87,8 +151,9 @@ export function tickJails(
   state: GameState,
   rng: Rng,
 ): { state: GameState; logs: TurnLogEntry[] } {
-  const logs: TurnLogEntry[] = [];
-  let current = state;
+  const served = releaseServed(state);
+  const logs: TurnLogEntry[] = [...served.logs];
+  let current = served.state;
   const families = new Set(
     current.crew.filter((c) => c.role === "boss" && c.status === "jailed").map((c) => c.family),
   );

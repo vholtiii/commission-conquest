@@ -259,6 +259,37 @@ export function pruneIntel(state: GameState): GameState {
   };
 }
 
+export const PRESENCE_WEEKS = 6;
+
+/** Log where every living rival man stands this week; keeps the last PRESENCE_WEEKS. */
+export function recordPresence(state: GameState): GameState {
+  const intel = state.intel ?? emptyIntel();
+  const prev = intel.presence ?? {};
+  const presence: NonNullable<IntelState["presence"]> = {};
+  for (const c of state.crew) {
+    if (c.family === state.playerFamily) continue;
+    if (c.status === "dead") continue;
+    const tid = resolveCrewTerritoryId(state, c.id);
+    const history = (prev[c.id] ?? []).filter((p) => p.turn !== state.turn);
+    if (tid) history.push({ turn: state.turn, territoryId: tid });
+    if (history.length > 0) presence[c.id] = history.slice(-PRESENCE_WEEKS);
+  }
+  return { ...state, intel: { ...intel, presence } };
+}
+
+/** How many of the last PRESENCE_WEEKS weeks this man was seen on the block. */
+export function presenceOnBlock(
+  state: Pick<GameState, "intel">,
+  crewId: string,
+  territoryId: string,
+): { weeks: number; of: number } {
+  const history = state.intel?.presence?.[crewId] ?? [];
+  return {
+    weeks: history.filter((p) => p.territoryId === territoryId).length,
+    of: history.length,
+  };
+}
+
 export function hasActiveIntel(state: VisibilityState, territoryId: string): boolean {
   const intel = state.intel ?? emptyIntel();
   if ((intel.districtReveal[territoryId] ?? 0) > state.turn) return true;

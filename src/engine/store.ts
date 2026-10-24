@@ -14,13 +14,32 @@ import type {
   GameState,
   HitApproach,
   HitCinematic,
+  LogTone,
   PanelId,
   RacketType,
+  RetainerTier,
 } from "@/types/game";
 import { RACKET_LABELS } from "@/types/game";
 import { alignTerritoriesToMap, buildInitialState, startGame } from "./initialState";
 import { endTurn, resolvePlayerHits } from "./turnPipeline";
-import { familyHeadless, releaseBoss, releaseMember } from "./jail";
+import { backfillSentences, familyHeadless, newlyJailed, releaseBoss, releaseMember } from "./jail";
+import {
+  activeRetainer,
+  BAIL_HEAT,
+  bailBase,
+  bumpRate,
+  currentRate,
+  FIGHT_WEEKS,
+  fightBase,
+  lawyerFee,
+  lawyerName,
+  lawyerShortName,
+  migrateRetainer,
+  RETAINER_ORDER,
+  RETAINER_WEEKS,
+  RETAINERS,
+  retainerFee,
+} from "./lawyer";
 import { emptyVictory, finalTurnFor, seedRivalInfluence } from "./victory";
 import { ensureRacketSites, getCityLayout, nextRacketSiteIndex, racketBlockFor } from "./cityLayout";
 import { bringCrewOnHit, buildHitCinematic, commitHitCrew, planHit } from "./hitOps";
@@ -70,11 +89,6 @@ import {
   BOSS_PLEA_COST,
   BOSS_PLEA_HEAT,
   BOSS_PLEA_WEEKS,
-  COUNSEL_COST,
-  COUNSEL_WEEKS,
-  STREET_LAWYER_BAIL_HEAT,
-  STREET_LAWYER_COST,
-  STREET_LAWYER_WEEKS,
   washQuote,
   normalizeTerritoryRackets,
   pruneLaunderPlan,
@@ -269,6 +283,9 @@ interface GameStore extends GameState {
   dismissOnboarding: () => void;
   selectTerritory: (id: string | null, opts?: { toastLabel?: string; racketId?: string }) => void;
   clearFlyTo: () => void;
+  /** Fly the camera to a block and ring it; `select` also opens the district or crew sheet. */
+  pulseMap: (target: { territoryId?: string; crewId?: string; tone: LogTone }, select?: boolean) => void;
+  clearMapPulse: () => void;
   clearHitFx: () => void;
   clearBuildFx: () => void;
   finishCinematic: () => void;
@@ -307,16 +324,22 @@ interface GameStore extends GameState {
   setupLaunderSite: (territoryId: string, racketId: string) => void;
   stopLaunderSite: (territoryId: string, racketId: string) => void;
   callLawyer: () => void;
-  hireStreetLawyer: () => void;
-  streetLawyerBail: (crewId: string) => void;
+  /** Open the lawyer's office, optionally at one man's case. */
+  openLawyer: (crewId?: string) => void;
+  /** Put the lawyer on a four-week retainer at the given tier. */
+  hireRetainer: (tier: RetainerTier) => void;
+  /** Bail one of your men below the boss out of the Tombs. */
+  postBail: (crewId: string) => void;
+  /** Fight one man's case: two weeks off, once per sentence. */
+  fightCase: (crewId: string) => void;
   /** Take two points of wanted off one man. Once a week. */
   quietWanted: (crewId: string) => void;
   /** Cut two weeks off the boss's sentence. Once per sentence. */
   pleadBossCase: () => void;
-  /** Keep house counsel so heat falls an extra 3 a week. */
-  hireCounsel: () => void;
   /** Turn a chosen pile of dirty cash into clean, at a bad rate. */
   rushWash: (amount: number) => void;
+  /** Stop washing at one front (its standing order goes to $0). */
+  pauseLaunderSite: (racketId: string) => void;
   planPlayerHit: (args: {
     targetCrewId?: string;
     targetTerritoryId: string;
@@ -482,6 +505,7 @@ export const useGameStore = create<GameStore>()(
           hitTargetPreviewId: panel === "hit_planner" ? s.hitTargetPreviewId : null,
           supplyRouteFocusId: panel === "warehouse" ? s.supplyRouteFocusId : null,
           supplyRoutePreview: panel === "warehouse" ? s.supplyRoutePreview : null,
+          lawyerFocusCrewId: null,
         })),
 
       setLiquorView: (view) => set({ liquorView: view }),
@@ -518,6 +542,25 @@ export const useGameStore = create<GameStore>()(
       },
 
       clearFlyTo: () => set({ flyToTerritoryId: null, flyToFocus: null }),
+      pulseMap: (target, select = false) => {
+        const s = get();
+        let territoryId = target.territoryId ?? null;
+        if (target.crewId) {
+          if (select) {
+            get().selectCrew(target.crewId);
+          }
+          territoryId = territoryId ?? resolveCrewLocation(s, target.crewId).territoryId;
+        } else if (select && territoryId) {
+          get().selectTerritory(territoryId);
+        }
+        if (!territoryId) return;
+        const now = get();
+        set({
+          ...(select ? {} : flyTo(now, territoryId)),
+          mapPulse: { territoryId, tone: target.tone, nonce: (now.mapPulse?.nonce ?? 0) + 1 },
+        });
+      },
+      clearMapPulse: () => set({ mapPulse: null }),
       clearHitFx: () => set({ hitFxTerritoryId: null }),
       clearBuildFx: () => set({ buildFx: null }),
       updateSettings: (partial) =>
@@ -1230,6 +1273,7 @@ export const useGameStore = create<GameStore>()(
           dirtyMoney: s.dirtyMoney - offer.dirtySpent,
           heat: applyHeat(s.heat, LAWYER_HEAT, "lawyer", bribeFx.heatGenerationReduction),
           lawyerReadyTurn: s.turn + LAWYER_COOLDOWN_TURNS,
+          lawyerRate: bumpRate(s.lawyerRate),
           turnLog: [
             ...s.turnLog,
             {
@@ -1238,8 +1282,8 @@ export const useGameStore = create<GameStore>()(
               category: "economy",
               text:
                 landed === 0
-                  ? `House counsel took $${offer.dirtySpent.toLocaleString()} dirty and sent back $${offer.cleanReturn.toLocaleString()}. The clean books are square.`
-                  : `House counsel took $${offer.dirtySpent.toLocaleString()} dirty and sent back $${offer.cleanReturn.toLocaleString()}. Clean cash is still short $${Math.abs(landed).toLocaleString()}.`,
+                  ? `${lawyerShortName(s)} took $${offer.dirtySpent.toLocaleString()} dirty and sent back $${offer.cleanReturn.toLocaleString()}. The clean books are square.`
+                  : `${lawyerShortName(s)} took $${offer.dirtySpent.toLocaleString()} dirty and sent back $${offer.cleanReturn.toLocaleString()}. Clean cash is still short $${Math.abs(landed).toLocaleString()}.`,
               family: s.playerFamily ?? undefined,
             },
           ].slice(-200),
@@ -1252,77 +1296,140 @@ export const useGameStore = create<GameStore>()(
         });
       },
 
-      hireStreetLawyer: () => {
+      openLawyer: (crewId) => set({ activePanel: "lawyer", lawyerFocusCrewId: crewId ?? null }),
+
+      hireRetainer: (tier) => {
         const s = get();
-        const until = s.streetLawyerUntil ?? 0;
-        if (s.turn < until) {
-          toast.error(`He's already on the books until week ${until}.`);
+        if (!s.playerFamily) return;
+        const current = activeRetainer(s);
+        if (current && RETAINER_ORDER.indexOf(tier) <= RETAINER_ORDER.indexOf(current)) {
+          toast.error(`He's already on retainer through week ${(s.lawyerRetainer?.until ?? s.turn) - 1}.`);
           return;
         }
-        if (s.dirtyMoney < STREET_LAWYER_COST) {
+        const fee = retainerFee(s, tier);
+        if (s.dirtyMoney < fee) {
           toast.error("Not enough dirty cash.");
           return;
         }
-        const ready = s.turn + STREET_LAWYER_WEEKS;
+        const until = s.turn + RETAINER_WEEKS;
+        const spec = RETAINERS[tier];
+        const name = lawyerName(s);
         set({
-          dirtyMoney: s.dirtyMoney - STREET_LAWYER_COST,
-          streetLawyerUntil: ready,
-          streetLawyerBailUsed: false,
+          dirtyMoney: s.dirtyMoney - fee,
+          lawyerRetainer: { tier, until },
+          lawyerRate: bumpRate(s.lawyerRate),
           turnLog: [
             ...s.turnLog,
             {
-              id: `log_street_lawyer_${s.turn}`,
+              id: `log_retainer_${s.turn}`,
               turn: s.turn,
-              category: "economy",
-              text: `The street lawyer is on the books through week ${ready - 1}. $${STREET_LAWYER_COST.toLocaleString()} dirty. He can walk one man.`,
-              family: s.playerFamily ?? undefined,
+              category: "economy" as const,
+              text: `${name} is on a ${spec.label.toLowerCase()} retainer through week ${until - 1}. $${fee.toLocaleString()} dirty.`,
+              family: s.playerFamily,
             },
           ].slice(-200),
         });
-        toast.success("The street lawyer is on the books", {
-          description: `$${STREET_LAWYER_COST.toLocaleString()} dirty. Heat falls an extra point a week through week ${ready - 1}. He can walk one man out.`,
+        toast.success(`${spec.label} retainer`, {
+          description: `$${fee.toLocaleString()} dirty. Heat falls ${spec.heatDecay} a week, ${Math.round(spec.discount * 100)}% off case work, through week ${until - 1}.`,
         });
       },
 
-      streetLawyerBail: (crewId: string) => {
+      postBail: (crewId) => {
         const s = get();
-        const until = s.streetLawyerUntil ?? 0;
-        if (s.turn >= until) {
-          toast.error("The street lawyer is off the books.");
-          return;
-        }
-        if (s.streetLawyerBailUsed) {
-          toast.error("He already walked someone this retainer.");
-          return;
-        }
+        if (!s.playerFamily) return;
         const man = s.crew.find((c) => c.id === crewId);
         if (!man || man.family !== s.playerFamily || man.status !== "jailed") {
           toast.error("He has nobody of yours to walk out.");
           return;
         }
         if (man.role === "boss") {
-          toast.error("That's above his pay grade.");
+          toast.error("No judge sets bail for the boss.");
+          return;
+        }
+        const fee = lawyerFee(s, bailBase(man), true);
+        if (s.dirtyMoney < fee) {
+          toast.error("Not enough dirty cash.");
           return;
         }
         const bribeFx = aggregateBribeEffects(s.bribes);
+        const name = lawyerShortName(s);
         set({
           crew: releaseMember(s.crew, crewId),
-          streetLawyerBailUsed: true,
-          heat: applyHeat(s.heat, STREET_LAWYER_BAIL_HEAT, "street lawyer", bribeFx.heatGenerationReduction),
+          dirtyMoney: s.dirtyMoney - fee,
+          lawyerRate: bumpRate(s.lawyerRate),
+          heat: applyHeat(s.heat, BAIL_HEAT, "bail", bribeFx.heatGenerationReduction),
           turnLog: [
             ...s.turnLog,
             {
-              id: `log_street_bail_${s.turn}_${crewId}`,
+              id: `log_bail_${s.turn}_${crewId}`,
               turn: s.turn,
-              category: "heat",
-              text: `${man.name} walks out. The street lawyer posted bail. Wanted stays on him.`,
-              family: s.playerFamily ?? undefined,
+              category: "heat" as const,
+              text: `${man.name} walks out. ${name} posted $${fee.toLocaleString()} bail. Wanted stays on him.`,
+              family: s.playerFamily,
+              crewId,
             },
           ].slice(-200),
         });
         toast.success(`${man.name} walks`, {
-          description: "The street lawyer posted bail. Wanted stays on him. Heat +3.",
+          description: `${name} posted $${fee.toLocaleString()} bail. Wanted stays on him. Heat +${BAIL_HEAT}.`,
         });
+      },
+
+      fightCase: (crewId) => {
+        const s = get();
+        if (!s.playerFamily) return;
+        const man = s.crew.find((c) => c.id === crewId);
+        if (!man || man.family !== s.playerFamily || man.status !== "jailed" || man.role === "boss") {
+          toast.error("There's no case of yours by that name.");
+          return;
+        }
+        if (man.caseFought) {
+          toast.error("He already fought this one.");
+          return;
+        }
+        const fee = lawyerFee(s, fightBase(man), true);
+        if (s.dirtyMoney < fee) {
+          toast.error("Not enough dirty cash.");
+          return;
+        }
+        const name = lawyerShortName(s);
+        const until = (man.jailedUntilTurn ?? s.turn) - FIGHT_WEEKS;
+        const walks = until <= s.turn;
+        const crew = walks
+          ? releaseMember(s.crew, crewId)
+          : s.crew.map((c) => (c.id === crewId ? { ...c, jailedUntilTurn: until, caseFought: true } : c));
+        const text = walks
+          ? `${name} got ${man.name}'s case thrown out. He walks. $${fee.toLocaleString()} dirty.`
+          : `${name} fought ${man.name}'s case: out in week ${until} instead of ${man.jailedUntilTurn}. $${fee.toLocaleString()} dirty.`;
+        set({
+          crew,
+          dirtyMoney: s.dirtyMoney - fee,
+          lawyerRate: bumpRate(s.lawyerRate),
+          turnLog: [
+            ...s.turnLog,
+            {
+              id: `log_fight_${s.turn}_${crewId}`,
+              turn: s.turn,
+              category: "heat" as const,
+              text,
+              family: s.playerFamily,
+              crewId,
+            },
+          ].slice(-200),
+        });
+        toast.success(walks ? `${man.name} walks` : "Two weeks off", { description: text });
+      },
+
+      pauseLaunderSite: (racketId) => {
+        const s = get();
+        if (!s.launderPlan[racketId]) return;
+        set({ launderPlan: { ...s.launderPlan, [racketId]: 0 } });
+        const site = s.territories
+          .flatMap((t) => t.rackets.map((r) => ({ t, r })))
+          .find((x) => x.r.id === racketId);
+        if (site) {
+          toast.message(`Washing paused at the ${RACKET_LABELS[site.r.type]}`, { description: site.t.name });
+        }
       },
 
       quietWanted: (crewId) => {
@@ -1332,7 +1439,8 @@ export const useGameStore = create<GameStore>()(
           toast.error("He already quieted a name this week.");
           return;
         }
-        if (s.dirtyMoney < QUIET_COST) {
+        const fee = lawyerFee(s, QUIET_COST, true);
+        if (s.dirtyMoney < fee) {
           toast.error("Not enough dirty cash.");
           return;
         }
@@ -1344,8 +1452,9 @@ export const useGameStore = create<GameStore>()(
         const wanted = Math.max(0, man.wanted - QUIET_WANTED);
         const bribeFx = aggregateBribeEffects(s.bribes);
         set({
-          dirtyMoney: s.dirtyMoney - QUIET_COST,
+          dirtyMoney: s.dirtyMoney - fee,
           lawyerWantedTurn: s.turn,
+          lawyerRate: bumpRate(s.lawyerRate),
           heat: applyHeat(s.heat, QUIET_HEAT, "lawyer", bribeFx.heatGenerationReduction),
           crew: s.crew.map((c) => (c.id === man.id ? { ...c, wanted } : c)),
           turnLog: [
@@ -1354,8 +1463,9 @@ export const useGameStore = create<GameStore>()(
               id: `log_quiet_${s.turn}_${man.id}`,
               turn: s.turn,
               category: "heat" as const,
-              text: `House counsel quieted ${man.name}. Wanted ${man.wanted} → ${wanted}. $${QUIET_COST.toLocaleString()} dirty. Heat +${QUIET_HEAT}.`,
+              text: `${lawyerShortName(s)} quieted ${man.name}. Wanted ${man.wanted} → ${wanted}. $${fee.toLocaleString()} dirty. Heat +${QUIET_HEAT}.`,
               family: s.playerFamily,
+              crewId: man.id,
             },
           ].slice(-200),
         });
@@ -1378,7 +1488,8 @@ export const useGameStore = create<GameStore>()(
           toast.error("That sentence already had its plea.");
           return;
         }
-        if (s.dirtyMoney < BOSS_PLEA_COST) {
+        const fee = lawyerFee(s, BOSS_PLEA_COST, true);
+        if (s.dirtyMoney < fee) {
           toast.error("Not enough dirty cash.");
           return;
         }
@@ -1387,13 +1498,15 @@ export const useGameStore = create<GameStore>()(
         const heat = applyHeat(s.heat, BOSS_PLEA_HEAT, "lawyer", bribeFx.heatGenerationReduction);
         const walks = s.turn >= shaved;
         const crew = walks
-          ? releaseBoss({ ...s, dirtyMoney: s.dirtyMoney - BOSS_PLEA_COST, heat }, s.playerFamily).crew
+          ? releaseBoss({ ...s, dirtyMoney: s.dirtyMoney - fee, heat }, s.playerFamily).crew
           : s.crew.map((c) => (c.id === boss.id ? { ...c, jailedUntilTurn: shaved } : c));
+        const name = lawyerShortName(s);
         const text = walks
-          ? `House counsel cut the boss's sentence and walked him out. $${BOSS_PLEA_COST.toLocaleString()} dirty. Heat +${BOSS_PLEA_HEAT}.`
-          : `House counsel cut two weeks off the boss's sentence. He is inside until week ${shaved}. $${BOSS_PLEA_COST.toLocaleString()} dirty. Heat +${BOSS_PLEA_HEAT}.`;
+          ? `${name} cut the boss's sentence and walked him out. $${fee.toLocaleString()} dirty. Heat +${BOSS_PLEA_HEAT}.`
+          : `${name} cut two weeks off the boss's sentence. He is inside until week ${shaved}. $${fee.toLocaleString()} dirty. Heat +${BOSS_PLEA_HEAT}.`;
         set({
-          dirtyMoney: s.dirtyMoney - BOSS_PLEA_COST,
+          dirtyMoney: s.dirtyMoney - fee,
+          lawyerRate: bumpRate(s.lawyerRate),
           heat,
           crew,
           lawyerBossPleaUntil: walks ? 0 : original,
@@ -1411,38 +1524,6 @@ export const useGameStore = create<GameStore>()(
         toast.success(walks ? "The boss walks" : "Two weeks off", { description: text });
       },
 
-      hireCounsel: () => {
-        const s = get();
-        if (!s.playerFamily) return;
-        const until = s.counselUntil ?? 0;
-        if (s.turn < until) {
-          toast.error(`Counsel is already retained through week ${until - 1}.`);
-          return;
-        }
-        if (s.dirtyMoney < COUNSEL_COST) {
-          toast.error("Not enough dirty cash.");
-          return;
-        }
-        const ready = s.turn + COUNSEL_WEEKS;
-        set({
-          dirtyMoney: s.dirtyMoney - COUNSEL_COST,
-          counselUntil: ready,
-          turnLog: [
-            ...s.turnLog,
-            {
-              id: `log_counsel_${s.turn}`,
-              turn: s.turn,
-              category: "economy" as const,
-              text: `House counsel is on retainer through week ${ready - 1}. $${COUNSEL_COST.toLocaleString()} dirty. Heat falls 3 a week.`,
-              family: s.playerFamily,
-            },
-          ].slice(-200),
-        });
-        toast.success("Counsel is on retainer", {
-          description: `$${COUNSEL_COST.toLocaleString()} dirty. Heat falls 3 a week through week ${ready - 1}.`,
-        });
-      },
-
       rushWash: (amount) => {
         const s = get();
         if (!s.playerFamily) return;
@@ -1450,7 +1531,7 @@ export const useGameStore = create<GameStore>()(
           toast.error("He already washed a pile this week.");
           return;
         }
-        const quote = washQuote(amount);
+        const quote = washQuote(amount, currentRate(s));
         if (!quote) {
           toast.error("He won't touch a pile under $2,000.");
           return;
@@ -1477,6 +1558,7 @@ export const useGameStore = create<GameStore>()(
           money: s.money + quote.clean,
           heat: decayHeat(s.heat, quote.heatOff),
           lawyerWashTurn: s.turn,
+          lawyerRate: bumpRate(s.lawyerRate),
           crew,
           reputation: { ...s.reputation, streetInfluence: street },
           turnLog: [
@@ -1485,7 +1567,7 @@ export const useGameStore = create<GameStore>()(
               id: `log_rush_wash_${s.turn}`,
               turn: s.turn,
               category: "economy" as const,
-              text: `House counsel washed $${quote.pile.toLocaleString()} dirty. He kept $${quote.cut.toLocaleString()} and sent back $${quote.clean.toLocaleString()}.${quote.heatOff > 0 ? ` Heat −${quote.heatOff}.` : ""}${sting}`,
+              text: `${lawyerShortName(s)} washed $${quote.pile.toLocaleString()} dirty. He kept $${quote.cut.toLocaleString()} and sent back $${quote.clean.toLocaleString()}.${quote.heatOff > 0 ? ` Heat −${quote.heatOff}.` : ""}${sting}`,
               family: s.playerFamily,
             },
           ].slice(-200),
@@ -1875,6 +1957,8 @@ export const useGameStore = create<GameStore>()(
               category: "hit",
               text: `${lookout.name} is casing ${territory.name}.`,
               family: s.playerFamily,
+              territoryId: territory.id,
+              tone: "intel",
             },
           ],
         });
@@ -2309,6 +2393,8 @@ export const useGameStore = create<GameStore>()(
               category: "hit" as const,
               text: `${man.name} is casing ${territory.name} for the table.`,
               family: s.playerFamily,
+              territoryId: territory.id,
+              tone: "intel" as const,
             },
           ],
         });
@@ -2687,6 +2773,17 @@ export const useGameStore = create<GameStore>()(
         for (const log of auditLogs) {
           announce.error("Treasury audit", { description: log.text });
         }
+        for (const log of newLogs.filter((l) => l.id.startsWith("log_lawyer_flag_"))) {
+          announce.warning("Your lawyer called", {
+            description: log.text,
+            action: { label: "Books", onClick: () => get().openLawyer() },
+          });
+        }
+        for (const log of newLogs.filter((l) => l.id.startsWith("log_audit_closed_") || l.id.startsWith("log_audit_rumor_"))) {
+          announce.message(log.id.startsWith("log_audit_closed_") ? "File closed" : "Street talk", {
+            description: log.text,
+          });
+        }
         const rivalAuditLogs = newLogs.filter((l) =>
           l.id.startsWith("log_rival_audit_"),
         );
@@ -2714,6 +2811,20 @@ export const useGameStore = create<GameStore>()(
         }
         for (const log of newLogs.filter((l) => l.id.startsWith("log_defect_wait_"))) {
           announce.warning("He stopped waiting", { description: log.text });
+        }
+        const lawyer = lawyerShortName(cur);
+        for (const man of newlyJailed(s.crew, cur.crew, s.playerFamily)) {
+          const weeks = Math.max(0, (man.jailedUntilTurn ?? cur.turn) - cur.turn);
+          announce.error(`${man.name} was picked up`, {
+            description:
+              man.role === "boss"
+                ? `The boss is in the Tombs. ${weeks} weeks before the chair passes.`
+                : `${weeks} weeks in the Tombs unless somebody does something.`,
+            action: { label: `Call ${lawyer}`, onClick: () => get().openLawyer(man.id) },
+          });
+        }
+        for (const log of newLogs.filter((l) => l.id.startsWith("log_jail_out_"))) {
+          announce.message("Out of the Tombs", { description: log.text });
         }
       },
 
@@ -2812,7 +2923,7 @@ export const useGameStore = create<GameStore>()(
           set({
             ...loaded,
             homeSeats: dealtSeats(loaded),
-            crew: (loaded.crew ?? []).map(migrateMade),
+            crew: backfillSentences((loaded.crew ?? []).map(migrateMade), loaded.turn ?? 1),
             making: loaded.making ?? null,
             consigliereNote: loaded.consigliereNote ?? null,
             consigliereRest: loaded.consigliereRest ?? {},
@@ -2824,9 +2935,9 @@ export const useGameStore = create<GameStore>()(
             ),
             launderNudgeShown: loaded.launderNudgeShown ?? false,
             lawyerReadyTurn: loaded.lawyerReadyTurn ?? 0,
-            streetLawyerUntil: loaded.streetLawyerUntil ?? 0,
-            streetLawyerBailUsed: loaded.streetLawyerBailUsed ?? false,
-            counselUntil: loaded.counselUntil ?? 0,
+            lawyerRetainer: migrateRetainer(loaded, loaded.turn ?? 1),
+            lawyerRate: loaded.lawyerRate ?? 1,
+            lawyerName: lawyerName(loaded),
             lawyerWantedTurn: loaded.lawyerWantedTurn ?? 0,
             lawyerBossPleaUntil: loaded.lawyerBossPleaUntil ?? 0,
             lawyerWashTurn: loaded.lawyerWashTurn ?? 0,
@@ -2933,6 +3044,8 @@ export const useGameStore = create<GameStore>()(
           "dismissOnboarding",
           "selectTerritory",
           "clearFlyTo",
+          "pulseMap",
+          "clearMapPulse",
           "clearHitFx",
           "clearBuildFx",
           "finishCinematic",
@@ -2957,12 +3070,14 @@ export const useGameStore = create<GameStore>()(
           "setupLaunderSite",
           "stopLaunderSite",
           "callLawyer",
-          "hireStreetLawyer",
-          "streetLawyerBail",
+          "openLawyer",
+          "hireRetainer",
+          "postBail",
+          "fightCase",
           "quietWanted",
           "pleadBossCase",
-          "hireCounsel",
           "rushWash",
+          "pauseLaunderSite",
           "planPlayerHit",
           "establishSupplyRoute",
           "cancelSupplyRoute",
@@ -3035,7 +3150,10 @@ export const useGameStore = create<GameStore>()(
           ...current,
           ...p,
           homeSeats: dealtSeats(p),
-          crew: (p.crew ?? current.crew ?? []).map(migrateMade),
+          crew: backfillSentences(
+            (p.crew ?? current.crew ?? []).map(migrateMade),
+            p.turn ?? current.turn ?? 1,
+          ),
           making: p.making ?? null,
           consigliereNote: p.consigliereNote ?? null,
           consigliereRest: p.consigliereRest ?? {},
@@ -3047,9 +3165,9 @@ export const useGameStore = create<GameStore>()(
           ),
           launderNudgeShown: p.launderNudgeShown ?? current.launderNudgeShown ?? false,
           lawyerReadyTurn: p.lawyerReadyTurn ?? 0,
-          streetLawyerUntil: p.streetLawyerUntil ?? 0,
-          streetLawyerBailUsed: p.streetLawyerBailUsed ?? false,
-          counselUntil: p.counselUntil ?? 0,
+          lawyerRetainer: migrateRetainer(p, p.turn ?? current.turn ?? 1),
+          lawyerRate: p.lawyerRate ?? 1,
+          lawyerName: lawyerName({ lawyerName: p.lawyerName, seed }),
           lawyerWantedTurn: p.lawyerWantedTurn ?? 0,
           lawyerBossPleaUntil: p.lawyerBossPleaUntil ?? 0,
           lawyerWashTurn: p.lawyerWashTurn ?? 0,

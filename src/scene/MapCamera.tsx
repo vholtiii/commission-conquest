@@ -4,6 +4,7 @@ import * as THREE from "three";
 import type { CityLayout } from "@/engine/cityLayout";
 import { useGameStore } from "@/engine/store";
 import { useMapView } from "@/engine/mapView";
+import { FOG_DENSITY } from "./Atmosphere";
 
 interface Props {
   layout: CityLayout;
@@ -14,10 +15,8 @@ const FLY_DURATION = 0.9;
 const OVERVIEW_DIST_NEAR = 75;
 const OVERVIEW_DIST_FAR = 110;
 const OVERVIEW_POLAR = 0.12;
-const NORMAL_FOG_NEAR = 42;
-const NORMAL_FOG_FAR = 130;
-const OVERVIEW_FOG_NEAR = 120;
-const OVERVIEW_FOG_FAR = 260;
+const NORMAL_FOG_DENSITY = FOG_DENSITY;
+const OVERVIEW_FOG_DENSITY = 0.0035;
 const MAX_DISTANCE = 150;
 const POLAR_BAND = 0.1;
 const POLAR_MIN_CLAMP = 0.05;
@@ -208,10 +207,9 @@ export default function MapCamera({ layout, controlsRef }: Props) {
     controls.maxPolarAngle = Math.min(POLAR_MAX_CLAMP, targetPolar + POLAR_BAND);
     controls.update();
 
-    const fog = scene.fog as THREE.Fog | null;
-    if (fog) {
-      fog.near = lerp(NORMAL_FOG_NEAR, OVERVIEW_FOG_NEAR, k);
-      fog.far = lerp(NORMAL_FOG_FAR, OVERVIEW_FOG_FAR, k);
+    const fog = scene.fog;
+    if (fog instanceof THREE.FogExp2) {
+      fog.density = lerp(NORMAL_FOG_DENSITY, OVERVIEW_FOG_DENSITY, k);
     }
 
     const overview = k > 0.5;

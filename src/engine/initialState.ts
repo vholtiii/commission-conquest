@@ -27,6 +27,7 @@ import {
 import { computeTerritorySlots, maxRacketsFor, allowedRacketTypes } from "./territoryValue";
 import { districtsThatTouch, nextRacketSiteIndex } from "./cityLayout";
 import { emptyVictory, finalTurnFor } from "./victory";
+import { lawyerName } from "./lawyer";
 import { ERRAND_FIRST_TURN } from "./commissionErrand";
 import { dealStartingHoldings } from "./startPositions";
 
@@ -390,9 +391,9 @@ export function buildInitialState(
     launderPlan: {},
     launderNudgeShown: false,
     lawyerReadyTurn: 0,
-    streetLawyerUntil: 0,
-    streetLawyerBailUsed: false,
-    counselUntil: 0,
+    lawyerRetainer: null,
+    lawyerRate: 1,
+    lawyerName: lawyerName({ seed }),
     lawyerWantedTurn: 0,
     lawyerBossPleaUntil: 0,
     lawyerWashTurn: 0,

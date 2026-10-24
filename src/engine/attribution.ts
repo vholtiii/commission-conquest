@@ -138,5 +138,7 @@ export function hitLogEntry(state: GameState, op: Operation, result: HitResult, 
     attribution: who.level,
     suspect: who.level === "suspected" ? who.family : undefined,
     victim: op.targetFamily,
+    territoryId: result.strikeTerritoryId ?? op.targetTerritoryId,
+    tone: "violence",
   };
 }

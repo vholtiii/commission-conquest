@@ -13,8 +13,7 @@ interface Props {
   amount: number;
 }
 
-const FOG_NEAR = 12;
-const FOG_FAR = 55;
+const FOG_DENSITY = 0.03;
 
 /**
  * Night on one block: a streetlamp, rain, wet pavement, and a steam grate.
@@ -33,10 +32,9 @@ export default function ReelAtmosphere({ center, facing = 0, amount }: Props) {
 
   useFrame((_, dt) => {
     const fog = scene.fog;
-    if (!(fog instanceof THREE.Fog)) return;
+    if (!(fog instanceof THREE.FogExp2)) return;
     const k = 1 - Math.exp(-dt / 0.6);
-    fog.near += (FOG_NEAR - fog.near) * k;
-    fog.far += (FOG_FAR - fog.far) * k;
+    fog.density += (FOG_DENSITY - fog.density) * k;
   });
 
   const lamp = useMemo(() => {

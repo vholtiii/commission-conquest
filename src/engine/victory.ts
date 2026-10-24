@@ -10,7 +10,18 @@ export const BANKRUPT_TURNS = 3;
 export const INFLUENCE_BAR = 200;
 export const INFLUENCE_MULT = 1.5;
 export const WEALTH_FLOOR = 30_000;
+/** The wealth bar climbs by this much every week. */
+export const WEALTH_FLOOR_SLOPE = 1_500;
 export const WEALTH_MULT = 2;
+/**
+ * Unwashed cash is worth this much toward the wealth win. Below 1 the sim's
+ * players almost never clear the rising bar on Normal, so it stays at full value.
+ */
+export const DIRTY_WEIGHT = 1;
+
+export function wealthFloor(turn: number): number {
+  return WEALTH_FLOOR + WEALTH_FLOOR_SLOPE * turn;
+}
 export const SUMMIT_RATIO = 1.1;
 
 export function finalTurnFor(length: GameLength | undefined): number {
@@ -73,7 +84,7 @@ export function familyInfluence(state: GameState, family: FamilyName): number {
 }
 
 export function familyWealth(state: GameState, family: FamilyName): number {
-  if (family === state.playerFamily) return state.money + state.dirtyMoney;
+  if (family === state.playerFamily) return state.money + state.dirtyMoney * DIRTY_WEIGHT;
   return state.rivalTreasury?.[family] ?? 0;
 }
 
@@ -122,7 +133,7 @@ export function familiesPressingSuddenDeath(state: GameState): FamilyName[] {
   const wealthSecond = byWealth[1] ? familyWealth(state, byWealth[1]) : 0;
   if (
     wealthLead &&
-    familyWealth(state, wealthLead) >= WEALTH_FLOOR &&
+    familyWealth(state, wealthLead) >= wealthFloor(state.turn) &&
     familyWealth(state, wealthLead) >= wealthSecond * WEALTH_MULT
   ) {
     pressing.add(wealthLead);
@@ -212,7 +223,7 @@ export function checkVictory(state: GameState): VictoryState {
   const wealth = familyWealth(state, player);
   const wealthSecond = secondPlace(state, (f) => familyWealth(state, f));
   const wealthLead =
-    streaksOpen && wealth >= WEALTH_FLOOR && wealth >= wealthSecond * WEALTH_MULT;
+    streaksOpen && wealth >= wealthFloor(state.turn) && wealth >= wealthSecond * WEALTH_MULT;
   const wealthLeadTurns = streaksFrozen
     ? victory.wealthLeadTurns
     : wealthLead

@@ -14,9 +14,17 @@ import {
   sidewalkTexture,
   waterNormalTexture,
 } from "./groundTextures";
-import { WATER_COLOR, clamp, hash2, pickPalette } from "./sceneTheme";
+import {
+  WATER_COLOR,
+  clamp,
+  hash2,
+  pickPalette,
+  pickRoof,
+  type BuildingArchetype,
+} from "./sceneTheme";
+import BuildingKit, { PartMesh, type BuildingSpec, type PartItem } from "./BuildingKit";
+import { STORY_H } from "./FacadeMaterial";
 
-const WINDOW_VARIANTS = 4;
 const WATER_NORMAL_SCALE = new THREE.Vector2(0.25, 0.25);
 const PITCH = BLOCK_SIZE + ROAD_GAP;
 /** A 3x3 block of cells plus the gaps out to the road edge on every side. */
@@ -190,67 +198,52 @@ interface Props {
   territories: Territory[];
 }
 
-interface WindowMaps {
-  albedo: THREE.CanvasTexture;
-  emissive: THREE.CanvasTexture;
+/** Seeded archetype for one building cell. Towers and warehouses follow the district's character. */
+function pickArchetype(
+  gx: number,
+  gz: number,
+  seed: number,
+  heightBias: number,
+  feature: Territory["feature"],
+): BuildingArchetype {
+  const r = hash2(gx, gz, seed);
+  const pick = hash2(gx, gz, seed + 3);
+  if (r > 0.97 || (feature === "downtown" && r > 0.9)) return "tower";
+  const industrial = feature === "docks" || feature === "industrial";
+  if (industrial ? pick < 0.55 : pick > 0.94) return "warehouse";
+  const lx = gx % 4;
+  const lz = gz % 4;
+  const corner = lx !== 2 && lz !== 2;
+  if (corner && hash2(gx, gz, seed + 5) < 0.7) return "commercial";
+  if (heightBias < 0.85 || (feature === "residential" && pick < 0.45)) return "brownstone";
+  return "tenement";
 }
 
-function finishTexture(canvas: HTMLCanvasElement, srgb: boolean): THREE.CanvasTexture {
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.wrapS = THREE.RepeatWrapping;
-  tex.wrapT = THREE.RepeatWrapping;
-  tex.repeat.set(2, 3);
-  tex.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
-  return tex;
-}
-
-/** Seeded facade + lit-pane mask. Instance color tints the albedo only. */
-function makeWindowTextureSet(seed: number, count: number): WindowMaps[] {
-  const variants: WindowMaps[] = [];
-  for (let v = 0; v < count; v++) {
-    const size = 128;
-    const albedoCanvas = document.createElement("canvas");
-    const emissiveCanvas = document.createElement("canvas");
-    albedoCanvas.width = emissiveCanvas.width = size;
-    albedoCanvas.height = emissiveCanvas.height = size;
-    const albedo = albedoCanvas.getContext("2d")!;
-    const emissive = emissiveCanvas.getContext("2d")!;
-
-    albedo.fillStyle = "#d4d0c8";
-    albedo.fillRect(0, 0, size, size);
-    emissive.fillStyle = "#000000";
-    emissive.fillRect(0, 0, size, size);
-
-    const cols = 4;
-    const rows = 6;
-    const cellW = size / cols;
-    const cellH = size / rows;
-    const pad = cellW * (0.16 + v * 0.025);
-    // Most panes stay dark; only a scattered few are lit so the block reads as night.
-    const litAt = 0.8 + (v % 2) * 0.06;
-
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        const lit = hash2(c + v * 13, r + 3, seed + v * 97 + 101) > litAt;
-        const x = c * cellW + pad;
-        const y = r * cellH + pad;
-        const w = cellW - pad * 2;
-        const h = cellH - pad * 2;
-        albedo.fillStyle = lit ? "#f4efe6" : "#14161c";
-        albedo.fillRect(x, y, w, h);
-        if (lit) {
-          emissive.fillStyle = "#ffffff";
-          emissive.fillRect(x, y, w, h);
-        }
-      }
-    }
-
-    variants.push({
-      albedo: finishTexture(albedoCanvas, true),
-      emissive: finishTexture(emissiveCanvas, false),
-    });
+function floorsFor(archetype: BuildingArchetype, height: number, r: number): number {
+  const base = Math.round(height / STORY_H);
+  switch (archetype) {
+    case "brownstone":
+      return clamp(base - 1, 2, 4);
+    case "warehouse":
+      return clamp(Math.round(base * 0.5), 2, 3);
+    case "tower":
+      return clamp(Math.round((height + 2.5 + r * 3) / STORY_H), 10, 16);
+    default:
+      return clamp(base, 3, 6);
   }
-  return variants;
+}
+
+/** Faces of a cell that front a road, nearest first. Cells inside a block face south. */
+function streetFaces(gx: number, gz: number): Array<readonly [number, number]> {
+  const faces: Array<readonly [number, number]> = [];
+  const lx = gx % 4;
+  const lz = gz % 4;
+  if (lz === 3) faces.push([0, 1]);
+  if (lz === 1) faces.push([0, -1]);
+  if (lx === 3) faces.push([1, 0]);
+  if (lx === 1) faces.push([-1, 0]);
+  if (faces.length === 0) faces.push([0, 1]);
+  return faces;
 }
 
 function RiverSheet({ sheet, material }: { sheet: RiverSheet; material: THREE.MeshStandardMaterial }) {
@@ -259,24 +252,13 @@ function RiverSheet({ sheet, material }: { sheet: RiverSheet; material: THREE.Me
     geo.current?.computeTangents();
   }, [sheet.w, sheet.d]);
   return (
-    <mesh position={[sheet.x, WATER_Y, sheet.z]} rotation={ROAD_FLAT} material={material}>
+    <mesh position={[sheet.x, WATER_Y, sheet.z]} rotation={ROAD_FLAT} material={material} receiveShadow>
       <planeGeometry ref={geo} args={[sheet.w, sheet.d]} />
     </mesh>
   );
 }
 
-interface BuildingInstanceData {
-  key: string;
-  x: number;
-  z: number;
-  height: number;
-  color: string;
-  roofColor: string;
-  variant: number;
-}
-
 export default function ProceduralBuildings({ layout, seed, occupied, territories }: Props) {
-  const windowSets = useMemo(() => makeWindowTextureSet(seed, WINDOW_VARIANTS), [seed]);
   const asphalt = useMemo(() => asphaltTexture("z"), []);
   const asphaltX = useMemo(() => asphaltTexture("x"), []);
   const crossing = useMemo(() => intersectionTexture(), []);
@@ -299,15 +281,22 @@ export default function ProceduralBuildings({ layout, seed, occupied, territorie
     [waterNormal],
   );
   const playerFamily = useGameStore((s) => s.playerFamily);
+  const plateGeo = useMemo(() => new THREE.PlaneGeometry(PITCH, PITCH), []);
+  const plateMats = useMemo(
+    () => ({
+      player: new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.22, depthWrite: false }),
+      rival: new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.14, depthWrite: false }),
+    }),
+    [],
+  );
 
   useEffect(() => {
     return () => {
-      for (const set of windowSets) {
-        set.albedo.dispose();
-        set.emissive.dispose();
-      }
+      plateGeo.dispose();
+      plateMats.player.dispose();
+      plateMats.rival.dispose();
     };
-  }, [windowSets]);
+  }, [plateGeo, plateMats]);
 
   useEffect(() => {
     return () => {
@@ -331,17 +320,23 @@ export default function ProceduralBuildings({ layout, seed, occupied, territorie
     for (const t of territories) m.set(t.id, t.owner);
     return m;
   }, [territories]);
+  const featureByTerritory = useMemo(() => {
+    const m = new Map<string, Territory["feature"]>();
+    for (const t of territories) m.set(t.id, t.feature);
+    return m;
+  }, [territories]);
 
   const rivers = useMemo(() => riverSheets(layout), [layout]);
   const shores = useMemo(() => shoreEdges(layout, territories), [layout, territories]);
 
-  const { buildings, avenues, streets, crossings, parks, plates, slabs, pavers } = useMemo(() => {
-    const buildings: BuildingInstanceData[] = [];
+  const { buildings, avenues, streets, crossings, parks, playerPlates, rivalPlates, slabs, pavers } = useMemo(() => {
+    const buildings: BuildingSpec[] = [];
     const avenues: { x: number; z: number }[] = [];
     const streets: { x: number; z: number }[] = [];
     const crossings: { x: number; z: number }[] = [];
     const parks: { x: number; z: number }[] = [];
-    const plates: { x: number; z: number; color: string; opacity: number }[] = [];
+    const playerPlates: PartItem[] = [];
+    const rivalPlates: PartItem[] = [];
     // One pavement slab per 3x3 block, keyed by the block's grid quadrant.
     // Blocks that touch water get per-cell pavement instead so the slab
     // never paves over the river.
@@ -382,28 +377,38 @@ export default function ProceduralBuildings({ layout, seed, occupied, territorie
         if (occupied?.has(key)) continue;
 
         const r = hash2(b.gx, b.gz, seed);
-        const tall = r > 0.97;
-        const baseHeight = clamp(b.heightBias * 2.4, 1.0, 4.2);
-        const height = tall ? baseHeight + r * 4.5 : baseHeight;
-        const brick = pickPalette(b.gx, b.gz, seed);
+        const feature = b.territoryId ? featureByTerritory.get(b.territoryId) : undefined;
+        const archetype = pickArchetype(b.gx, b.gz, seed, b.heightBias, feature);
+        const height = clamp(b.heightBias * 2.4, 1.0, 4.2);
+        const brick = pickPalette(b.gx, b.gz, seed, archetype);
+        const roof = pickRoof(b.gx, b.gz, seed, archetype);
         const owner = b.territoryId ? ownerByTerritory.get(b.territoryId) ?? null : null;
         const color = owner ? tintTowardFamily(brick, FAMILY_HEX[owner], 0.42) : brick;
+        // Roofs carry the family tint too: in overview they are most of what the player sees.
+        const roofColor = owner ? tintTowardFamily(roof, FAMILY_HEX[owner], 0.5) : roof;
         buildings.push({
           key,
+          gx: b.gx,
+          gz: b.gz,
           x: b.worldX,
           z: b.worldZ,
-          height,
+          archetype,
+          floors: floorsFor(archetype, height, r),
           color,
-          roofColor: new THREE.Color(color).multiplyScalar(0.72).getStyle(),
-          variant: Math.floor(hash2(b.gx, b.gz, seed + 7) * WINDOW_VARIANTS) % WINDOW_VARIANTS,
+          roofColor,
+          faces: streetFaces(b.gx, b.gz),
         });
 
         if (owner) {
-          plates.push({
+          (owner === playerFamily ? playerPlates : rivalPlates).push({
             x: b.worldX,
+            y: 0.012,
             z: b.worldZ,
+            sx: 1,
+            sy: 1,
+            sz: 1,
+            pitch: -Math.PI / 2,
             color: FAMILY_HEX[owner],
-            opacity: owner === playerFamily ? 0.22 : 0.14,
           });
         }
       } else if (b.kind === "road") {
@@ -417,24 +422,16 @@ export default function ProceduralBuildings({ layout, seed, occupied, territorie
         parks.push({ x: b.worldX, z: b.worldZ });
       }
     }
-    return { buildings, avenues, streets, crossings, parks, plates, slabs, pavers };
-  }, [layout, seed, occupied, ownerByTerritory, playerFamily]);
-
-  const byVariant = useMemo(() => {
-    const groups: BuildingInstanceData[][] = Array.from({ length: WINDOW_VARIANTS }, () => []);
-    for (const b of buildings) groups[b.variant]!.push(b);
-    return groups;
-  }, [buildings]);
+    return { buildings, avenues, streets, crossings, parks, playerPlates, rivalPlates, slabs, pavers };
+  }, [layout, seed, occupied, ownerByTerritory, featureByTerritory, playerFamily]);
 
   const groundSize = BLOCK_SIZE + 0.15;
   // Road cells are exactly one block wide; the pavement slab fills the gaps.
   const roadSize = BLOCK_SIZE + ROAD_GAP;
-  // Ownership tint spans the gap between cells so a block tints as one piece.
-  const plateSize = PITCH;
 
   return (
     <group>
-      <Instances limit={slabs.length || 1} range={slabs.length}>
+      <Instances limit={slabs.length || 1} range={slabs.length} receiveShadow>
         <planeGeometry args={[SLAB_SIZE, SLAB_SIZE]} />
         <meshStandardMaterial map={sidewalk} color="#ffffff" roughness={0.95} />
         {slabs.map((s, i) => (
@@ -442,7 +439,7 @@ export default function ProceduralBuildings({ layout, seed, occupied, territorie
         ))}
       </Instances>
 
-      <Instances limit={pavers.length || 1} range={pavers.length}>
+      <Instances limit={pavers.length || 1} range={pavers.length} receiveShadow>
         <planeGeometry args={[PITCH, PITCH]} />
         <meshStandardMaterial color="#6d675c" roughness={0.95} />
         {pavers.map((p, i) => (
@@ -450,14 +447,11 @@ export default function ProceduralBuildings({ layout, seed, occupied, territorie
         ))}
       </Instances>
 
-      {plates.map((p, i) => (
-        <mesh key={`plate-${i}`} position={[p.x, 0.012, p.z]} rotation={ROAD_FLAT}>
-          <planeGeometry args={[plateSize, plateSize]} />
-          <meshBasicMaterial color={p.color} transparent opacity={p.opacity} depthWrite={false} />
-        </mesh>
-      ))}
+      {/* Ownership tint spans the gap between cells so a block tints as one piece. */}
+      <PartMesh geometry={plateGeo} material={plateMats.player} items={playerPlates} />
+      <PartMesh geometry={plateGeo} material={plateMats.rival} items={rivalPlates} />
 
-      <Instances limit={avenues.length || 1} range={avenues.length}>
+      <Instances limit={avenues.length || 1} range={avenues.length} receiveShadow>
         <planeGeometry args={[roadSize, roadSize]} />
         <meshStandardMaterial map={asphalt} color="#ffffff" roughness={1} />
         {avenues.map((c, i) => (
@@ -465,7 +459,7 @@ export default function ProceduralBuildings({ layout, seed, occupied, territorie
         ))}
       </Instances>
 
-      <Instances limit={streets.length || 1} range={streets.length}>
+      <Instances limit={streets.length || 1} range={streets.length} receiveShadow>
         <planeGeometry args={[roadSize, roadSize]} />
         <meshStandardMaterial map={asphaltX} color="#ffffff" roughness={1} />
         {streets.map((c, i) => (
@@ -473,7 +467,7 @@ export default function ProceduralBuildings({ layout, seed, occupied, territorie
         ))}
       </Instances>
 
-      <Instances limit={crossings.length || 1} range={crossings.length}>
+      <Instances limit={crossings.length || 1} range={crossings.length} receiveShadow>
         <planeGeometry args={[roadSize, roadSize]} />
         <meshStandardMaterial map={crossing} color="#ffffff" roughness={1} />
         {crossings.map((c, i) => (
@@ -534,7 +528,7 @@ export default function ProceduralBuildings({ layout, seed, occupied, territorie
         </group>
       ))}
 
-      <Instances limit={parks.length || 1} range={parks.length}>
+      <Instances limit={parks.length || 1} range={parks.length} receiveShadow>
         <planeGeometry args={[groundSize, groundSize]} />
         <meshStandardMaterial map={parksTex} color="#ffffff" roughness={1} />
         {parks.map((c, i) => (
@@ -546,40 +540,7 @@ export default function ProceduralBuildings({ layout, seed, occupied, territorie
         ))}
       </Instances>
 
-      {byVariant.map((group, v) =>
-        group.length === 0 ? null : (
-          <Instances key={`win-${v}`} limit={group.length} range={group.length}>
-            <boxGeometry args={[BLOCK_SIZE * 0.86, 1, BLOCK_SIZE * 0.86]} />
-            <meshStandardMaterial
-              map={windowSets[v]!.albedo}
-              emissiveMap={windowSets[v]!.emissive}
-              emissive="#ffd27a"
-              emissiveIntensity={1.8}
-              roughness={0.85}
-            />
-            {group.map((b, i) => (
-              <Instance
-                key={`bld-${b.key}-${i}`}
-                position={[b.x, b.height / 2, b.z]}
-                scale={[1, b.height, 1]}
-                color={b.color}
-              />
-            ))}
-          </Instances>
-        ),
-      )}
-
-      <Instances limit={buildings.length || 1} range={buildings.length}>
-        <boxGeometry args={[BLOCK_SIZE * 0.88, 0.12, BLOCK_SIZE * 0.88]} />
-        <meshStandardMaterial roughness={0.9} />
-        {buildings.map((b, i) => (
-          <Instance
-            key={`roof-${b.key}-${i}`}
-            position={[b.x, b.height + 0.06, b.z]}
-            color={b.roofColor}
-          />
-        ))}
-      </Instances>
+      <BuildingKit buildings={buildings} seed={seed} />
     </group>
   );
 }

@@ -14,6 +14,7 @@ import MapCamera from "./MapCamera";
 import RacketBuildings, { useOccupiedRacketBlocks } from "./RacketBuildings";
 import RacketLightPool from "./RacketLightPool";
 import PendingOpsOverlay from "./PendingOpsOverlay";
+import MapPulse from "./MapPulse";
 import SitdownOverlay from "./SitdownOverlay";
 import SupplyRouteOverlay from "./SupplyRouteOverlay";
 import HitCinematic from "./hits/HitCinematic";
@@ -24,7 +25,9 @@ import StreetLabels from "./StreetLabels";
 import BlockPlumbing from "./BlockPlumbing";
 import AmbientTells from "./AmbientTells";
 import Atmosphere from "./Atmosphere";
+import SkyDome from "./SkyDome";
 import PostFx from "./PostFx";
+import { TIER_DPR, type GraphicsTier } from "./sceneTheme";
 
 /** Canvas wrapper for the city view. Reads territories and crew from the store. */
 export default function CityScene() {
@@ -38,7 +41,12 @@ export default function CityScene() {
   const postFx = useGameStore((s) => s.settings.postFx !== false);
   const graphics = useGameStore((s) => s.settings.graphics ?? "auto");
   const [autoLow, setAutoLow] = useState(false);
-  const low = graphics === "low" || (graphics === "auto" && autoLow);
+  const tier: GraphicsTier =
+    graphics === "low" || (graphics === "auto" && autoLow)
+      ? "low"
+      : graphics === "high"
+        ? "high"
+        : "auto";
 
   const layout = useMemo(() => getCityLayout(territories, seed), [territories, seed]);
   const occupied = useOccupiedRacketBlocks(layout, territories);
@@ -50,10 +58,10 @@ export default function CityScene() {
   return (
     <div className="absolute inset-0 z-0 h-full w-full">
       <Canvas
-        shadows={!low}
+        shadows={tier === "high" ? "soft" : "percentage"}
         flat={postFx}
         frameloop="always"
-        dpr={low ? 1 : [1, 1.75]}
+        dpr={TIER_DPR[tier]}
         camera={{ position: [0, 34, 30], fov: 42, near: 0.1, far: 300 }}
         onPointerMissed={(e) => {
           // A pan that ends on water must keep the selection. Only a left
@@ -68,7 +76,8 @@ export default function CityScene() {
         className="h-full w-full bg-[#11141a]"
         gl={{ antialias: true, alpha: false, powerPreference: "high-performance" }}
       >
-        <Atmosphere />
+        <Atmosphere tier={tier} />
+        <SkyDome layout={layout} />
         {graphics === "auto" && (
           <PerformanceMonitor
             onDecline={() => setAutoLow(true)}
@@ -122,12 +131,13 @@ export default function CityScene() {
         <SupplyRouteOverlay layout={layout} />
         <HitFx layout={layout} />
         <BuildFx layout={layout} />
+        <MapPulse layout={layout} />
         <HitCinematic layout={layout} controlsRef={controlsRef} />
         <SitdownCinematic layout={layout} controlsRef={controlsRef} />
         <Suspense fallback={null}>
           <KenneyProps layout={layout} />
         </Suspense>
-        {postFx && <PostFx bloom={!low} />}
+        {postFx && <PostFx tier={tier} />}
       </Canvas>
     </div>
   );

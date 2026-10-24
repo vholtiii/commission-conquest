@@ -28,6 +28,7 @@ import {
 } from "@/engine/economy";
 import { allowedRacketTypes, maxRacketsFor } from "@/engine/territoryValue";
 import { bossPresentIn, presenceBuildCost } from "@/engine/bossPresence";
+import { lawyerShortName, weeksInside } from "@/engine/lawyer";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -80,9 +81,8 @@ export default function CrewSheet() {
   const ratAffair = useGameStore((s) => s.ratAffair);
   const making = useGameStore((s) => s.making);
   const lastCallInTurn = useGameStore((s) => s.lastCallInTurn);
-  const streetLawyerUntil = useGameStore((s) => s.streetLawyerUntil ?? 0);
-  const streetLawyerBailUsed = useGameStore((s) => s.streetLawyerBailUsed ?? false);
-  const streetLawyerBail = useGameStore((s) => s.streetLawyerBail);
+  const openLawyer = useGameStore((s) => s.openLawyer);
+  const lawyer = useGameStore((s) => lawyerShortName(s));
   const familyDinner = useGameStore((s) => s.familyDinner);
   const ratLeakCrewId = useGameStore((s) => s.ratLeakCrewId);
   const [callInArmedFor, setCallInArmedFor] = useState<string | null>(null);
@@ -195,25 +195,16 @@ export default function CrewSheet() {
           </>
         )}
 
-        {isOwn && member.status === "jailed" && member.role !== "boss" && (
-          <div className="rounded border border-panel-border bg-panel/40 p-2.5">
-            <div className="text-xs font-semibold">Street lawyer</div>
-            {turn < streetLawyerUntil && !streetLawyerBailUsed ? (
-              <Button
-                type="button"
-                size="sm"
-                className="mt-2"
-                onClick={() => streetLawyerBail(member.id)}
-              >
-                Walk him out
-              </Button>
-            ) : (
-              <p className="mt-1 text-[10px] text-muted-foreground">
-                {turn < streetLawyerUntil
-                  ? "He already walked someone this retainer."
-                  : "He is off the books."}
-              </p>
-            )}
+        {isOwn && member.status === "jailed" && (
+          <div className="flex items-center justify-between gap-2 rounded border border-panel-border bg-panel/40 p-2.5">
+            <div className="text-[11px] text-muted-foreground">
+              In the Tombs
+              {member.jailedUntilTurn != null &&
+                ` · ${weeksInside(member, turn)} week${weeksInside(member, turn) === 1 ? "" : "s"} left`}
+            </div>
+            <Button type="button" size="sm" className="h-7" onClick={() => openLawyer(member.id)}>
+              Call {lawyer}
+            </Button>
           </div>
         )}
 
