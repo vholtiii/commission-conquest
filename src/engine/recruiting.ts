@@ -2,6 +2,7 @@ import type { CrewMember, FamilyName, GameState, TurnLogEntry } from "@/types/ga
 import { getFamilyDef } from "@/data/families";
 import type { Rng } from "./rng";
 import { createCrewMember } from "./crew";
+import { modifierSum } from "./eventModifiers";
 
 /**
  * Total respect decides who walks in each week. Higher tiers bring more men,
@@ -93,7 +94,7 @@ export function walkIns(
 ): { state: GameState; log?: TurnLogEntry } {
   const family = state.playerFamily;
   if (!family) return { state };
-  const tier = recruitTier(state.reputation.respect);
+  const tier = recruitTier(state.reputation.respect + 25 * modifierSum(state, "recruitQuality"));
   const pool = state.recruitmentPool ?? [];
   // Scattered men waiting on you don't crowd out the week's walk-ins.
   const walkedIn = pool.filter((c) => !isFreeAgent(c)).length;

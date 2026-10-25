@@ -13,6 +13,7 @@ import CapturePanel from "./panels/CapturePanel";
 import LaunderingPanel from "./panels/LaunderingPanel";
 import LawyerPanel from "./panels/LawyerPanel";
 import WarehousePanel from "./panels/WarehousePanel";
+import RacketsPanel from "./panels/RacketsPanel";
 import HitPlanner, { HitResultModal } from "./panels/HitPlanner";
 import LookoutReportModal from "./panels/LookoutReportModal";
 import CrewPanel from "./panels/CrewPanel";
@@ -32,16 +33,15 @@ import HitCaptions from "./HitCaptions";
 import SitdownTable from "./SitdownTable";
 import MapLegend from "./MapLegend";
 import TurnDigest from "./TurnDigest";
+import AiDebugPanel from "./panels/AiDebugPanel";
 import TurnCurtain from "./TurnCurtain";
 import PanelErrorBoundary from "./PanelErrorBoundary";
 import GoalsCard from "./GoalsCard";
 import { useMapView } from "@/engine/mapView";
-import { RACKET_LABELS } from "@/types/game";
-import { isLegitBusiness, launderSiteStatus } from "@/engine/economy";
 import { livingBoss } from "@/engine/jail";
 import { successionReadinessReasons } from "@/engine/succession";
 import { Button } from "@/components/ui/button";
-import { formatDelta, formatMoney } from "./formatters";
+import { formatMoney } from "./formatters";
 
 function TombsBanner() {
   const playerFamily = useGameStore((s) => s.playerFamily);
@@ -105,149 +105,6 @@ function HeirWarning() {
     <div className="border-b border-amber-500/40 bg-amber-500/10 px-4 py-1.5 text-[11px] text-amber-200">
       Heir at risk — {missing.join(" · ")}
     </div>
-  );
-}
-
-function bookPair(clean: number, dirty: number): string {
-  if (clean === 0 && dirty === 0) return "$0";
-  if (dirty === 0) return formatDelta(clean);
-  if (clean === 0) return `${formatDelta(dirty)} dirty`;
-  return `${formatDelta(clean)} clean, ${formatDelta(dirty)} dirty`;
-}
-
-function RacketsOverviewPanel() {
-  const playerFamily = useGameStore((s) => s.playerFamily);
-  const territories = useGameStore((s) => s.territories);
-  const turn = useGameStore((s) => s.turn);
-  const weekBooks = useGameStore((s) => s.weekBooks);
-  const selectTerritory = useGameStore((s) => s.selectTerritory);
-  const rackets = territories
-    .filter((t) => t.owner === playerFamily)
-    .flatMap((t) => t.rackets.map((r) => ({ racket: r, territory: t })));
-
-  return (
-    <PanelShell title="Rackets" subtitle={`${rackets.length} operations running`}>
-      <div className="mb-3 space-y-1 border-b border-panel-border pb-3 text-xs">
-        {!weekBooks && (
-          <p className="text-muted-foreground">The books haven't closed yet.</p>
-        )}
-        {weekBooks && (
-          <>
-            <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
-              Last week · Turn {weekBooks.turn}
-            </div>
-            {weekBooks.rackets.map((line, i) => (
-              <div key={`${line.territoryName}-${line.label}-${i}`} className="flex items-baseline justify-between gap-3">
-                <span className="min-w-0">
-                  {line.territoryName} · {line.label}
-                  <span className="text-muted-foreground"> · {line.manager ?? "Nobody"}</span>
-                  {line.frozen && <span className="ml-1 text-heat">Frozen</span>}
-                </span>
-                <span className="shrink-0 tabular-nums">{bookPair(line.clean, line.dirty)}</span>
-              </div>
-            ))}
-            {weekBooks.blocks !== 0 && (
-              <div className="flex items-baseline justify-between gap-3">
-                <span>Blocks</span>
-                <span className="shrink-0 tabular-nums">{formatDelta(weekBooks.blocks)}</span>
-              </div>
-            )}
-            {(weekBooks.liquorClean !== 0 || weekBooks.liquorDirty !== 0) && (
-              <div className="flex items-baseline justify-between gap-3">
-                <span>Liquor</span>
-                <span className="shrink-0 tabular-nums">{bookPair(weekBooks.liquorClean, weekBooks.liquorDirty)}</span>
-              </div>
-            )}
-            {(weekBooks.laundryClean !== 0 || weekBooks.laundryDirty !== 0) && (
-              <div className="flex items-baseline justify-between gap-3">
-                <span>Laundry</span>
-                <span className="shrink-0 tabular-nums">{bookPair(weekBooks.laundryClean, weekBooks.laundryDirty)}</span>
-              </div>
-            )}
-            {weekBooks.cuts.map((cut, i) => (
-              <div key={`${cut.family}-${i}`} className="flex items-baseline justify-between gap-3">
-                <span>{cut.clean + cut.dirty < 0 ? `Paid ${cut.family}` : `${cut.family} paid`}</span>
-                <span className="shrink-0 tabular-nums">{bookPair(cut.clean, cut.dirty)}</span>
-              </div>
-            ))}
-            <div className="flex items-baseline justify-between gap-3">
-              <span>Upkeep</span>
-              <span className="shrink-0 tabular-nums">{formatDelta(-weekBooks.upkeep)}</span>
-            </div>
-            {(weekBooks.adjustmentClean !== 0 || weekBooks.adjustmentDirty !== 0) && (
-              <div className="flex items-baseline justify-between gap-3">
-                <span>No one speaking for the family</span>
-                <span className="shrink-0 tabular-nums">
-                  {bookPair(weekBooks.adjustmentClean, weekBooks.adjustmentDirty)}
-                </span>
-              </div>
-            )}
-            <div className="mt-1 space-y-0.5 border-t border-panel-border pt-1">
-              <div className="flex items-baseline justify-between gap-3">
-                <span>Clean</span>
-                <span className="shrink-0 tabular-nums">{formatDelta(weekBooks.clean)}</span>
-              </div>
-              <div className="flex items-baseline justify-between gap-3">
-                <span>Dirty</span>
-                <span className="shrink-0 tabular-nums">{formatDelta(weekBooks.dirty)}</span>
-              </div>
-              <div className="flex items-baseline justify-between gap-3 font-medium">
-                <span>Net</span>
-                <span className="shrink-0 tabular-nums">{formatDelta(weekBooks.net)}</span>
-              </div>
-            </div>
-          </>
-        )}
-      </div>
-      <div className="space-y-1.5">
-        {rackets.length === 0 && <p className="text-xs text-muted-foreground">No rackets yet — select a district you own.</p>}
-        {rackets.map(({ racket, territory }) => {
-          const frozen = (racket.frozenUntil ?? 0) > turn;
-          const siteStatus = isLegitBusiness(racket.type)
-            ? launderSiteStatus(racket, turn)
-            : "off";
-          return (
-          <button
-            key={racket.id}
-            onClick={() =>
-              selectTerritory(territory.id, {
-                toastLabel: RACKET_LABELS[racket.type],
-                racketId: racket.id,
-              })
-            }
-            className="flex w-full items-center justify-between rounded-md border border-panel-border bg-panel/50 px-3 py-2 text-left hover:bg-panel-elevated"
-          >
-            <div>
-              <div className="flex items-center gap-1.5 text-sm font-medium">
-                {RACKET_LABELS[racket.type]}
-                {frozen && (
-                  <span className="rounded bg-heat/30 px-1 text-[9px] uppercase text-heat">
-                    Frozen
-                  </span>
-                )}
-                {siteStatus === "ready" && (
-                  <span className="rounded bg-money/20 px-1 text-[9px] uppercase text-money">
-                    Laundering
-                  </span>
-                )}
-                {siteStatus === "setting_up" && (
-                  <span className="rounded bg-amber-500/20 px-1 text-[9px] uppercase text-amber-300">
-                    Setting up
-                  </span>
-                )}
-              </div>
-              <div className="text-[11px] text-muted-foreground">{territory.name}</div>
-            </div>
-            <div className="text-right text-xs text-muted-foreground">
-              Lv {racket.level}
-              <br />
-              Stock {racket.stock}
-            </div>
-          </button>
-          );
-        })}
-      </div>
-    </PanelShell>
   );
 }
 
@@ -363,7 +220,7 @@ function ActivePanel() {
     case "crew_sheet":
       return <CrewSheet />;
     case "rackets":
-      return <RacketsOverviewPanel />;
+      return <RacketsPanel />;
     case "laundering":
       return <LaunderingPanel />;
     case "lawyer":
@@ -415,7 +272,7 @@ export default function GameShell() {
 
         <div className="relative z-0 flex-1">
           <CityScene />
-          <GoalsCard />
+          {!cinematicPlaying && <GoalsCard />}
           <TurnCurtain />
 
           {overview && (
@@ -427,6 +284,7 @@ export default function GameShell() {
           )}
 
           <TurnDigest />
+          <AiDebugPanel />
 
           <div className="pointer-events-none absolute inset-0 z-40 flex p-4">
             <div

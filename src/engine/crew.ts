@@ -142,6 +142,19 @@ export function isUnmade(member: CrewMember): boolean {
   return true;
 }
 
+/** Associates are not family: what they do never lands on the family's heat. */
+export function tiedToFamily(m: CrewMember | null | undefined): boolean {
+  return !!m && m.role !== "associate";
+}
+
+/** Street work stops adding to a man's sheet here. */
+export const MAX_WANTED = 10;
+
+/** A man's wanted after `n` more, held at MAX_WANTED (never lowered if he's already past it). */
+export function raiseWanted(m: Pick<CrewMember, "wanted">, n: number): number {
+  return Math.max(m.wanted, Math.min(MAX_WANTED, m.wanted + n));
+}
+
 /** Stamp the trait. Skills and loyalty are the ceremony's to give. */
 export function stampMade(member: CrewMember): CrewMember {
   if (member.traits.includes("made_man")) return member;

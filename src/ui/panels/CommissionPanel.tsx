@@ -37,6 +37,7 @@ import Tip from "@/ui/Tip";
 import { titleCase, formatMoney } from "../formatters";
 import { DIRTY_WEIGHT, familyInfluence, familyWealth, STREAK_START_TURN, wealthFloor } from "@/engine/victory";
 import { leadTurnsFor } from "@/engine/tempo";
+import { activeRivalPacts } from "@/engine/ai/rivalPacts";
 import { commissionMinutes, minuteAge, minuteFamily, rivalFeuds, seatChips } from "@/engine/commissionMinutes";
 import {
   canAsk,
@@ -747,10 +748,12 @@ function Minutes() {
   const turn = useGameStore((s) => s.turn);
   const relations = useGameStore((s) => s.relations);
   const playerFamily = useGameStore((s) => s.playerFamily);
+  const diplomacy = useGameStore((s) => s.diplomacy);
   if (!playerFamily) return null;
   const lines = commissionMinutes(turnLog, turn);
   const feuds = rivalFeuds({ relations, playerFamily });
-  if (lines.length === 0 && feuds.length === 0) return null;
+  const rivalPacts = activeRivalPacts({ diplomacy, turn });
+  if (lines.length === 0 && feuds.length === 0 && rivalPacts.length === 0) return null;
 
   return (
     <div className="mb-3 rounded-md border border-panel-border bg-panel/50 px-3 py-2">
@@ -787,6 +790,22 @@ function Minutes() {
             )
             .join(" · ")}
         </p>
+      )}
+      {rivalPacts.length > 0 && (
+        <ul className="mt-1.5 space-y-0.5 border-t border-panel-border pt-1.5">
+          {rivalPacts.map((p) => (
+            <li key={`${p.a}-${p.b}-${p.since}`} className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+              <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: FAMILY_HEX[p.a] }} />
+              <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: FAMILY_HEX[p.b] }} />
+              <span className="min-w-0 flex-1">
+                {p.kind === "coalition"
+                  ? `${p.a} and ${p.b} have lined up against ${p.target === playerFamily ? "you" : p.target}`
+                  : `${p.a} and ${p.b} are keeping a truce`}
+              </span>
+              <span className="shrink-0">{p.until - turn}w</span>
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   );

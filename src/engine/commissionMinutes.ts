@@ -12,6 +12,7 @@ const MINUTE_PREFIXES = [
   "log_defect_",
   "log_pact_break_",
   "log_pact_lapse_",
+  "log_rpact_",
   "log_deal_break_",
   "log_deal_honor_",
   "log_deal_expired_",

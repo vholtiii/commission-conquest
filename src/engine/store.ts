@@ -40,6 +40,7 @@ import {
   RETAINERS,
   retainerFee,
 } from "./lawyer";
+import { migrateMinds } from "./ai/minds";
 import { emptyVictory, finalTurnFor, seedRivalInfluence } from "./victory";
 import { ensureRacketSites, getCityLayout, nextRacketSiteIndex, racketBlockFor } from "./cityLayout";
 import { bringCrewOnHit, buildHitCinematic, commitHitCrew, planHit } from "./hitOps";
@@ -108,6 +109,7 @@ import { ensureTerritorySlots, maxRacketsFor, allowedRacketTypes, lotTier, lotTi
 import { attemptBribe } from "./bribes";
 import { aggregateBribeEffects, applyHeat, decayHeat } from "./heat";
 import { applyEventChoice } from "./events";
+import { modifierSum } from "./eventModifiers";
 import { beginMaking, commitBooks, sittingOut } from "./making";
 import { callInOwn as orderCallIn } from "./callIn";
 import { sheetAffairOpen, sheetRatAction } from "./ratAffair";
@@ -1115,7 +1117,7 @@ export const useGameStore = create<GameStore>()(
           id: `ship_${Date.now()}`,
           crates: qty,
           destTerritoryId,
-          arriveTurn: s.turn + 1,
+          arriveTurn: s.turn + 1 + Math.max(0, Math.round(modifierSum(s, "shipmentSpeed"))),
           cost,
         };
         set({
@@ -1125,7 +1127,7 @@ export const useGameStore = create<GameStore>()(
         });
         const paid = formatPaymentParts(pay);
         toast.message(`Whisky ordered — ${qty} crates`, {
-          description: `Arrives next turn · ${paid} · ${(seizeP * 100).toFixed(0)}% seizure risk`,
+          description: `${ship.arriveTurn > s.turn + 1 ? `Arrives in ${ship.arriveTurn - s.turn} turns (docks slowed)` : "Arrives next turn"} · ${paid} · ${(seizeP * 100).toFixed(0)}% seizure risk`,
         });
       },
 
@@ -2090,9 +2092,10 @@ export const useGameStore = create<GameStore>()(
         if (summons) announce.warning(`${summons.targetName} was called in.`);
         const newLogs = next.turnLog.slice(logLen);
         for (const log of newLogs) {
-          if (log.category === "event") {
-            toast.message(s.activeEvent.title, { description: log.text });
-          }
+          if (log.category !== "event") continue;
+          const notify =
+            log.tone === "warning" ? toast.warning : log.tone === "money" ? toast.success : toast.message;
+          notify(s.activeEvent.title, { description: log.text });
         }
         if (choice?.effects.shipmentDelay && newLogs.length === 0) {
           toast.message("Shipments delayed", {
@@ -2936,6 +2939,8 @@ export const useGameStore = create<GameStore>()(
             launderNudgeShown: loaded.launderNudgeShown ?? false,
             lawyerReadyTurn: loaded.lawyerReadyTurn ?? 0,
             lawyerRetainer: migrateRetainer(loaded, loaded.turn ?? 1),
+            aiMinds: migrateMinds(loaded.aiMinds),
+            aiTrace: null,
             lawyerRate: loaded.lawyerRate ?? 1,
             lawyerName: lawyerName(loaded),
             lawyerWantedTurn: loaded.lawyerWantedTurn ?? 0,
@@ -2982,6 +2987,8 @@ export const useGameStore = create<GameStore>()(
             routes: repairRoutePaths(territories, loaded.routes ?? []),
             passageDeals: loaded.passageDeals ?? [],
             passageLeverage: loaded.passageLeverage ?? {},
+            eventModifiers: loaded.eventModifiers ?? [],
+            pendingFollowUps: loaded.pendingFollowUps ?? [],
             messageHitTurns: loaded.messageHitTurns ?? {},
             pendingReports: loaded.pendingReports ?? [],
             rivalTreasury: loaded.rivalTreasury ?? {},
@@ -3015,6 +3022,8 @@ export const useGameStore = create<GameStore>()(
               commissionCooldown: loaded.diplomacy?.commissionCooldown,
               sanctionUntil: loaded.diplomacy?.sanctionUntil,
               refusals: loaded.diplomacy?.refusals ?? 0,
+              rivalPacts: loaded.diplomacy?.rivalPacts ?? [],
+              rivalPactLog: loaded.diplomacy?.rivalPactLog ?? [],
             },
             commissionCall: loaded.commissionCall ?? null,
             commissionErrand: loaded.commissionErrand ?? null,
@@ -3116,6 +3125,7 @@ export const useGameStore = create<GameStore>()(
           "loadSlot",
         ];
         for (const m of methods) delete copy[m];
+        delete copy.aiTrace;
         const log = copy.turnLog;
         if (Array.isArray(log) && log.length > 200) copy.turnLog = log.slice(-200);
         return copy as GameState;
@@ -3166,6 +3176,8 @@ export const useGameStore = create<GameStore>()(
           launderNudgeShown: p.launderNudgeShown ?? current.launderNudgeShown ?? false,
           lawyerReadyTurn: p.lawyerReadyTurn ?? 0,
           lawyerRetainer: migrateRetainer(p, p.turn ?? current.turn ?? 1),
+          aiMinds: migrateMinds(p.aiMinds),
+          aiTrace: null,
           lawyerRate: p.lawyerRate ?? 1,
           lawyerName: lawyerName({ lawyerName: p.lawyerName, seed }),
           lawyerWantedTurn: p.lawyerWantedTurn ?? 0,
@@ -3208,6 +3220,8 @@ export const useGameStore = create<GameStore>()(
             commissionCooldown: p.diplomacy?.commissionCooldown ?? current.diplomacy?.commissionCooldown,
             sanctionUntil: p.diplomacy?.sanctionUntil ?? current.diplomacy?.sanctionUntil,
             refusals: p.diplomacy?.refusals ?? current.diplomacy?.refusals ?? 0,
+            rivalPacts: p.diplomacy?.rivalPacts ?? current.diplomacy?.rivalPacts ?? [],
+            rivalPactLog: p.diplomacy?.rivalPactLog ?? current.diplomacy?.rivalPactLog ?? [],
           },
           commissionCall: p.commissionCall ?? null,
           commissionErrand: p.commissionErrand ?? null,
@@ -3226,6 +3240,8 @@ export const useGameStore = create<GameStore>()(
           routes: repairRoutePaths(territories, p.routes ?? current.routes ?? []),
           passageDeals: p.passageDeals ?? current.passageDeals ?? [],
           passageLeverage: p.passageLeverage ?? current.passageLeverage ?? {},
+          eventModifiers: p.eventModifiers ?? [],
+          pendingFollowUps: p.pendingFollowUps ?? [],
           messageHitTurns: p.messageHitTurns ?? current.messageHitTurns ?? {},
           pendingReports: p.pendingReports ?? [],
           rivalTreasury: p.rivalTreasury ?? {},

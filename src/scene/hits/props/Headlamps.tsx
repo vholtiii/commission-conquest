@@ -8,7 +8,7 @@ export interface LampCar {
   y?: number;
 }
 
-/** Two warm pools and a faint cone in front of a reel car. Not used by the street fleet. */
+/** Two warm pools of light in front of a reel car. Not used by the street fleet. */
 export default function Headlamps({ cars }: { cars: LampCar[] }) {
   return (
     <group>
@@ -31,14 +31,14 @@ function Pair({ car }: { car: LampCar }) {
         const px = car.x + (0.86 * c + lz * s);
         const pz = car.z + (-0.86 * s + lz * c);
         return (
-          <Lamp key={lz} x={px} y={y} z={pz} fx={fwdX} fz={fwdZ} rot={car.rot} />
+          <Lamp key={lz} x={px} y={y} z={pz} fx={fwdX} fz={fwdZ} />
         );
       })}
     </group>
   );
 }
 
-function Lamp({ x, y, z, fx, fz, rot }: { x: number; y: number; z: number; fx: number; fz: number; rot: number }) {
+function Lamp({ x, y, z, fx, fz }: { x: number; y: number; z: number; fx: number; fz: number }) {
   const light = useRef<THREE.SpotLight>(null);
   const target = useRef<THREE.Object3D>(null);
 
@@ -52,16 +52,12 @@ function Lamp({ x, y, z, fx, fz, rot }: { x: number; y: number; z: number; fx: n
         ref={light}
         position={[x, y, z]}
         angle={0.42}
-        penumbra={0.55}
-        intensity={9}
+        penumbra={0.95}
+        intensity={5}
         distance={11}
         color="#ffd9a0"
       />
       <object3D ref={target} position={[x + fx * 4, y - 0.45, z + fz * 4]} />
-      <mesh position={[x + fx * 1.15, y - 0.15, z + fz * 1.15]} rotation={[Math.PI / 2, rot, 0]}>
-        <coneGeometry args={[0.5, 2.1, 8, 1, true]} />
-        <meshBasicMaterial color="#ffd9a0" transparent opacity={0.07} depthWrite={false} side={THREE.DoubleSide} />
-      </mesh>
     </group>
   );
 }

@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 sim-report.json
+sim-ai.json
+sim-heat.json
+sim-strategies.json
 
 # Editor directories and files
 .vscode/*

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { tickConsigliere } from "@/engine/consigliere";
-import { heatForecast } from "@/engine/heat";
+import { HEAT_COOLING, heatForecast } from "@/engine/heat";
 import { buildInitialState, startGame } from "@/engine/initialState";
 import type { GameState, Operation } from "@/types/game";
 
@@ -152,35 +152,51 @@ describe("consigliere's note", () => {
 });
 
 describe("heat clock", () => {
-  it("counts weeks to the next line and turns urgent inside two", () => {
+  const bookOf = (heatGen: number) => {
     const state = game();
     const mine = state.territories.find((t) => t.owner === "Moretti" && t.rackets.length > 0);
     expect(mine).toBeTruthy();
     const territories = state.territories.map((t) => {
       if (t.owner !== "Moretti") return t;
       if (t.id !== mine!.id) return { ...t, rackets: [] };
-      return { ...t, rackets: [{ ...t.rackets[0]!, heatGen: 20, frozenUntil: 0 }] };
+      return { ...t, rackets: [{ ...t.rackets[0]!, heatGen, frozenUntil: 0 }] };
     });
-    const base = { ...state, territories };
+    return { ...state, territories };
+  };
+
+  it("counts weeks to the next line and turns urgent inside two", () => {
+    const base = bookOf(100);
 
     const next = heatForecast({ ...base, heat: { ...base.heat, level: 38 } });
-    expect(next.generated).toBe(5);
-    expect(next.decay).toBe(3);
+    expect(next.generated).toBe(20);
+    // Flat 3 (base 2 + Moretti) plus 23% of the 38 the week opened on.
+    expect(next.decay).toBeCloseTo(3 + 38 * HEAT_COOLING);
     expect(next.weeks).toBe(1);
     expect(next.label).toBe("Raids next week");
     expect(next.urgent).toBe(true);
-    expect(next.detail).toContain("washes add 5");
-    expect(next.detail).toContain("cools 3");
+    expect(next.detail).toContain("washes add 20");
+    expect(next.detail).toContain("cools 11.7");
+    expect(next.detail).toContain("settles near 74");
     expect(next.detail).toContain("hit or a capture");
 
-    const two = heatForecast({ ...base, heat: { ...base.heat, level: 36 } });
+    const two = heatForecast({ ...base, heat: { ...base.heat, level: 25 } });
     expect(two.weeks).toBe(2);
     expect(two.label).toBe("Raids ~2w");
     expect(two.urgent).toBe(true);
 
-    const later = heatForecast({ ...base, heat: { ...base.heat, level: 30 } });
+    const slow = bookOf(70);
+    const later = heatForecast({ ...slow, heat: { ...slow.heat, level: 20 } });
     expect(later.weeks).toBe(5);
     expect(later.label).toBe("Raids ~5w");
     expect(later.urgent).toBe(false);
+  });
+
+  it("names where a book settles when it never reaches the next line", () => {
+    const base = bookOf(60);
+    const fc = heatForecast({ ...base, heat: { ...base.heat, level: 22 } });
+    expect(fc.direction).toBe("climb");
+    expect(fc.settle).toBeCloseTo((12 - 3) / HEAT_COOLING);
+    expect(fc.line).toBeNull();
+    expect(fc.label).toBe("Patrols · holds ~39");
   });
 });

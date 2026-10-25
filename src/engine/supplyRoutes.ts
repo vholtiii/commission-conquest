@@ -29,7 +29,7 @@ import type {
 } from "@/types/game";
 import { ALL_FAMILY_NAMES } from "@/data/families";
 import type { Rng } from "./rng";
-import { assignCrew, bumpLoyalty, grantXpToCrew } from "./crew";
+import { assignCrew, bumpLoyalty, grantXpToCrew, tiedToFamily } from "./crew";
 import { crewPresentIn } from "./crewLocation";
 import { hasActiveIntel } from "./intel";
 import {
@@ -1254,6 +1254,8 @@ export function processSupplyRoutes(state: GameState, rng: Rng): SupplyRunResult
     const lead = seated.lead;
     const escort = route.escortId ? next.crew.find((c) => c.id === route.escortId) : undefined;
     const escortRides = !!escort && escort.status === "active" && escort.id !== driver.id;
+    // Only a made man on board ties the load back to the family.
+    const traced = tiedToFamily(driver) || (escortRides && tiedToFamily(escort));
 
     if (!hasManagedWarehouse(src, lookup, state.turn)) {
       const text = `${lead}No managed warehouse in ${srcName}. The truck waits.`;
@@ -1348,8 +1350,8 @@ export function processSupplyRoutes(state: GameState, rng: Rng): SupplyRunResult
     // The road itself.
     if (cargo > 0 && rng.chance(option.risk)) {
       const hijacker = pickHijacker(next, option, rng);
-      heatDelta += 2;
-      ledger = mergeLedger(ledger, { stolen: cargo, heat: 2 });
+      heatDelta += traced ? 2 : 0;
+      ledger = mergeLedger(ledger, { stolen: cargo, heat: traced ? 2 : 0 });
       if (hijacker) next = credit(next, hijacker, cargo * CRATE_STREET_VALUE);
       const fakeRoute: DeliveryRoute = {
         id: `${route.id}_${state.turn}`,
@@ -1403,8 +1405,8 @@ export function processSupplyRoutes(state: GameState, rng: Rng): SupplyRunResult
         if (garage && roll >= checkpoint * (1 - garage.evasion)) {
           notes.push(`ducked a checkpoint into the ${garage.territory.name} safehouse`);
         } else {
-          heatDelta += 4;
-          ledger = mergeLedger(ledger, { seized: cargo, heat: 4 });
+          heatDelta += traced ? 4 : 0;
+          ledger = mergeLedger(ledger, { seized: cargo, heat: traced ? 4 : 0 });
           const text = `${lead}Police seized the ${srcName} → ${destName} run (${cargo} crates).`;
           next = paySubstitute(
             { ...next, crew: bumpLoyalty(next.crew, [driver.id, escortRides ? escort!.id : ""], 1).crew },

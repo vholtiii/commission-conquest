@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useGameStore } from "@/engine/store";
-import type { CrewSkills, GameEvent } from "@/types/game";
+import type { CrewSkills, EventEffects, EventManPick, GameEvent } from "@/types/game";
+import { modifierChip } from "@/engine/eventModifiers";
 import {
   MAKING_PER_SKILL,
   SKILL_KEYS,
@@ -16,10 +17,78 @@ const EFFECT_LABEL: Record<string, string> = {
   respect: "Respect",
   fear: "Fear",
   loyalty: "Loyalty",
+  crewLoyalty: "Crew loyalty",
   crates: "Crates",
   shipmentDelay: "Shipment delay (turns)",
   shipmentLoss: "Shipment loss",
 };
+
+/** Heat going up is bad; everything else reads by sign. */
+const BAD_WHEN_UP = new Set(["heat", "shipmentDelay"]);
+
+const MAN_LABEL: Record<EventManPick, string> = {
+  capo: "A capo",
+  soldier: "A soldier",
+  muscle: "Your best gun",
+  any: "One of your men",
+  subject: "He",
+  manager: "The manager",
+};
+
+interface Chip {
+  text: string;
+  good: boolean;
+}
+
+function effectChips(fx: Omit<EventEffects, "gamble">): Chip[] {
+  const chips: Chip[] = [];
+  for (const [key, val] of Object.entries(fx)) {
+    if (typeof val !== "number" || val === 0 || key === "moneyLossFrac") continue;
+    if (key === "shipmentLoss") {
+      chips.push({ text: `${EFFECT_LABEL[key]} −${Math.round(val * 100)}%`, good: false });
+      continue;
+    }
+    const good = BAD_WHEN_UP.has(key) ? val < 0 : val > 0;
+    chips.push({ text: `${EFFECT_LABEL[key] ?? key} ${val >= 0 ? "+" : ""}${val}`, good });
+  }
+  if (fx.recruit) chips.push({ text: `${fx.recruit.role === "soldier" ? "Soldier" : "Man"} joins`, good: true });
+  if (fx.rivalRecruit) chips.push({ text: `${fx.rivalRecruit.family} gain a man`, good: false });
+  if (fx.jailMan) chips.push({ text: `${MAN_LABEL[fx.jailMan.pick]} jailed`, good: false });
+  if (fx.woundMan) chips.push({ text: `${MAN_LABEL[fx.woundMan.pick]} wounded`, good: false });
+  if (fx.wantedMan) chips.push({ text: `${MAN_LABEL[fx.wantedMan.pick]} wanted +${fx.wantedMan.delta}`, good: false });
+  if (fx.releaseMan) chips.push({ text: "A man walks free", good: true });
+  if (fx.truce) chips.push({ text: `Truce ${fx.truce.weeks} wk`, good: true });
+  if (fx.relationDelta) {
+    const d = fx.relationDelta.delta;
+    chips.push({ text: `${fx.relationDelta.family} ${d >= 0 ? "+" : ""}${d}`, good: d >= 0 });
+  }
+  for (const r of fx.relations ?? []) {
+    const who = r.family === "allRivals" ? "All families" : r.family;
+    chips.push({ text: `${who} ${r.delta >= 0 ? "+" : ""}${r.delta}`, good: r.delta >= 0 });
+  }
+  if (fx.racket) {
+    chips.push({
+      text: fx.racket.action === "destroy" ? "Racket destroyed" : `Racket shut ${fx.racket.turns ?? 1} wk`,
+      good: false,
+    });
+  }
+  if (fx.territoryHeat) chips.push({ text: `District heat +${fx.territoryHeat.delta}`, good: false });
+  if (fx.modifier) {
+    chips.push({
+      text: `${modifierChip(fx.modifier)} / ${fx.modifier.weeks} wk`,
+      good:
+        fx.modifier.kind === "heatPerWeek" || fx.modifier.kind === "shipmentSpeed"
+          ? fx.modifier.value < 0
+          : fx.modifier.kind === "raidChance"
+            ? fx.modifier.value < 1
+            : fx.modifier.value > 0,
+    });
+  }
+  if (fx.shipment) chips.push({ text: `+${fx.shipment.crates} crates next wk`, good: true });
+  if (fx.rival?.treasury) chips.push({ text: `${fx.rival.family} take the score`, good: false });
+  if (fx.moneyLossFrac) chips.push({ text: `Lose ${Math.round(fx.moneyLossFrac * 100)}% clean $`, good: false });
+  return chips;
+}
 
 export default function EventModal() {
   const activeEvent = useGameStore((s) => s.activeEvent);
@@ -55,23 +124,24 @@ export default function EventModal() {
             >
               <span className="text-sm font-medium">{choice.text}</span>
               <span className="mt-1 flex flex-wrap gap-2 text-[10px] text-muted-foreground">
-                {Object.entries(choice.effects).map(([key, val]) => {
-                  if (typeof val !== "number") return null;
-                  const num = val;
-                  if (key === "shipmentLoss") {
-                    return (
-                      <span key={key} className="text-heat">
-                        {EFFECT_LABEL[key]} −{Math.round(num * 100)}%
-                      </span>
-                    );
-                  }
-                  return (
-                    <span key={key} className={num >= 0 ? "text-emerald-400" : "text-heat"}>
-                      {EFFECT_LABEL[key] ?? key} {num >= 0 ? "+" : ""}
-                      {num}
-                    </span>
-                  );
-                })}
+                {effectChips(choice.effects).map((chip, i) => (
+                  <span key={i} className={chip.good ? "text-emerald-400" : "text-heat"}>
+                    {chip.text}
+                  </span>
+                ))}
+                {choice.effects.gamble && (
+                  <span
+                    className="rounded border border-amber-500/50 px-1 text-amber-400"
+                    title="It could go either way."
+                  >
+                    Risky — could go wrong
+                  </span>
+                )}
+                {(choice.effects.hint || choice.effects.followUp) && (
+                  <span className="italic text-steel-light">
+                    {choice.effects.hint ?? "Consequences may follow"}
+                  </span>
+                )}
               </span>
             </button>
           ))}

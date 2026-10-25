@@ -16,7 +16,7 @@ import {
   tipOffChance,
 } from "./hitOps";
 import { runAllAiTurns } from "./rivalAI";
-import { findDeliveryPath, processDeliveries, processAllEconomy, isLegitBusiness, pruneLaunderPlan, tickLegitCover, buildWeekBooks, emptyPlayerWeekParts } from "./economy";
+import { findDeliveryPath, processDeliveries, processAllEconomy, isLegitBusiness, pruneLaunderPlan, tickLegitCover, buildWeekBooks, emptyPlayerWeekParts, racketIncome } from "./economy";
 import { tickSafehouses } from "./safehouse";
 import {
   emptyLiquorLedger,
@@ -32,15 +32,19 @@ import {
   processHeatTurn,
   tickBribes,
   applyWarrantConsequences,
+  applyFederalIndictments,
 } from "./heat";
 import { tickConsigliere } from "./consigliere";
-import { drawEvent } from "./events";
+import { drawEvent, drawFollowUp } from "./events";
+import { expireModifiers, liveModifiers, modifierSum } from "./eventModifiers";
 import { advanceRatAffair } from "./ratAffair";
 import { advanceMaking } from "./making";
 import { decayRelations } from "./relations";
 import { activePactKeys, expirePacts } from "./diplomacy";
 import { pruneManagers, tickAssignmentXp, grantXpToCrew, bumpLoyalty } from "./crew";
 import { emptyIntel, pruneIntel, recordPresence } from "./intel";
+import { recordMemories } from "./ai/aiMemory";
+import { brainOn } from "./ai/minds";
 import { pruneGrudges, releaseHeldCrew } from "./casing";
 import { generateCrewRequests, tickCrewMentoring } from "./crews";
 import { tickBossPresence } from "./bossPresence";
@@ -217,6 +221,19 @@ function appendLogs(state: GameState, entries: TurnLogEntry[]): GameState {
   };
 }
 
+/** This week's swing from district-scoped event modifiers, on that district's take. */
+function districtModifierTake(state: GameState): number {
+  let total = 0;
+  for (const m of liveModifiers(state, "income")) {
+    if (!m.territoryId) continue;
+    const t = state.territories.find((x) => x.id === m.territoryId);
+    if (!t || t.owner !== state.playerFamily) continue;
+    const take = t.baseIncome + t.rackets.reduce((n, r) => n + racketIncome(r), 0);
+    total += take * m.value;
+  }
+  return Math.round(total);
+}
+
 function applyHeatToState(state: GameState, amount: number, source: string): GameState {
   const bribeFx = aggregateBribeEffects(state.bribes);
   return {
@@ -261,6 +278,9 @@ export function endTurn(state: GameState, rng?: Rng): GameState {
   const mattressEnd = tickMattresses(current);
   current = mattressEnd.state;
   logs.push(...mattressEnd.logs);
+  const lapsedMods = expireModifiers(current);
+  current = lapsedMods.state;
+  logs.push(...lapsedMods.logs);
   current = stageSitdowns(current);
 
   // The player's own hits already went (resolvePlayerHits, with a reel);
@@ -438,7 +458,9 @@ export function endTurn(state: GameState, rng?: Rng): GameState {
   const headless =
     !!current.playerFamily && familyHeadless(current, current.playerFamily);
   const leaderless = playerLeaderless(current);
-  const scaleIncome = (n: number) => ((headless || leaderless) && n > 0 ? n * 0.75 : n);
+  const eventIncome = Math.max(-0.9, modifierSum(current, "income"));
+  const scaleIncome = (n: number) =>
+    n > 0 ? n * ((headless || leaderless) ? 0.75 : 1) * (1 + eventIncome) : n;
   if (headless || leaderless) {
     logs.push({
       id: `log_headless_${current.turn}`,
@@ -480,6 +502,29 @@ export function endTurn(state: GameState, rng?: Rng): GameState {
   };
   current = applyHeatToState(current, economy.heatDelta, "rackets");
   logs.push(...economy.logs);
+
+  const districtSwing = districtModifierTake(current);
+  if (districtSwing !== 0) {
+    current = { ...current, dirtyMoney: current.dirtyMoney + districtSwing };
+    logs.push({
+      id: `log_evt_district_${current.turn}`,
+      turn: current.turn,
+      category: "economy",
+      text:
+        districtSwing > 0
+          ? `Street deals brought in an extra $${districtSwing} this week.`
+          : `Street deals cost you $${-districtSwing} of the take this week.`,
+      family: current.playerFamily ?? undefined,
+      tone: "money",
+    });
+  }
+  const eventHeat = modifierSum(current, "heatPerWeek");
+  if (eventHeat !== 0) {
+    current =
+      eventHeat > 0
+        ? applyHeatToState(current, eventHeat, "events")
+        : { ...current, heat: { ...current.heat, level: Math.max(0, current.heat.level + eventHeat) } };
+  }
 
   // Men inside a safehouse shed wanted; rivals move their own in and out.
   const hideouts = tickSafehouses(current);
@@ -524,14 +569,18 @@ export function endTurn(state: GameState, rng?: Rng): GameState {
     }
   }
 
-  const heatTurn = processHeatTurn(current);
+  const heatTurn = processHeatTurn(current, state.heat.level);
   current.heat = heatTurn.heat;
   logs.push(...heatTurn.logs);
   const judgedHeat = heatTurn.heat.level;
 
+  // Raids hit the racket take, which is dirty; clean cash only covers what's left over.
   if (heatTurn.incomePenalty > 0 && current.playerFamily) {
-    const penalty = Math.floor(current.lastNetIncome * heatTurn.incomePenalty);
-    current.money -= Math.max(0, penalty);
+    const penalty = Math.max(0, Math.floor(current.lastNetIncome * heatTurn.incomePenalty));
+    const fromDirty = Math.min(Math.max(0, current.dirtyMoney), penalty);
+    const fromClean = Math.min(Math.max(0, current.money), penalty - fromDirty);
+    current.dirtyMoney -= fromDirty;
+    current.money -= fromClean;
   }
 
   const raids = processStashRaids(current, random);
@@ -570,6 +619,7 @@ export function endTurn(state: GameState, rng?: Rng): GameState {
   logs.push(...advised.logs);
 
   current = applyWarrantConsequences(current);
+  current = applyFederalIndictments(current);
 
   const ratWeek = advanceRatAffair(current, random);
   current = ratWeek.state;
@@ -599,7 +649,12 @@ export function endTurn(state: GameState, rng?: Rng): GameState {
     });
   }
 
-  const event = current.activeEvent ? null : drawEvent(current, random);
+  let event: GameState["activeEvent"] = null;
+  if (!current.activeEvent) {
+    const followUp = drawFollowUp(current, random);
+    current.pendingFollowUps = followUp.pending;
+    event = followUp.event ?? drawEvent(current, random);
+  }
   if (event) {
     current.activeEvent = event;
     current.events = [...current.events, event];
@@ -753,6 +808,7 @@ export function endTurn(state: GameState, rng?: Rng): GameState {
     ),
   };
   logs.push(...newFlagLogs(state, current));
+  if (brainOn(current)) current = recordMemories(state, current, logs);
   const families = {} as NonNullable<typeof current.history>[number]["families"];
   for (const name of ALL_FAMILY_NAMES) {
     families[name] = {

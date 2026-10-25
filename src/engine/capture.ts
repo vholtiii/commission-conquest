@@ -1,13 +1,14 @@
 import type { CaptureTally, CrewMember, FamilyName, GameState, Territory } from "@/types/game";
 import { CAPTURE_LIMIT_BASE, CAPTURE_LIMIT_MAX } from "@/types/game";
 import { getFamilyDef } from "@/data/families";
-import { assignCrew, bumpLoyalty, isUnmade } from "./crew";
+import { assignCrew, bumpLoyalty, isUnmade, raiseWanted } from "./crew";
 import { captureParty } from "./crews";
 import type { Rng } from "./rng";
 import { BOSS_PRESENCE, bossAdjacentTo, bossPresentIn, hqIsSoft } from "./bossPresence";
 import { familyHq, type LocationState } from "./crewLocation";
 import { safehouseCaptureDefence } from "./safehouse";
 import { mattressDistrict, mattressSoldierBonus, MATTRESS_DEFENCE } from "./mattresses";
+import { bribedHeat } from "./heat";
 
 /* ------------------------------------------------------------------ */
 /* Per-turn capture limit                                              */
@@ -238,6 +239,14 @@ function hardenFromCapture(
   return { crew: next, gained };
 }
 
+/** Wanted each man on an attack picks up, whether the block falls or not. */
+export const CAPTURE_WANTED = 1;
+
+function markParty(crew: CrewMember[], ids: readonly string[]): CrewMember[] {
+  const party = new Set(ids);
+  return crew.map((c) => (party.has(c.id) ? { ...c, wanted: raiseWanted(c, CAPTURE_WANTED) } : c));
+}
+
 export function resolveCapture(
   state: GameState,
   territoryId: string,
@@ -275,8 +284,8 @@ export function resolveCapture(
     return {
       state: {
         ...state,
-        crew: paid.crew,
-        heat: { ...state.heat, level: Math.min(100, state.heat.level + 4) },
+        crew: markParty(paid.crew, validIds),
+        heat: bribedHeat(state, 4, `attack:${territoryId}`),
         turnLog: [
           ...state.turnLog,
           {
@@ -322,8 +331,8 @@ export function resolveCapture(
           ? { owner: state.playerFamily, leadershipVacuum: 0, discovered: true }
           : {}),
       })),
-      crew: paid.crew,
-      heat: { ...state.heat, level: Math.min(100, state.heat.level + 8) },
+      crew: markParty(paid.crew, validIds),
+      heat: bribedHeat(state, 8, `capture:${territoryId}`),
       reputation: {
         ...state.reputation,
         fear: Math.min(100, state.reputation.fear + 3),

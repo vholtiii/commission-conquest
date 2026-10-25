@@ -13,6 +13,131 @@ import { playerLeaderless } from "../interregnum";
 import { racketIncome } from "../economy";
 import { valueScore } from "../territoryValue";
 import { autoPlayer, type SimStrategy } from "./autoPlayer";
+import { atPeace } from "../deals";
+import { MEMORY_CAP } from "../ai/minds";
+import { beliefError } from "../ai/aiBeliefs";
+
+const AI_ACTION_LOG = /^ai_([a-z]+)_(?:fail_|quiet_)?([A-Z][a-z]+)_/;
+const AI_ACTION_KINDS = new Set(["racket", "expand", "hit", "delivery", "hijack", "shift", "shake", "scout"]);
+
+/** What the rival families did and thought over a game, for the AI suite. */
+export interface AiMetrics {
+  /** Rival action counts by kind, per family. */
+  actions: Record<string, Record<string, number>>;
+  /** Goal-weeks by goal kind, across all rivals. */
+  goals: Record<string, number>;
+  /** Blocks that changed hands, all families. */
+  turnover: number;
+  pactsSigned: number;
+  pactsBroken: number;
+  /** Blocks taken from, or hits run on, a family the attacker was at peace with all week. */
+  contradictions: number;
+  contradictionNotes: string[];
+  /** AI time per week, ms. */
+  aiMs: number[];
+  peakMemories: number;
+  peakAdaptEntries: number;
+  peakCrewBeliefs: number;
+  beliefErrorSum: number;
+  beliefErrorSamples: number;
+  scouts: number;
+  goalSwitches: number;
+}
+
+function emptyAiMetrics(): AiMetrics {
+  return {
+    actions: {},
+    goals: {},
+    turnover: 0,
+    pactsSigned: 0,
+    pactsBroken: 0,
+    contradictions: 0,
+    contradictionNotes: [],
+    aiMs: [],
+    peakMemories: 0,
+    peakAdaptEntries: 0,
+    peakCrewBeliefs: 0,
+    beliefErrorSum: 0,
+    beliefErrorSamples: 0,
+    scouts: 0,
+    goalSwitches: 0,
+  };
+}
+
+function traceOn(): boolean {
+  return typeof process !== "undefined" && !!process.env.AI_TRACE;
+}
+
+function recordAiWeek(before: GameState, after: GameState, newLogs: GameState["turnLog"], m: AiMetrics) {
+  const owners = new Map(before.territories.map((t) => [t.id, t.owner]));
+  const peaceAllWeek = (a: FamilyName, b: FamilyName) => atPeace(before, a, b) && atPeace(after, a, b);
+  for (const line of newLogs) {
+    const hit = AI_ACTION_LOG.exec(line.id);
+    if (!hit || !AI_ACTION_KINDS.has(hit[1]!)) continue;
+    const fam = hit[2]!;
+    const row = (m.actions[fam] ??= {});
+    row[hit[1]!] = (row[hit[1]!] ?? 0) + 1;
+    // A grab or a shakedown on a family it was at peace with all week; the log names the owner at the time.
+    const victim = (
+      line.id.startsWith("ai_expand_") ? / from ([A-Z][a-z]+)/.exec(line.text) : line.id.startsWith("ai_shake_") ? /shook down ([A-Z][a-z]+)'s/.exec(line.text) : null
+    )?.[1] as FamilyName | undefined;
+    if (victim && victim !== fam && peaceAllWeek(fam as FamilyName, victim)) {
+      m.contradictions++;
+      if (m.contradictionNotes.length < 5) m.contradictionNotes.push(`w${before.turn} ${line.id} vs ${victim}: ${line.text}`);
+    }
+  }
+  for (const t of after.territories) {
+    if (owners.get(t.id) !== t.owner) m.turnover++;
+  }
+  for (const [fam, tr] of Object.entries(after.aiTrace?.families ?? {})) {
+    if (!tr) continue;
+    if (tr.goal) m.goals[tr.goal.kind] = (m.goals[tr.goal.kind] ?? 0) + 1;
+    for (const act of tr.chosen) {
+      const target = /^hit ([A-Z][a-z]+)$/.exec(act)?.[1];
+      if (target && peaceAllWeek(fam as FamilyName, target as FamilyName)) {
+        m.contradictions++;
+        if (m.contradictionNotes.length < 5) m.contradictionNotes.push(`w${before.turn} ${fam} ${act}`);
+      }
+    }
+  }
+  if (after.aiTrace && after.aiTrace !== before.aiTrace) m.aiMs.push(after.aiTrace.ms);
+  const key = (e: NonNullable<GameState["diplomacy"]["rivalPactLog"]>[number]) => `${e.turn}:${e.a}:${e.b}:${e.kind}:${e.event}`;
+  const known = new Set((before.diplomacy.rivalPactLog ?? []).map(key));
+  for (const e of after.diplomacy.rivalPactLog ?? []) {
+    if (known.has(key(e))) continue;
+    if (e.event === "signed") m.pactsSigned++;
+    if (e.event === "broken") m.pactsBroken++;
+  }
+  for (const mind of Object.values(after.aiMinds ?? {})) {
+    if (!mind) continue;
+    m.peakMemories = Math.max(m.peakMemories, mind.memories.length);
+    m.peakAdaptEntries = Math.max(m.peakAdaptEntries, mind.adapt.weakHits.length, mind.adapt.playerHits.length);
+    m.peakCrewBeliefs = Math.max(m.peakCrewBeliefs, Object.keys(mind.beliefs.crew).length);
+  }
+  if (after.turn % 10 === 0 && after.aiMinds) {
+    for (const f of ALL_FAMILY_NAMES) {
+      if (f === after.playerFamily) continue;
+      m.beliefErrorSum += beliefError(after, f);
+      m.beliefErrorSamples++;
+    }
+  }
+  if (traceOn() && after.aiTrace) {
+    for (const [fam, tr] of Object.entries(after.aiTrace.families)) {
+      if (!tr) continue;
+      console.log(
+        `[w${after.aiTrace.turn}] ${fam}: ${tr.goal ? `${tr.goal.kind}${tr.goal.target ? `→${tr.goal.target}` : ""}` : "none"} | ${tr.goalReason} | did: ${tr.chosen.join("; ") || "nothing"}`,
+      );
+    }
+  }
+}
+
+function finishAiMetrics(state: GameState, m: AiMetrics) {
+  for (const mind of Object.values(state.aiMinds ?? {})) {
+    if (!mind) continue;
+    m.scouts += mind.stats.scouts;
+    m.goalSwitches += mind.stats.goalSwitches;
+  }
+}
 
 export interface WeekSnapshot {
   turn: number;
@@ -26,9 +151,17 @@ export interface SimRequest {
   difficulty: GameSettings["difficulty"];
   gameLength: GameLength;
   strategy?: SimStrategy;
+  aiBrain?: GameSettings["aiBrain"];
+  /** Move the summit to this week, for long AI runs. */
+  maxTurns?: number;
 }
 
 export interface SimResult {
+  aiBrain?: GameSettings["aiBrain"];
+  maxTurns?: number;
+  ai: AiMetrics;
+  /** Family holding the most blocks at the end, ties broken on wealth. */
+  topFamily: string;
   seed: number;
   family: FamilyName;
   difficulty: GameSettings["difficulty"];
@@ -117,7 +250,29 @@ function roundTrip(state: GameState, problems: string[]) {
   if ((loaded.history?.length ?? 0) !== (state.history?.length ?? 0)) problems.push("save round trip dropped history");
 }
 
+/** A few engine paths roll `Math.random`; seed it per game so a run repeats exactly. */
+function seededRandom(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
 export function simulateGame(request: SimRequest): SimResult {
+  const random = Math.random;
+  Math.random = seededRandom(request.seed * 7919 + ALL_FAMILY_NAMES.indexOf(request.family));
+  try {
+    return playGame(request);
+  } finally {
+    Math.random = random;
+  }
+}
+
+function playGame(request: SimRequest): SimResult {
   const problems: string[] = [];
   let state = startGame(
     buildInitialState(request.seed, {
@@ -128,6 +283,9 @@ export function simulateGame(request: SimRequest): SimResult {
     }),
     request.family,
   );
+  if (request.aiBrain) state = { ...state, settings: { ...state.settings, aiBrain: request.aiBrain } };
+  if (request.maxTurns) state = { ...state, victory: { ...state.victory, finalTurn: request.maxTurns } };
+  const ai = emptyAiMetrics();
   const rng = createRng(request.seed);
   const seenDefunct = new Set<string>(state.defunctFamilies ?? []);
   const defunct: { family: string; turn: number }[] = [];
@@ -184,9 +342,12 @@ export function simulateGame(request: SimRequest): SimResult {
       const held = ownedBy(state);
       state = autoPlayer(state, rng, request.strategy ?? "balanced");
       const before = state.turnLog.length;
+      const prior = state;
       const started = performance.now();
       state = endTurn(state, rng);
       slowest = Math.max(slowest, performance.now() - started);
+      const seenIds = new Set(prior.turnLog.map((l) => l.id));
+      recordAiWeek(prior, state, state.turnLog.filter((l) => !seenIds.has(l.id)), ai);
       hitsTaken += state.incomingHitReel?.length ?? 0;
       const heldAfter = ownedBy(state);
       for (const id of held) if (!heldAfter.has(id)) districtsLost++;
@@ -259,6 +420,8 @@ export function simulateGame(request: SimRequest): SimResult {
   }
 
   if (timeline[timeline.length - 1]?.turn !== state.turn) timeline.push(snap(state));
+  finishAiMetrics(state, ai);
+  if (ai.peakMemories > MEMORY_CAP) problems.push(`memories reached ${ai.peakMemories}`);
 
   if (!state.victory.won && !state.victory.lost) problems.push(`unfinished at turn ${state.turn}`);
   if (slowest >= 250) problems.push(`slowest endTurn ${slowest.toFixed(1)}ms`);
@@ -273,8 +436,13 @@ export function simulateGame(request: SimRequest): SimResult {
     districts[name] = state.territories.filter((t) => t.owner === name).length;
   }
 
+  const topFamily =
+    [...ALL_FAMILY_NAMES].sort((a, b) => districts[b]! - districts[a]! || wealth[b]! - wealth[a]!)[0] ?? "";
+
   return {
     ...request,
+    ai,
+    topFamily,
     outcome: state.victory.won ? "won" : state.victory.lost ? "lost" : "unfinished",
     reason: state.victory.reason,
     turn: state.turn,

@@ -228,7 +228,9 @@ export default function HitPlanner() {
   const oddsBreakdown = draftOp ? calculateHitOddsBreakdown(state, draftOp) : null;
   const cased = territory ? hasFreshCasing(state, territory.id) : false;
   const defenders = draftOp ? defendersFor(state, draftOp) : 0;
-  const atRisk = draftOp ? exposedCrewIds(draftOp).length : 0;
+  const exposedIds = draftOp ? exposedCrewIds(draftOp) : [];
+  const atRisk = exposedIds.length;
+  const associatesOnTeam = exposedIds.some((id) => state.crew.find((c) => c.id === id)?.role === "associate");
   const firefightEst = draftOp ? estimateFirefightRisk(state, draftOp) : 0;
   const hops = draftOp
     ? territoryHops(state, draftOp.originTerritoryId, draftOp.targetTerritoryId)
@@ -623,8 +625,11 @@ export default function HitPlanner() {
                   Fear {pct(oddsBreakdown.fear)}
                 </span>
               )}
-              {oddsBreakdown.other - oddsBreakdown.fear !== 0 && (
-                <span>Other {pct(oddsBreakdown.other - oddsBreakdown.fear)}</span>
+              {oddsBreakdown.gear !== 0 && (
+                <span title="Guns bought off the street">Guns {pct(oddsBreakdown.gear)}</span>
+              )}
+              {oddsBreakdown.other - oddsBreakdown.fear - oddsBreakdown.gear !== 0 && (
+                <span>Other {pct(oddsBreakdown.other - oddsBreakdown.fear - oddsBreakdown.gear)}</span>
               )}
             </div>
           )}
@@ -638,6 +643,9 @@ export default function HitPlanner() {
                 <span className="text-heat"> (~{Math.round(firefightEst * 100)}% fire)</span>
               )}
             </span>
+            {associatesOnTeam && (
+              <span className="col-span-2">Associates on the team add no family heat.</span>
+            )}
             {cover && cover.men > 0 && !cased && (
               <span className="col-span-2 text-heat">
                 There's a {draftOp?.targetFamily} safehouse nearby. Case the block to know who's in it.

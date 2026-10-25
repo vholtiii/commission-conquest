@@ -30,6 +30,14 @@ import { activeDeals, atPeace, inTruce, makeDeal } from "./deals";
 import { hasManagedWarehouse, makeManagerLookup } from "./liquor";
 import { CRATE_STREET_VALUE, activeDeal, familiesOnPath } from "./passage";
 import { tempoFor } from "./tempo";
+import { brainOn, mindOf } from "./ai/minds";
+import { estimatedWarehouseStock } from "./ai/aiBeliefs";
+import { trustIn } from "./ai/aiMemory";
+
+/** Acceptance per point of a family's trust in the player (trust runs -100 to 100). */
+export const TRUST_COUNTER_RATE = 1 / 400;
+/** Extra pull toward a truce when the family has already set its mind on peace with you. */
+export const PEACE_GOAL_TRUCE_BONUS = 0.1;
 
 /** Counters the player gets before the other side leaves the table. */
 export const TABLE_ROUNDS = 3;
@@ -208,9 +216,11 @@ export function routesThroughFamily(state: GameState, family: FamilyName): Suppl
   );
 }
 
+/** The player's crates as a rival reads them: the real count, or a guess from the buildings when the brain is on. */
 export function playerWarehouseStock(state: GameState): number {
   const player = state.playerFamily;
   if (!player) return 0;
+  if (brainOn(state)) return estimatedWarehouseStock(state);
   return turfOf(state, player).reduce(
     (n, t) => n + t.rackets.reduce((m, r) => m + (r.type === "warehouse" ? r.stock : 0), 0),
     0,
@@ -545,6 +555,13 @@ export function counterChance(
   if (def.personality === "economic") chance += 0.05;
   if (def.personality === "volatile") chance -= 0.1;
   if (agenda === "truce" && wantsTruce(state, family)) chance += 0.15;
+  if (brainOn(state)) {
+    const mind = mindOf(state, family);
+    chance += trustIn(mind, player) * TRUST_COUNTER_RATE;
+    if (agenda === "truce" && mind.goal?.kind === "seek_peace" && mind.goal.target === player) {
+      chance += PEACE_GOAL_TRUCE_BONUS;
+    }
+  }
   return Math.max(0.03, Math.min(0.95, chance));
 }
 
@@ -725,7 +742,9 @@ export function pickRivalAgenda(
   const player = state.playerFamily;
   if (!player) return null;
 
-  if (bleeding(state, family) >= 2 && !atPeace(state, player, family)) {
+  const peaceGoal =
+    brainOn(state) && mindOf(state, family).goal?.kind === "seek_peace" && mindOf(state, family).goal?.target === player;
+  if ((bleeding(state, family) >= 2 || peaceGoal) && !atPeace(state, player, family)) {
     return { agenda: "truce", terms: openingTerms(state, family, "truce") };
   }
 

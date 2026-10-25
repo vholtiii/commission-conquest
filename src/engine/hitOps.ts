@@ -19,7 +19,17 @@ import { CAR_BOMB_ARMED_MAX_TURNS } from "@/types/game";
 import { getFamilyDef } from "@/data/families";
 import { approachSpec, exposedCrewIds, hitCrewIds } from "@/data/hitApproaches";
 import type { Rng } from "./rng";
-import { aggregateTraitEffects, assignCrew, bumpLoyalty, crewCombatScore, funeralLoyaltyHit, grantXpToCrew } from "./crew";
+import { bribedHeat } from "./heat";
+import {
+  aggregateTraitEffects,
+  assignCrew,
+  bumpLoyalty,
+  crewCombatScore,
+  funeralLoyaltyHit,
+  grantXpToCrew,
+  tiedToFamily,
+  raiseWanted,
+} from "./crew";
 import { unseatedCrew } from "./crews";
 import { jailInCrew } from "./jail";
 import { setRelationDelta } from "./relations";
@@ -37,6 +47,7 @@ import { declareMourning, handsDown } from "./mourning";
 import { pullForJob, releaseCrewHome } from "./jobReturn";
 import { noteErrandCasing, payCommissionKill } from "./commissionErrand";
 import { applyHitPractice } from "./practice";
+import { modifierSum } from "./eventModifiers";
 
 export { territoryHops };
 import {
@@ -144,6 +155,25 @@ export function hitXpSeat(
 export const ABORT_SMARTS_LOW = 30;
 export const ABORT_SMARTS_HIGH = 70;
 
+/**
+ * Heat for a big crowd on the job: 3 for every man past two. Only made men
+ * count; an associate on the team leads nowhere.
+ */
+export function exposureHeat(crew: readonly CrewMember[], exposedIds: readonly string[]): number {
+  const made = exposedIds.filter((id) => tiedToFamily(crew.find((c) => c.id === id))).length;
+  return Math.max(0, made - 2) * 3;
+}
+
+/** Wanted each of the player's exposed shooters picks up, by how the job went. */
+export const HIT_WANTED: Record<HitOutcome, number> = {
+  clean_kill: 1,
+  messy_kill: 2,
+  botched_wounded: 2,
+  botched_arrested: 2,
+  botched_killed: 2,
+  target_escaped: 1,
+};
+
 /** Chance the lead calls the job off when the named mark isn't on the block. */
 export function abortChance(smarts: number): number {
   if (smarts <= ABORT_SMARTS_LOW) return 0;
@@ -189,6 +219,8 @@ export interface HitOddsBreakdown {
   other: number;
   /** Sit-down fear bonus (subset of other). */
   fear: number;
+  /** Guns and gear bought off an event (subset of other). Player hits only. */
+  gear: number;
 }
 
 function findCrew(state: GameState, id?: string): CrewMember | undefined {
@@ -417,6 +449,9 @@ export function calculateHitOddsBreakdown(
 
   heat -= state.heat.level / 200;
 
+  const gear = op.family === state.playerFamily ? modifierSum(state, "hitOdds") : 0;
+  other += gear;
+
   const total = Math.max(
     0.08,
     Math.min(
@@ -449,6 +484,7 @@ export function calculateHitOddsBreakdown(
     approach: approachMod,
     other,
     fear,
+    gear,
   };
 }
 
@@ -920,7 +956,7 @@ export function resolveHit(
   const casualties: string[] = [];
   const casualtyDetail: HitCasualtyDetail[] = [];
   let crew = [...state.crew];
-  let heatGain = mods.heat + Math.max(0, exposed.length - 2) * 3 + copClues.extraHeat;
+  let heatGain = mods.heat + exposureHeat(state.crew, exposed) + copClues.extraHeat;
   let fearGain = 5;
   let targetDead = false;
   let headline = "";
@@ -1061,6 +1097,13 @@ export function resolveHit(
   // The dead don't keep their travel plans.
   crew = crew.map((c) => (c.status === "dead" && c.awayAt ? { ...c, awayAt: undefined } : c));
 
+  // The player's shooters come home with their faces on file; associates too.
+  const sheet = aborted || op.family !== state.playerFamily ? 0 : HIT_WANTED[outcome];
+  if (sheet > 0) {
+    const onJob = new Set(exposed);
+    crew = crew.map((c) => (onJob.has(c.id) && c.status !== "dead" ? { ...c, wanted: raiseWanted(c, sheet) } : c));
+  }
+
   if (!aborted) {
     for (const sid of hitCrewIds(op)) {
       const granted = grantXpToCrew(crew, sid, hitResolveXp(targetDead, hitXpSeat(op, sid, crew, state)));
@@ -1196,11 +1239,7 @@ export function resolveHit(
         Math.min(100, state.reputation.streetInfluence + ownStreet),
       ),
     },
-    heat: {
-      ...state.heat,
-      level: Math.min(100, state.heat.level + ownHeat),
-      sources: ownHeat > 0 ? [...state.heat.sources, `hit:${op.id}`].slice(-20) : state.heat.sources,
-    },
+    heat: ownHeat > 0 ? bribedHeat(state, ownHeat, `hit:${op.id}`) : state.heat,
     vendettas:
       isMessage || commissionHit || state.vendettas.includes(op.targetFamily)
         ? state.vendettas
@@ -1609,13 +1648,7 @@ function fizzleCarBomb(
     ...home,
     intel,
     relations: setRelationDelta(state.relations, op.family, op.targetFamily, -10),
-    heat: playerInvolved
-      ? {
-          ...state.heat,
-          level: Math.min(100, state.heat.level + 10),
-          sources: [...state.heat.sources, `bomb_found:${op.id}`].slice(-20),
-        }
-      : state.heat,
+    heat: playerInvolved ? bribedHeat(state, 10, `bomb_found:${op.id}`) : state.heat,
     operations: state.operations.map((o) =>
       o.id === op.id ? { ...o, resolved: true, pendingTurns: 0, resolvedTurn: state.turn } : o,
     ),

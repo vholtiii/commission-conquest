@@ -4,10 +4,12 @@ import { useGameStore } from "@/engine/store";
 import { getFamilyDef } from "@/data/families";
 import { getBoss } from "@/engine/crew";
 import { successionReadinessReasons } from "@/engine/succession";
-import { influenceTick } from "@/engine/victory";
+import { influenceBreakdown, influenceTick } from "@/engine/victory";
 import { heatForecast } from "@/engine/heat";
 import { totalCapacity, totalCrates } from "@/engine/liquor";
+import { associateRuns } from "@/engine/economy";
 import { nextRecruitTier, recruitTier } from "@/engine/recruiting";
+import { modifierChip } from "@/engine/eventModifiers";
 import { looseEndsSummary, unfinishedBusiness, type LooseEnd } from "@/engine/unfinishedBusiness";
 import { Button } from "@/components/ui/button";
 import { formatDate, formatDelta, formatMoney } from "./formatters";
@@ -17,6 +19,8 @@ import { useAnimatedNumber, type StatFlash } from "./useAnimatedNumber";
 import { coins } from "@/audio/sfx";
 import { setAmbienceVolume, startAmbience } from "@/audio/ambience";
 import { cn } from "@/lib/utils";
+
+const ASSOCIATE_HEAT_NOTE = "Fronts and trucks run by associates add no family heat.";
 
 const CLOSE_MS = 220;
 const HOLD_MS = 450;
@@ -54,6 +58,7 @@ export default function TopBar() {
   const territories = useGameStore((s) => s.territories);
   const liquorLedger = useGameStore((s) => s.liquorLedger);
   const activeEvent = useGameStore((s) => s.activeEvent);
+  const eventModifiers = useGameStore((s) => s.eventModifiers);
   const cinematicQueued = useGameStore((s) => s.cinematicQueue.length > 0);
   const pendingHitResult = useGameStore((s) => s.pendingHitResult);
   const sitdownQueued = useGameStore((s) => (s.sitdownCinematicQueue?.length ?? 0) > 0);
@@ -104,7 +109,20 @@ export default function TopBar() {
   const netPositive = lastNetIncome >= 0;
   const infDelta = influenceTick(reputation);
   const infHint = `${infDelta >= 0 ? "+" : ""}${infDelta.toFixed(1)}/t`;
-  const respectTier = recruitTier(reputation.respect);
+  const liveMods = (eventModifiers ?? []).filter((m) => m.untilTurn > turn);
+  const modLines = (kinds: string[]) =>
+    liveMods
+      .filter((m) => kinds.includes(m.kind))
+      .map((m) => `${m.label}: ${modifierChip(m)} (${m.untilTurn - turn - 1 > 0 ? `${m.untilTurn - turn - 1} wk left` : "last week"})`);
+  const heatMods = modLines(["heatPerWeek", "raidChance"]);
+  const associateFronts = territories
+    .filter((t) => t.owner === playerFamily)
+    .reduce((n, t) => n + t.rackets.filter((r) => associateRuns(crew, r)).length, 0);
+  const incomeMods = modLines(["income", "shipmentSpeed"]);
+  const recruitShift = liveMods
+    .filter((m) => m.kind === "recruitQuality")
+    .reduce((n, m) => n + m.value, 0);
+  const respectTier = recruitTier(reputation.respect + 25 * recruitShift);
   const respectNext = nextRecruitTier(reputation.respect);
   const respectHint = respectNext
     ? `${respectTier.label} · ${respectTier.walkIns}/wk · next ${respectNext.min}`
@@ -234,6 +252,8 @@ export default function TopBar() {
           format={formatDelta}
           chip={formatDelta}
           valueClassName={netPositive ? "text-emerald-400" : "text-heat"}
+          sub={incomeMods.length ? `${incomeMods.length} ongoing` : undefined}
+          title={incomeMods.length ? incomeMods.join("\n") : undefined}
         />
         <AnimatedStat
           icon={<ShieldAlert className="h-3.5 w-3.5 text-heat" />}
@@ -243,7 +263,9 @@ export default function TopBar() {
           valueClassName="text-heat"
           sub={heatClock.label}
           subClassName={heatClock.urgent ? "text-amber-400" : undefined}
-          title={heatClock.detail}
+          title={[heatClock.detail, ...heatMods, associateFronts > 0 ? ASSOCIATE_HEAT_NOTE : null]
+            .filter(Boolean)
+            .join("\n")}
         />
         <AnimatedStat
           icon={<Award className="h-3.5 w-3.5 text-steel-light" />}
@@ -270,6 +292,7 @@ export default function TopBar() {
           value={influence}
           format={(n) => String(Math.round(n))}
           sub={infHint}
+          title={influenceBreakdown(reputation, influence)}
         />
       </div>
 

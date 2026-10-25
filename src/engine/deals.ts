@@ -23,6 +23,7 @@ import { ALL_FAMILY_NAMES, getFamilyDef } from "@/data/families";
 import type { Rng } from "./rng";
 import { setRelationDelta } from "./relations";
 import { hasPact } from "./diplomacy";
+import { rivalPactBetween } from "./ai/rivalPacts";
 import { withdrawCrates, withdrawFamilyWarehouses, depositTracked, PROOF_PREMIUM, makeManagerLookup } from "./liquor";
 import { CRATE_STREET_VALUE } from "./passage";
 import { racketIncome } from "./economy";
@@ -84,9 +85,9 @@ export function inTruce(state: DealState, a: FamilyName, b: FamilyName): boolean
   return !!truceBetween(state, a, b);
 }
 
-/** Pact or truce: neither side is supposed to raise a hand. */
+/** Pact or truce, the player's or one between rivals: neither side is supposed to raise a hand. */
 export function atPeace(state: GameState, a: FamilyName, b: FamilyName): boolean {
-  return hasPact(state, a, b) || inTruce(state, a, b);
+  return hasPact(state, a, b) || inTruce(state, a, b) || !!rivalPactBetween(state, a, b);
 }
 
 /** The other family on a deal, from the player's side. */

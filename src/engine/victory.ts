@@ -59,9 +59,37 @@ export interface StandingDrivers {
   streetInfluence: number;
 }
 
+const INFLUENCE_WEIGHTS = { respect: 0.04, fear: 0.03, streetInfluence: 0.02 } as const;
+const INFLUENCE_UPKEEP = 2;
+export const INFLUENCE_CAP = 300;
+
 /** Weekly standing drift. The same curve for every family at the table. */
 export function influenceTick(rep: StandingDrivers): number {
-  return rep.respect * 0.04 + rep.fear * 0.03 + rep.streetInfluence * 0.02 - 2;
+  return (
+    rep.respect * INFLUENCE_WEIGHTS.respect +
+    rep.fear * INFLUENCE_WEIGHTS.fear +
+    rep.streetInfluence * INFLUENCE_WEIGHTS.streetInfluence -
+    INFLUENCE_UPKEEP
+  );
+}
+
+/** Tooltip lines for the Influence stat: what this week's drift is made of. */
+export function influenceBreakdown(rep: StandingDrivers, influence: number): string {
+  const signed = (n: number) => `${n >= 0 ? "+" : "−"}${Math.abs(n).toFixed(1)}`;
+  const part = (label: string, value: number, weight: number) =>
+    `${label} ${Math.round(value)} × ${weight} = ${signed(value * weight)}`;
+  const net = influenceTick(rep);
+  return [
+    `Each week:`,
+    part("Respect", rep.respect, INFLUENCE_WEIGHTS.respect),
+    part("Fear", rep.fear, INFLUENCE_WEIGHTS.fear),
+    part("Street", rep.streetInfluence, INFLUENCE_WEIGHTS.streetInfluence),
+    `Upkeep ${signed(-INFLUENCE_UPKEEP)}`,
+    `Net ${signed(net)} a week${influence >= INFLUENCE_CAP && net > 0 ? ` (capped at ${INFLUENCE_CAP})` : ""}`,
+    ``,
+    `Spent on: sit-downs, demands, pacts, Commission calls and lobbying, and standing thrown into deals.`,
+    `Lost when you break a deal. Gained from message hits, Commission errands and hosting sit-downs.`,
+  ].join("\n");
 }
 
 /**

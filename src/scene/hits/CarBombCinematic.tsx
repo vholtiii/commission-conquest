@@ -1,5 +1,5 @@
 import { useMemo, useRef } from "react";
-import { useFrame, useThree } from "@react-three/fiber";
+import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import { FAMILY_HEX, type FamilyName } from "@/types/game";
 import { ReelSedan } from "@/scene/ReelSedan";
@@ -7,7 +7,8 @@ import Goon from "./props/Goon";
 import Explosion from "./props/Explosion";
 import Smoke from "./props/Smoke";
 import { PaddyWagon, PoliceLights } from "./props/PoliceLights";
-import { bodyThenPull, coverageShot, ease, handheld, moveCam, reelSide } from "./cameraRig";
+import { coverageShot, ease, kerbShot, reelSide, twoShot } from "./cameraRig";
+import { useReelCamera } from "./useReelCamera";
 import Blood from "./props/Blood";
 import Bystanders from "./props/Bystanders";
 import Fire from "./props/Fire";
@@ -37,8 +38,7 @@ function flip(k: number): { y: number; pitch: number; roll: number } {
 
 /** Parked Packard, a planter, then the blast — or the fuse that doesn't take. */
 export default function CarBombCinematic({ cinematic, site, phase, local, clock, shake }: SceneProps) {
-  const { camera } = useThree();
-  const controls = useThree((s) => s.controls as unknown as { target: THREE.Vector3; update: () => void } | null);
+  const cam = useReelCamera(site.space, cinematic.operationId, shake);
   const c = cinematic.result.complication;
   const killed = cinematic.result.targetDead;
   const absent = cinematic.result.markAbsent;
@@ -56,12 +56,12 @@ export default function CarBombCinematic({ cinematic, site, phase, local, clock,
     const kerb = new THREE.Vector3(Math.sin(site.facing), 0, Math.cos(site.facing));
     const wrongCar = carPos.clone().add(new THREE.Vector3(2.2, 0, 0.4));
     const markEnd = site.building.clone().lerp(carPos, 0.85);
-    const away = markEnd.clone().sub(carPos);
-    away.y = 0;
-    if (away.lengthSq() < 1e-4) away.copy(kerb);
-    away.normalize();
+    // Along the pavement: he stands between the car and the wall, so straight away from the car is into the bricks.
+    const away = new THREE.Vector3(kerb.z, 0, -kerb.x);
     const landing = markEnd.clone().addScaledVector(away, 1.4);
-    return { carPos, kerb, wrongCar, markEnd, away, landing };
+    const carEye = carPos.clone().setY(0.45);
+    const cop = new THREE.Vector3(carPos.x + 0.4, 0, carPos.z + 0.7);
+    return { carPos, kerb, wrongCar, markEnd, away, landing, carEye, cop };
   }, [site]);
 
   const carRig = useRef<THREE.Group>(null);
@@ -69,10 +69,10 @@ export default function CarBombCinematic({ cinematic, site, phase, local, clock,
   const planterRef = useRef<THREE.Group>(null);
   const markRef = useRef<THREE.Group>(null);
   const lastDist = useRef(1.3);
-  const tmp = useMemo(() => ({ mark: new THREE.Vector3(), at: new THREE.Vector3() }), []);
+  const tmp = useMemo(() => ({ mark: new THREE.Vector3(), at: new THREE.Vector3(), planterHead: new THREE.Vector3() }), []);
 
   useFrame((_, dt) => {
-    const { phase: ph, local: lc, progress } = clock.current;
+    const { phase: ph, local: lc } = clock.current;
 
     // The car.
     const wreck = ph === "detonate" && blown ? flip(lc) : ph === "aftermath" && blown ? flip(1) : null;
@@ -95,6 +95,7 @@ export default function CarBombCinematic({ cinematic, site, phase, local, clock,
       planterRef.current.rotation.y = leaving && dist > 0.25 ? site.facing : site.facing + Math.PI;
     }
     lastDist.current = dist;
+    tmp.planterHead.copy(stage.carPos).addScaledVector(stage.kerb, dist).setY(0.85);
 
     // The mark comes out of the building toward his car. A kill throws him clear of the blast.
     const thrown = killed && (ph === "detonate" || ph === "aftermath");
@@ -109,21 +110,32 @@ export default function CarBombCinematic({ cinematic, site, phase, local, clock,
     }
     if (markRef.current) markRef.current.position.copy(tmp.mark);
 
-    const shotOpts = { drift: progress, side: reelSide(cinematic.operationId) };
-    const focus = ph === "detonate" || ph === "aftermath" ? tmp.mark : stage.carPos;
-    const shot =
-      ph === "aftermath" && killed
-        ? bodyThenPull(focus, site.facing, lc, shotOpts)
-        : coverageShot(
-            focus,
-            site.facing,
-            ph === "plant" || ph === "abort" ? "wide" : ph === "wait" ? "medium" : ph === "detonate" ? "close" : "pull",
-            shotOpts,
-          );
-    const k = ph === "detonate" ? 0.5 : ph === "aftermath" && killed ? 0.3 : 0.1;
-    moveCam(camera, controls, shot.pos, shot.look, k, dt);
-    if (ph === "wait") handheld(camera, 0.01);
-    if (ph === "detonate" && blown) shake.current = Math.max(shake.current, messy ? 0.45 : 0.28);
+    const side = reelSide(cinematic.operationId);
+    if (ph === "plant") {
+      cam.frame(ph, twoShot(tmp.at, stage.carPos, side, { height: 1.2, margin: 2.8, push: lc * 0.1 }), {
+        k: 0.1,
+        dt,
+        coverage: "wide",
+        follow: true,
+      });
+    } else if (ph === "abort") {
+      cam.frame(ph, twoShot(tmp.at, stage.cop, side, { height: 1.3, margin: 1.8 }), { k: 0.12, dt, coverage: "wide", follow: true });
+    } else if (ph === "wait") {
+      const shot = absent ? twoShot(tmp.at, stage.carPos, side) : twoShot(tmp.mark, stage.carPos, side, { push: lc * 0.25 });
+      cam.frame(ph, shot, { k: 0.15, dt, coverage: "medium", handheld: 0.012, follow: true });
+    } else if (ph === "detonate") {
+      // Wide enough to hold the whole blast, cut in hard on the first frame.
+      const shot = blown
+        ? twoShot(stage.markEnd, stage.carPos, side, { margin: 2.6, height: 1.6 })
+        : coverageShot(stage.carPos, site.facing, "close", { side });
+      cam.frame(ph, shot, { k: 0.5, dt, coverage: blown ? "medium" : "close", cut: true });
+      if (blown) shake.current = Math.max(shake.current, messy ? 0.36 : 0.22);
+    } else if (killed) {
+      // From further down the pavement, past the body, so the wreck sits behind him and not in front of the lens.
+      cam.frame(ph, kerbShot(stage.landing, site.facing, stage.carPos, 1), { k: 0.3, dt, coverage: "body" });
+    } else {
+      cam.frame(ph, twoShot(stage.carPos, tmp.at, side, { margin: 3, height: 3 }), { k: 0.1, dt, coverage: "pull", follow: true });
+    }
   });
 
   const showMark = !absent && phase !== "plant" && c !== "cop_on_fender";
@@ -151,6 +163,8 @@ export default function CarBombCinematic({ cinematic, site, phase, local, clock,
           position={[0, 0, 0]}
           pose={planterPose}
           moving={planterMoving}
+          lookAt={planterPose === "walk" ? undefined : stage.carEye}
+          seed={311}
           role="soldier"
           color={paint(cinematic.attackerFamily)}
         />
@@ -162,13 +176,15 @@ export default function CarBombCinematic({ cinematic, site, phase, local, clock,
             rot={site.facing}
             pose={markPose}
             moving={phase === "wait"}
+            lookAt={phase === "wait" ? stage.carEye : undefined}
+            seed={53}
             role="boss"
             color={paint(cinematic.targetFamily)}
           />
         </group>
       )}
       {c === "cop_on_fender" && phase !== "plant" && (
-        <Goon position={[stage.carPos.x + 0.4, 0, stage.carPos.z + 0.7]} rot={site.facing} color="#1a2740" />
+        <Goon position={[stage.cop.x, 0, stage.cop.z]} rot={site.facing} lookAt={tmp.planterHead} color="#1a2740" />
       )}
       <Bystanders at={[site.road.x, 0, site.road.z]} facing={site.facing} flee={blast || (phase === "aftermath" && blown)} />
       <Blood

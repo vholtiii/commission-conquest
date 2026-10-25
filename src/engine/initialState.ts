@@ -355,6 +355,8 @@ export function buildInitialState(
     passageDeals: [],
     passageLeverage: {},
     messageHitTurns: {},
+    eventModifiers: [],
+    pendingFollowUps: [],
     commissionCall: null,
     commissionErrand: null,
     commissionErrandReady: ERRAND_FIRST_TURN,

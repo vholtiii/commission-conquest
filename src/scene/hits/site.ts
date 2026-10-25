@@ -1,7 +1,8 @@
 import * as THREE from "three";
-import type { CityLayout } from "@/engine/cityLayout";
+import type { CityBlock, CityLayout } from "@/engine/cityLayout";
 import { getDistrictBlocksNearestFirst, nearestRoadBlock } from "@/engine/cityLayout";
-import type { HitCinematic } from "@/types/game";
+import type { HitCinematic, Territory } from "@/types/game";
+import { spaceFor, type Space } from "./cameraRig";
 
 export interface HitSite {
   /** Kerb the strike plays on. */
@@ -15,6 +16,9 @@ export interface HitSite {
   curve: THREE.CatmullRomCurve3;
   /** The last 14 world units of `curve`, ending at the kerb. The drive-by uses this. */
   approach: THREE.CatmullRomCurve3;
+  /** Buildings the camera must stay out of and see past. */
+  space: Space;
+  isClear: (p: THREE.Vector3) => boolean;
 }
 
 function pointFor(layout: CityLayout, territoryId: string): THREE.Vector3 {
@@ -25,12 +29,13 @@ function pointFor(layout: CityLayout, territoryId: string): THREE.Vector3 {
   return new THREE.Vector3(road?.worldX ?? x, 0, road?.worldZ ?? z);
 }
 
-export function siteFor(layout: CityLayout, cinematic: HitCinematic): HitSite {
+export function siteFor(layout: CityLayout, cinematic: HitCinematic, territories: readonly Territory[] = []): HitSite {
   const centerBlock = layout.centers.find((c) => c.territoryId === cinematic.targetTerritoryId);
   const center = new THREE.Vector3(centerBlock?.worldX ?? 0, 0, centerBlock?.worldZ ?? 0);
-  const roadBlock = nearestRoadBlock(layout, center.x, center.z);
+  const front = streetFront(layout, cinematic.targetTerritoryId);
+  const roadBlock = front?.road ?? nearestRoadBlock(layout, center.x, center.z);
   const road = new THREE.Vector3(roadBlock?.worldX ?? center.x, 0, roadBlock?.worldZ ?? center.z);
-  const buildingBlock = getDistrictBlocksNearestFirst(layout, cinematic.targetTerritoryId)[0];
+  const buildingBlock = front?.building ?? getDistrictBlocksNearestFirst(layout, cinematic.targetTerritoryId)[0];
   const building = new THREE.Vector3(
     buildingBlock?.worldX ?? center.x,
     0,
@@ -44,6 +49,7 @@ export function siteFor(layout: CityLayout, cinematic: HitCinematic): HitSite {
   if (pts.length === 1) pts.push(road.clone());
   pts[pts.length - 1] = road.clone();
   const curve = new THREE.CatmullRomCurve3(pts, false, "catmullrom", 0.25);
+  const space = spaceFor(layout, territories);
 
   return {
     road,
@@ -53,7 +59,27 @@ export function siteFor(layout: CityLayout, cinematic: HitCinematic): HitSite {
     center,
     curve,
     approach: tailCurve(curve, road),
+    space,
+    isClear: space.isClear,
   };
+}
+
+/**
+ * The district building nearest the centre that has a road cell right outside it.
+ * The centre block is often buried inside a solid run of buildings, where the
+ * scene would play in the crack between two walls and no camera could see it.
+ */
+function streetFront(layout: CityLayout, territoryId: string): { building: CityBlock; road: CityBlock } | null {
+  const cells = new Map<number, CityBlock>();
+  for (const b of layout.blocks) cells.set(b.gz * 1000 + b.gx, b);
+  const candidates = getDistrictBlocksNearestFirst(layout, territoryId).slice(0, 16);
+  for (const b of candidates) {
+    for (const [dx, dz] of [[0, 1], [0, -1], [1, 0], [-1, 0]] as const) {
+      const n = cells.get((b.gz + dz) * 1000 + b.gx + dx);
+      if (n?.kind === "road") return { building: b, road: n };
+    }
+  }
+  return null;
 }
 
 /** The last `keep` world units of a path, rebuilt so it still ends on `end`. */

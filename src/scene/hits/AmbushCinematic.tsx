@@ -1,12 +1,13 @@
 import { useMemo, useRef } from "react";
-import { useFrame, useThree } from "@react-three/fiber";
+import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import { FAMILY_HEX, type FamilyName } from "@/types/game";
 import { ReelSedan } from "@/scene/ReelSedan";
 import Goon from "./props/Goon";
 import MuzzleFlash from "./props/MuzzleFlash";
 import { PaddyWagon, PoliceLights } from "./props/PoliceLights";
-import { bodyThenPull, coverageShot, ease, handheld, moveCam, reelSide } from "./cameraRig";
+import { bodyThenPull, coverageShot, ease, executionShot, reelSide, twoShot } from "./cameraRig";
+import { useReelCamera } from "./useReelCamera";
 import Headlamps from "./props/Headlamps";
 import Blood from "./props/Blood";
 import Bystanders from "./props/Bystanders";
@@ -19,8 +20,7 @@ function paint(family: FamilyName): string {
 
 /** Shooters wait in the alley, the mark walks in, the flashes come from the dark. */
 export default function AmbushCinematic({ cinematic, site, phase, local, clock, shake }: SceneProps) {
-  const { camera } = useThree();
-  const controls = useThree((s) => s.controls as unknown as { target: THREE.Vector3; update: () => void } | null);
+  const cam = useReelCamera(site.space, cinematic.operationId, shake);
   const c = cinematic.result.complication;
   const killed = cinematic.result.targetDead;
   const police =
@@ -53,11 +53,17 @@ export default function AmbushCinematic({ cinematic, site, phase, local, clock, 
 
   const markRef = useRef<THREE.Group>(null);
   const shooterRefs = [useRef<THREE.Group>(null), useRef<THREE.Group>(null), useRef<THREE.Group>(null)];
-  const tmp = useMemo(() => ({ mark: new THREE.Vector3(), at: new THREE.Vector3() }), []);
+  const muzzle = useRef<THREE.Object3D>(null);
+  const tmp = useMemo(
+    () => ({ mark: new THREE.Vector3(), at: new THREE.Vector3(), markHead: new THREE.Vector3(), gunman: new THREE.Vector3() }),
+    [],
+  );
+  const side = reelSide(cinematic.operationId);
 
   const melt = phase === "melt" && !police && !freeze;
   const markDown = killed && (phase === "strike" || phase === "melt");
   const markWalking = phase === "wait" && !absent && (!freeze || local < 0.5);
+  const shooting = phase === "strike" && !freeze && !absent;
 
   useFrame((_, dt) => {
     const { phase: ph, local: lc, progress } = clock.current;
@@ -67,6 +73,7 @@ export default function AmbushCinematic({ cinematic, site, phase, local, clock, 
     if (!absent && ph === "wait") walk = freeze ? Math.min(1, lc * 2) * 0.6 : lc;
     else if (!absent && freeze) walk = 0.6;
     tmp.mark.copy(site.road).lerp(stage.alley, walk);
+    tmp.markHead.copy(tmp.mark).setY(0.85);
     if (markRef.current) markRef.current.position.copy(tmp.mark);
 
     const run = ph === "melt" && !police && !freeze ? ease(lc) : 0;
@@ -75,30 +82,33 @@ export default function AmbushCinematic({ cinematic, site, phase, local, clock, 
       if (!g) return;
       tmp.at.copy(home).lerp(stage.doors[i]!, run * 0.92);
       g.position.copy(tmp.at);
-      if (run > 0.02) {
-        const dx = stage.car.x - tmp.at.x;
-        const dz = stage.car.z - tmp.at.z;
-        g.rotation.y = Math.atan2(dx, dz);
-      } else {
-        g.rotation.y = site.facing;
-      }
+      if (run > 0.02) g.rotation.y = Math.atan2(stage.car.x - tmp.at.x, stage.car.z - tmp.at.z);
+      else g.rotation.y = site.facing;
     });
+    tmp.gunman.copy(stage.shooters[1]!).setY(0);
 
-    const shotOpts = { drift: progress, side: reelSide(cinematic.operationId) };
-    const focus = ph === "strike" || ph === "melt" ? tmp.mark : stage.alley;
-    const shot =
-      ph === "melt" && killed && !police
-        ? bodyThenPull(focus, site.facing, lc, shotOpts)
-        : coverageShot(
-            focus,
-            site.facing,
-            ph === "position" ? "wide" : ph === "wait" ? "medium" : ph === "strike" ? "close" : "pull",
-            shotOpts,
-          );
-    const k = ph === "strike" ? 0.5 : ph === "wait" ? 0.25 : 0.12;
-    moveCam(camera, controls, shot.pos, shot.look, k, dt);
-    if (ph === "wait") handheld(camera, 0.01);
-    if (ph === "strike" && !freeze) shake.current = Math.max(shake.current, 0.06);
+    if (ph === "position") {
+      cam.frame(ph, coverageShot(stage.alley, site.facing, "medium", { side, drift: lc, lookY: 0.6 }), {
+        k: 0.08,
+        dt,
+        coverage: "medium",
+      });
+    } else if (ph === "wait") {
+      cam.frame(ph, twoShot(tmp.mark, tmp.gunman, side, { height: 1.05 }), {
+        k: 0.18,
+        dt,
+        coverage: "medium",
+        handheld: 0.012,
+        follow: true,
+      });
+    } else if (ph === "strike") {
+      cam.frame(ph, executionShot(tmp.mark, tmp.gunman, side), { k: 0.4, dt, coverage: "close", cut: true });
+      if (!freeze) shake.current = Math.max(shake.current, 0.05);
+    } else if (killed && !police) {
+      cam.frame(ph, bodyThenPull(tmp.mark, site.facing, lc, { drift: progress, side }), { k: 0.3, dt, coverage: lc < 0.6 ? "body" : "pull" });
+    } else {
+      cam.frame(ph, twoShot(tmp.gunman, stage.car, side, { margin: 2.4, height: 2.2 }), { k: 0.12, dt, coverage: "pull" });
+    }
   });
 
   const from: [number, number, number] = [stage.shooters[1]!.x, 0.7, stage.shooters[1]!.z];
@@ -110,9 +120,24 @@ export default function AmbushCinematic({ cinematic, site, phase, local, clock, 
         <group key={i} ref={shooterRefs[i]} position={[p.x, 0, p.z]} rotation={[0, site.facing, 0]}>
           <Goon
             position={[0, 0, 0]}
-            pose={police && phase === "melt" ? "stand" : melt ? "run" : i === 0 ? "crouch" : "stand"}
+            pose={
+              police && phase === "melt"
+                ? "stand"
+                : melt
+                  ? "run"
+                  : phase === "strike" && !freeze
+                    ? "aim"
+                    : i === 0
+                      ? "crouch"
+                      : "stand"
+            }
             moving={melt}
             gun
+            weapon={i === 1 ? "tommy" : "pistol"}
+            firing={shooting}
+            lookAt={melt ? undefined : tmp.markHead}
+            muzzleRef={i === 1 ? muzzle : undefined}
+            seed={i * 101 + 7}
             role="soldier"
             color={paint(cinematic.attackerFamily)}
           />
@@ -125,7 +150,9 @@ export default function AmbushCinematic({ cinematic, site, phase, local, clock, 
             rot={site.facing + Math.PI}
             pose={markDown ? "down" : "walk"}
             moving={markWalking}
+            lookAt={phase === "strike" ? tmp.gunman : undefined}
             role="boss"
+            seed={53}
             color={paint(cinematic.targetFamily)}
           />
         </group>
@@ -134,6 +161,8 @@ export default function AmbushCinematic({ cinematic, site, phase, local, clock, 
         <Goon
           position={[site.road.x + 1.4, 0, site.road.z - 0.6]}
           rot={site.facing + Math.PI}
+          pose={phase === "strike" ? "aim" : "stand"}
+          lookAt={tmp.gunman}
           gun
           role="soldier"
           color="#3f1a1e"
@@ -143,12 +172,14 @@ export default function AmbushCinematic({ cinematic, site, phase, local, clock, 
         <Goon
           position={[stage.alley.x - 0.8, 0, stage.alley.z - 0.4]}
           rot={site.facing}
+          pose={phase === "strike" ? "aim" : "stand"}
+          lookAt={tmp.gunman}
           gun
           role="soldier"
           color={paint(cinematic.targetFamily)}
         />
       )}
-      <MuzzleFlash active={phase === "strike" && !freeze && !absent} from={from} to={to} shots={3} />
+      <MuzzleFlash active={shooting} from={from} to={to} fromRef={muzzle} shots={3} />
       {trap && (
         <MuzzleFlash active={phase === "strike"} from={[stage.alley.x - 0.8, 0.7, stage.alley.z - 0.4]} to={from} shots={3} />
       )}

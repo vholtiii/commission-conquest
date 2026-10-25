@@ -11,9 +11,19 @@ export const WARRANT = {
   heatFloor: 60,
   /** A man has to be wanted above this to be on the warrant list. */
   wantedFloor: 5,
-  /** Weekly chance a man on the list is picked up. */
+  /** Weekly chance a man on the list is picked up at the line. */
   chance: 0.08,
+  /** Added per point of heat past the line: 20% at 100. */
+  perHeat: 0.003,
+  /** Extra while a spared rat is talking. */
+  ratBonus: 0.06,
 } as const;
+
+/** Weekly odds a listed man is picked up at this heat. Zero below the line. */
+export function warrantChance(heat: number): number {
+  if (heat < WARRANT.heatFloor) return 0;
+  return WARRANT.chance + (heat - WARRANT.heatFloor) * WARRANT.perHeat;
+}
 
 export interface ArrestReducer {
   /** Short label for the UI chip, e.g. "Cops paid". */
@@ -120,12 +130,12 @@ export function arrestRisk(state: ArrestState, m: CrewMember): ArrestRisk {
   const hot = state.heat.level >= WARRANT.heatFloor;
   const wanted = m.wanted > wantedFloor;
   const listed = hot && wanted;
-  const chance = listed ? (leaking ? 0.14 : WARRANT.chance) : 0;
+  const chance = listed ? warrantChance(state.heat.level) + (leaking ? WARRANT.ratBonus : 0) : 0;
   const heatLine = `heat ${Math.round(state.heat.level)}/${WARRANT.heatFloor}`;
   const wantedLine = `wanted ${m.wanted} (list starts at ${wantedFloor + 1})`;
   const note = listed
     ? `On the warrant list (${heatLine}, ${wantedLine}): ${Math.round(chance * 100)}% a week he's picked up.`
-    : `Warrants go out at heat ${WARRANT.heatFloor} for men wanted over ${WARRANT.wantedFloor}; then it's ${Math.round(WARRANT.chance * 100)}% a week. Now: ${heatLine}, ${wantedLine}.`;
+    : `Warrants go out at heat ${WARRANT.heatFloor} for men wanted over ${WARRANT.wantedFloor}; then it's ${Math.round(WARRANT.chance * 100)}% a week, rising to ${Math.round(warrantChance(100) * 100)}% at heat 100. Now: ${heatLine}, ${wantedLine}.`;
   return { chance, listed, reducers, note };
 }
 
@@ -138,8 +148,16 @@ export interface HeatThreshold {
 export const HEAT_THRESHOLDS: HeatThreshold[] = [
   { level: 20, label: "Street Patrols", consequence: "Increased police foot patrols in hot districts." },
   { level: 40, label: "Raids", consequence: "Vice squad raids on rackets — income reduced." },
-  { level: 60, label: "Warrants", consequence: "Bench warrants issued for known associates." },
-  { level: 80, label: "Federal Investigation", consequence: "FBI task force targeting commission families." },
+  {
+    level: 60,
+    label: "Warrants",
+    consequence: "Bench warrants for men wanted over 5. The odds of a pickup climb with the heat.",
+  },
+  {
+    level: 80,
+    label: "Federal Investigation",
+    consequence: "Federal task force: RICO indictments of your officers, and the boss above 90.",
+  },
 ];
 
 export interface BribeEffectSummary {
@@ -193,6 +211,15 @@ export function applyHeat(
   return { ...heat, level, sources };
 }
 
+/** New heat on the player after the bribes running this week take their cut. */
+export function bribedHeat(
+  state: Pick<GameState, "heat" | "bribes">,
+  amount: number,
+  source: string,
+): HeatState {
+  return applyHeat(state.heat, amount, source, aggregateBribeEffects(state.bribes).heatGenerationReduction);
+}
+
 export function decayHeat(heat: HeatState, amount: number): HeatState {
   return {
     ...heat,
@@ -227,12 +254,17 @@ export interface HeatTurnResult {
 }
 
 /**
- * Heat a quiet week sheds: the base 2, bribes, the lawyers, and the family's
- * own cooling. One number, so the forecast and the turn can't drift apart.
+ * Share of the heat the week started on that goes cold by its end. Hot cases
+ * cool faster, so every racket book has a level it settles at instead of
+ * climbing to 100. Read off the start of the week, not the capped total, so
+ * a heavy week can still reach Federal.
  */
-export function quietHeatDecay(
-  state: Pick<GameState, "bribes" | "turn" | "lawyerRetainer" | "playerFamily">,
-): number {
+export const HEAT_COOLING = 0.23;
+
+type DecayState = Pick<GameState, "bribes" | "turn" | "lawyerRetainer" | "playerFamily">;
+
+/** The flat part of the week's cooling: the base 2, bribes, the lawyers, the family's own. */
+function flatHeatDecay(state: DecayState): number {
   const bribeFx = aggregateBribeEffects(state.bribes);
   let decay = 2 + bribeFx.heatReduction + retainerHeatDecay(state);
   if (state.playerFamily) {
@@ -240,6 +272,25 @@ export function quietHeatDecay(
     if (bonus) decay += Math.floor(bonus * 10);
   }
   return decay;
+}
+
+function coolingAt(flat: number, level: number): number {
+  return flat + level * HEAT_COOLING;
+}
+
+/**
+ * Heat a quiet week sheds from the level it started on (the current level
+ * unless told otherwise): the flat part plus a share of the heat. One number,
+ * so the forecast and the turn can't drift apart.
+ */
+export function quietHeatDecay(state: DecayState & Pick<GameState, "heat">, weekStart?: number): number {
+  return coolingAt(flatHeatDecay(state), weekStart ?? state.heat.level);
+}
+
+/** Where heat sits once the week's generation and cooling balance out. */
+export function settlingHeat(generated: number, flat: number): number {
+  const level = (generated - flat) / HEAT_COOLING;
+  return Math.max(0, Math.min(100, level));
 }
 
 /**
@@ -267,10 +318,12 @@ export function heatLineName(level: number): string {
 export interface HeatForecast {
   /** Economy heat added on a quiet week (rackets, dumps, washes), after bribes. */
   generated: number;
-  /** Heat a quiet week cools. */
+  /** Heat a quiet week cools, at this week's level. */
   decay: number;
-  /** generated − decay. Positive climbs. */
+  /** Next quiet week's change. Positive climbs. */
   net: number;
+  /** The level quiet weeks drift toward. */
+  settle: number;
   /** Short line under the Heat stat. */
   label: string;
   /** Tooltip: the two numbers, the line, and what a job adds. */
@@ -289,9 +342,22 @@ function formatHeat(n: number): string {
   return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
 }
 
-function weekCount(gap: number, pace: number): number {
-  if (pace <= 0) return Number.POSITIVE_INFINITY;
-  return Math.max(1, Math.ceil(gap / pace));
+/** One quiet week as the turn runs it: the economy lands, then the street cools. */
+function quietWeek(level: number, generated: number, flat: number): number {
+  const loaded = Math.max(0, Math.min(100, level + generated));
+  return Math.max(0, loaded - coolingAt(flat, level));
+}
+
+const FORECAST_HORIZON = 52;
+
+/** Quiet weeks until `crossed` holds, or null if it never does inside a year. */
+function weeksUntil(level: number, generated: number, flat: number, crossed: (h: number) => boolean): number | null {
+  let h = level;
+  for (let week = 1; week <= FORECAST_HORIZON; week++) {
+    h = quietWeek(h, generated, flat);
+    if (crossed(h)) return week;
+  }
+  return null;
 }
 
 function cappedWeeks(weeks: number): string {
@@ -310,31 +376,39 @@ function warrantMen(state: GameState): number {
 }
 
 /**
- * Where the heat is headed if the week stays quiet: rackets cook, the street
- * cools, and hits and captures are left out. The count caps at 12 weeks.
+ * Where the heat is headed if the weeks stay quiet: rackets cook, the street
+ * cools, and hits and captures are left out. The label caps at 12 weeks.
  */
 export function heatForecast(state: GameState): HeatForecast {
   const generated = economyHeat(state);
-  const decay = quietHeatDecay(state);
-  const net = generated - decay;
+  const flatDecay = flatHeatDecay(state);
   const level = state.heat.level;
+  const decay = coolingAt(flatDecay, level);
+  const net = quietWeek(level, generated, flatDecay) - level;
+  const settle = settlingHeat(generated, flatDecay);
   const current = [...HEAT_THRESHOLDS].reverse().find((t) => level >= t.level) ?? null;
   const next = HEAT_THRESHOLDS.find((t) => t.level > level) ?? null;
-  const flat = Math.abs(net) < 0.05;
+  const steady = Math.abs(net) < 0.05;
   const atFederal = level >= FEDERAL_LEVEL;
 
   let direction: HeatForecast["direction"] = "hold";
   let line: HeatThreshold | null = null;
   let weeks: number | null = null;
 
-  if (!atFederal && !flat && net > 0 && next) {
+  if (!atFederal && !steady && net > 0) {
     direction = "climb";
-    line = next;
-    weeks = weekCount(next.level - level, net);
-  } else if (!atFederal && !flat && net < 0 && current) {
+    const w = next ? weeksUntil(level, generated, flatDecay, (h) => h >= next.level) : null;
+    if (next && w != null) {
+      line = next;
+      weeks = w;
+    }
+  } else if (!atFederal && !steady && net < 0) {
     direction = "fall";
-    line = current;
-    weeks = Math.floor((level - current.level) / Math.abs(net)) + 1;
+    const w = current ? weeksUntil(level, generated, flatDecay, (h) => h < current.level) : null;
+    if (current && w != null) {
+      line = current;
+      weeks = w;
+    }
   }
 
   let label = "Quiet";
@@ -343,14 +417,16 @@ export function heatForecast(state: GameState): HeatForecast {
     label = weeks === 1 ? `${heatLineName(line.level)} next week` : `${heatLineName(line.level)} ${cappedWeeks(weeks)}`;
   } else if (direction === "fall" && line && weeks != null) {
     label = weeks === 1 ? `${heatLineName(line.level)} lift next week` : `${heatLineName(line.level)} lift ${cappedWeeks(weeks)}`;
-  } else if (current) label = heatLineName(current.level);
+  } else if (direction !== "hold") label = `${current ? heatLineName(current.level) : "Quiet"} · holds ~${Math.round(settle)}`;
+  else if (current) label = heatLineName(current.level);
 
   const urgent = direction === "climb" && weeks != null && weeks <= 2;
   const talked = line ?? current;
   const mentionsWarrants = (talked?.level ?? 0) >= WARRANT.heatFloor || level >= WARRANT.heatFloor;
   const listed = mentionsWarrants ? warrantMen(state) : 0;
   const detail = [
-    `Rackets, dumps and washes add ${formatHeat(generated)} a week. The street cools ${formatHeat(decay)}.`,
+    `Rackets, dumps and washes add ${formatHeat(generated)} a week. The street cools ${formatHeat(decay)}, more as heat rises.`,
+    `Left quiet, it settles near ${Math.round(settle)}.`,
     talked ? talked.consequence : null,
     mentionsWarrants
       ? listed === 0
@@ -364,13 +440,14 @@ export function heatForecast(state: GameState): HeatForecast {
     .filter(Boolean)
     .join(" ");
 
-  return { generated, decay, net, label, detail, urgent, line, weeks, direction };
+  return { generated, decay, net, settle, label, detail, urgent, line, weeks, direction };
 }
 
-export function processHeatTurn(state: GameState): HeatTurnResult {
+/** `weekStart` is the heat the week opened on; the share cools off that, not the week's total. */
+export function processHeatTurn(state: GameState, weekStart?: number): HeatTurnResult {
   const logs: TurnLogEntry[] = [];
 
-  let heat = decayHeat(state.heat, quietHeatDecay(state));
+  let heat = decayHeat(state.heat, quietHeatDecay(state, weekStart));
 
   const consequences = getActiveConsequences(heat.level);
   heat = { ...heat, consequences };
@@ -446,4 +523,86 @@ export function applyWarrantConsequences(state: GameState): GameState {
   }
 
   return { ...state, crew, turnLog };
+}
+
+/** When the feds build cases against the player's officers. */
+export const RICO = {
+  heatFloor: 80,
+  /** Weekly chance at the line; climbs to 30% at 100. */
+  chance: 0.15,
+  perHeat: 0.0075,
+  /** Weeks between indictments. */
+  cooldown: 4,
+  /** An officer's federal sentence, past the usual six-week cap. */
+  sentence: 8,
+  /** The boss is only on the table from here. */
+  bossFloor: 90,
+} as const;
+
+const RICO_OFFICERS: ReadonlySet<CrewMember["role"]> = new Set(["underboss", "consigliere", "capo"]);
+
+/** Weekly odds of a RICO indictment at this heat. Zero below Federal. */
+export function ricoChance(heat: number): number {
+  if (heat < RICO.heatFloor) return 0;
+  return RICO.chance + (heat - RICO.heatFloor) * RICO.perHeat;
+}
+
+/** Who a grand jury could name this week, with how likely each one is. */
+export function ricoTargets(
+  state: Pick<GameState, "crew" | "playerFamily" | "heat">,
+): { man: CrewMember; weight: number }[] {
+  const family = state.playerFamily;
+  if (!family) return [];
+  const out: { man: CrewMember; weight: number }[] = [];
+  for (const c of state.crew) {
+    if (c.family !== family || c.status !== "active") continue;
+    if (RICO_OFFICERS.has(c.role)) out.push({ man: c, weight: 2 + Math.max(0, c.wanted) });
+    else if (c.role === "boss" && state.heat.level >= RICO.bossFloor) out.push({ man: c, weight: 1 });
+  }
+  return out;
+}
+
+/** End-of-week federal pass: at Federal heat a grand jury may indict one officer. */
+export function applyFederalIndictments(state: GameState): GameState {
+  if (!state.playerFamily) return state;
+  const chance = ricoChance(state.heat.level);
+  if (chance <= 0) return state;
+  if (state.lastIndictmentTurn != null && state.turn - state.lastIndictmentTurn < RICO.cooldown) return state;
+  const targets = ricoTargets(state);
+  if (targets.length === 0) return state;
+  if (Math.random() >= chance) return state;
+
+  const total = targets.reduce((n, t) => n + t.weight, 0);
+  let roll = Math.random() * total;
+  let man = targets[targets.length - 1]!.man;
+  for (const t of targets) {
+    roll -= t.weight;
+    if (roll < 0) {
+      man = t.man;
+      break;
+    }
+  }
+
+  const boss = man.role === "boss";
+  const crew = jailInCrew(state.crew, man.id, state.turn, boss ? undefined : RICO.sentence);
+  const text = boss
+    ? `A federal grand jury indicts ${man.name} under RICO. The boss is in the Tombs; buy the judge or the chair passes.`
+    : `A federal grand jury indicts ${man.name} under RICO. ${RICO.sentence} weeks in the Tombs.`;
+  return {
+    ...state,
+    crew,
+    lastIndictmentTurn: state.turn,
+    turnLog: [
+      ...state.turnLog,
+      {
+        id: `log_rico_${man.id}_${state.turn}`,
+        turn: state.turn,
+        category: "heat",
+        text,
+        family: state.playerFamily,
+        crewId: man.id,
+        tone: "warning",
+      },
+    ],
+  };
 }

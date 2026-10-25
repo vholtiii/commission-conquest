@@ -17,6 +17,7 @@ import { findDeliveryPath, hasSafehouse } from "./economy";
 import { BOSS_PRESENCE } from "./bossPresence";
 import { placementBonus } from "./districtFeatures";
 import { penalizeRacketFreeze } from "./practice";
+import { modifierProduct } from "./eventModifiers";
 
 const SPEAKEASY_BASE_INCOME = 280;
 /** A crate that sat a week in a managed warehouse sells for this much more. */
@@ -882,7 +883,10 @@ export function processShipments(
     mayor: state.bribes.mayor,
     chiefs: state.bribes.chiefs,
   };
-  const seizeP = shipmentSeizureChance(state.heat.level, bribes);
+  const seizeP = Math.min(
+    0.5,
+    shipmentSeizureChance(state.heat.level, bribes) * modifierProduct(state, "raidChance"),
+  );
 
   for (const ship of state.pendingShipments ?? []) {
     if (ship.arriveTurn > state.turn) {
@@ -990,7 +994,7 @@ export function processStashRaids(
     const { stored } = districtStorage(t, state.turn, lookup);
     if (stored <= 0) continue;
     const unguarded = isUnguarded(t, activeIds);
-    const raidMult = districtRaidMult(t, lookup);
+    const raidMult = districtRaidMult(t, lookup) * modifierProduct(state, "raidChance");
     const hide = hasSafehouse(t, state.turn) ? 0.6 : 1;
     const p =
       stashRaidChance(

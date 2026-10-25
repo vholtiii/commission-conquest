@@ -767,7 +767,7 @@ function ChosenRoad({
   );
 }
 
-function RouteRow({
+export function RouteRow({
   route,
   focused,
   nameOf,

@@ -18,7 +18,7 @@ import { CRATE_STREET_VALUE } from "./passage";
 import { assessPath, roadCut, truckingLevel } from "./supplyRoutes";
 import type { Rng } from "./rng";
 import { createRng, hashString } from "./rng";
-import { aggregateTraitEffects, isUnmade, roleUpkeep } from "./crew";
+import { aggregateTraitEffects, isUnmade, roleUpkeep, tiedToFamily } from "./crew";
 import { penalizeRacketFreeze } from "./practice";
 import { crewIncomeMult } from "./crews";
 import { BOSS_PRESENCE, bossPresenceDistrict } from "./bossPresence";
@@ -104,11 +104,11 @@ export const RACKET_BASE_INCOME: Record<RacketType, number> = {
 
 /**
  * Per-turn heat from the whole racket book = Σ heatGen × this scale.
- * Base decay is 2/turn (up to ~8 with every bribe running), so 0.25 lets a
- * starting book (~22 raw) sit near the Raids line and forces a growing empire
- * to buy protection. At 1.0 a passive player pegged 100 heat by turn 6.
+ * Heat cools 2/turn plus HEAT_COOLING of the level, so a book settles where
+ * the two meet: a starting book (~24 raw) near Patrols, a mid empire around
+ * Raids, a big one at Federal unless it buys protection.
  */
-export const RACKET_HEAT_SCALE = 0.25;
+export const RACKET_HEAT_SCALE = 0.2;
 
 export const RACKET_HEAT: Record<RacketType, number> = {
   still: 3,
@@ -850,13 +850,15 @@ export function processDeliveries(
 
     const isPlayer = route.family === state.playerFamily;
     const risk = hijackRisk(state, route);
+    const traced = tiedToFamily(state.crew.find((c) => c.id === route.driverId));
 
     if (rng.chance(risk)) {
       routes.push({ ...route, status: "hijacked" });
-      heatDelta += isPlayer ? 2 : 0;
       if (isPlayer) {
+        const heat = traced ? 2 : 0;
+        heatDelta += heat;
         ledger.stolen = (ledger.stolen ?? 0) + route.cargo;
-        ledger.heat = (ledger.heat ?? 0) + 2;
+        ledger.heat = (ledger.heat ?? 0) + heat;
       }
       const onPath = state.territories
         .filter((t) => route.path.includes(t.id) && t.owner && t.owner !== route.family)
@@ -890,9 +892,10 @@ export function processDeliveries(
     if (rng.chance((state.heat.level > 50 ? 0.15 : 0.05) * yard)) {
       routes.push({ ...route, status: "seized" });
       if (isPlayer) {
-        heatDelta += 4;
+        const heat = traced ? 4 : 0;
+        heatDelta += heat;
         ledger.seized = (ledger.seized ?? 0) + route.cargo;
-        ledger.heat = (ledger.heat ?? 0) + 4;
+        ledger.heat = (ledger.heat ?? 0) + heat;
       }
       logs.push({
         id: `log_del_seize_${route.id}`,
@@ -1316,7 +1319,7 @@ export function processLaundering(
             dirtyRemaining -= seized;
             dirtyDelta -= seized;
           }
-          const heatAdd = 4 * freezeTurns;
+          const heatAdd = associateRuns(state.crew, r) ? 0 : 4 * freezeTurns;
           heatDelta += heatAdd;
           patch.frozenUntil = state.turn + freezeTurns;
           patch.scrutiny = 0;
@@ -1419,6 +1422,13 @@ function activeManagerName(state: GameState, family: FamilyName, managerId: stri
   return manager?.name ?? null;
 }
 
+/** The man on the books is an associate, so the racket's trouble is his and not the family's. */
+export function associateRuns(crew: readonly CrewMember[], racket: Racket): boolean {
+  if (!racket.managerId) return false;
+  const manager = crew.find((c) => c.id === racket.managerId);
+  return !!manager && !tiedToFamily(manager);
+}
+
 export function processEconomyTurn(
   state: GameState,
   family: FamilyName,
@@ -1443,6 +1453,8 @@ export function processEconomyTurn(
   const activeIds = new Set(
     state.crew.filter((c) => c.status === "active").map((c) => c.id),
   );
+  const familyHeatOf = (racket: Racket): number =>
+    associateRuns(state.crew, racket) ? 0 : racket.heatGen;
   const lookup = isPlayer ? makeManagerLookup(state.crew, family) : undefined;
   // The boss's block: rackets there run harder all week.
   const bossBlock = bossPresenceDistrict(state, family);
@@ -1542,7 +1554,7 @@ export function processEconomyTurn(
       ...updated,
       rackets: updated.rackets.map((racket) => {
         if (isRacketFrozen(racket, state.turn)) {
-          racketHeat += racket.heatGen * 0.5;
+          racketHeat += familyHeatOf(racket) * 0.5;
           if (isPlayer && racket.type !== "speakeasy") {
             racketLines.push({
               territoryName: t.name,
@@ -1556,7 +1568,7 @@ export function processEconomyTurn(
           return racket;
         }
         if (racket.type === "speakeasy") {
-          racketHeat += racket.heatGen;
+          racketHeat += familyHeatOf(racket);
           return racket;
         }
         const manager = racket.managerId
@@ -1583,7 +1595,7 @@ export function processEconomyTurn(
             frozen: false,
           });
         }
-        racketHeat += racket.heatGen;
+        racketHeat += familyHeatOf(racket);
         return racket;
       }),
     };
@@ -1897,7 +1909,7 @@ export function processAllEconomy(
 }
 
 /** A block's heat is the joints on it. A quiet block cools; a busy one climbs. */
-const DISTRICT_HEAT_CAP = 12;
+export const DISTRICT_HEAT_CAP = 12;
 
 export function tickDistrictHeat(territories: Territory[]): Territory[] {
   return territories.map((t) => {

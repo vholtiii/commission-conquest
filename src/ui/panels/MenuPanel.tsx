@@ -74,6 +74,13 @@ export default function MenuPanel() {
             />
             Warn about loose ends before ending the week
           </label>
+          <label className="mt-1.5 flex items-center gap-2 rounded-md border border-panel-border bg-panel/50 px-3 py-2 text-xs">
+            <Checkbox
+              checked={!!settings.showAiThinking}
+              onCheckedChange={(v) => updateSettings({ showAiThinking: !!v })}
+            />
+            Show rival thinking (debug)
+          </label>
           <div
             role="group"
             aria-label="Graphics quality"

@@ -837,26 +837,109 @@ export interface BuildFxState {
   level?: number;
 }
 
+export type EventModifierKind =
+  | "income"
+  | "heatPerWeek"
+  | "raidChance"
+  | "hitOdds"
+  | "shipmentSpeed"
+  | "recruitQuality";
+
+/**
+ * A lingering consequence of an event choice. `value` reads by kind:
+ * income is a fraction (+0.15), heatPerWeek points a week, raidChance a
+ * multiplier (0.5), hitOdds a fraction (+0.08), shipmentSpeed turns added to
+ * new orders (-1 is faster), recruitQuality respect-tier steps.
+ */
+export interface EventModifier {
+  id: string;
+  kind: EventModifierKind;
+  value: number;
+  /** Exclusive. */
+  untilTurn: number;
+  label: string;
+  /** Income only: scale this district's take instead of the whole family's. */
+  territoryId?: string;
+}
+
+/** Who a follow-up card is about, fixed when the first choice was made. */
+export interface EventContext {
+  family?: FamilyName;
+  territoryId?: string;
+  racketId?: string;
+  crewId?: string;
+  amount?: number;
+}
+
+export interface PendingFollowUp {
+  templateId: string;
+  dueTurn: number;
+  /** 0–1. A roll that misses drops it. */
+  chance: number;
+  ctx: EventContext;
+}
+
+/** Which man an effect lands on. `subject` is the man the event named. */
+export type EventManPick = "capo" | "soldier" | "muscle" | "any" | "subject" | "manager";
+
+export interface EventEffects {
+  money?: number;
+  dirtyMoney?: number;
+  heat?: number;
+  respect?: number;
+  fear?: number;
+  /** @deprecated Nothing reads it. Use `crewLoyalty`. */
+  loyalty?: number;
+  /** Shift every active man in the family. */
+  crewLoyalty?: number;
+  crates?: number;
+  /** Push every pending shipment arriveTurn by this many turns. */
+  shipmentDelay?: number;
+  /** 0–1 fraction of in-flight shipment crates lost. */
+  shipmentLoss?: number;
+  crewStatus?: { crewId: string; status: CrewStatus };
+  relationDelta?: { family: FamilyName; delta: number };
+  /** Several families at once, or every rival. */
+  relations?: { family: FamilyName | "allRivals"; delta: number }[];
+  /** Call one of your own in and have him taken out. */
+  takeOut?: { crewId: string };
+  /** A new man joins the family. */
+  recruit?: { role: CrewRole; bias: keyof CrewSkills; name?: string };
+  /** A rival takes on a man (the one you turned away). */
+  rivalRecruit?: { family: FamilyName; role: CrewRole; bias: keyof CrewSkills };
+  jailMan?: { pick: EventManPick };
+  woundMan?: { pick: EventManPick };
+  /** Raise one man's wanted. */
+  wantedMan?: { pick: EventManPick; delta: number };
+  /** Spring a jailed man (not the boss). */
+  releaseMan?: boolean;
+  truce?: { family: FamilyName; weeks: number };
+  racket?: { territoryId: string; racketId: string; action: "freeze" | "destroy"; turns?: number };
+  territoryHeat?: { territoryId: string; delta: number };
+  modifier?: Omit<EventModifier, "id" | "untilTurn"> & { weeks: number };
+  followUp?: { templateId: string; inTurns: number; chance: number; ctx?: EventContext };
+  /** A crate order that arrives like any supplier shipment. */
+  shipment?: { crates: number; inTurns: number };
+  /** Cash or crates go to a rival instead. */
+  rival?: { family: FamilyName; treasury?: number };
+  /** Fraction of clean money lost (0–1). */
+  moneyLossFrac?: number;
+  /** Hidden-odds roll. The shared effects above always apply. */
+  gamble?: {
+    odds: number;
+    success: Omit<EventEffects, "gamble">;
+    fail: Omit<EventEffects, "gamble">;
+    successText: string;
+    failText: string;
+  };
+  /** Shown on the card when a choice sets something in motion. */
+  hint?: string;
+}
+
 export interface GameEventChoice {
   id: string;
   text: string;
-  effects: Partial<{
-    money: number;
-    dirtyMoney: number;
-    heat: number;
-    respect: number;
-    fear: number;
-    loyalty: number;
-    crates: number;
-    /** Push every pending shipment arriveTurn by this many turns. */
-    shipmentDelay: number;
-    /** 0–1 fraction of in-flight shipment crates lost. */
-    shipmentLoss: number;
-    crewStatus: { crewId: string; status: CrewStatus };
-    relationDelta: { family: FamilyName; delta: number };
-    /** Call one of your own in and have him taken out. */
-    takeOut: { crewId: string };
-  }>;
+  effects: EventEffects;
 }
 
 /** One open question about a man who might be talking. */
@@ -919,6 +1002,8 @@ export interface GameEvent {
   subjectCrewId?: string;
   /** Hidden until it's resolved: was he actually the rat. */
   subjectIsRat?: boolean;
+  /** Follow-up cards: who and where the first choice was about. */
+  ctx?: EventContext;
 }
 
 export interface TurnLogEntry {
@@ -980,6 +1065,10 @@ export interface DiplomacyState {
   sanctionUntil?: number;
   /** Rulings the player has refused. Two and the table sanctions him. */
   refusals?: number;
+  /** Truces and coalitions between rival families. */
+  rivalPacts?: RivalPact[];
+  /** Signed, broken, and lapsed rival pacts, newest last, capped. */
+  rivalPactLog?: RivalPactEvent[];
 }
 
 export interface SeatVote {
@@ -1413,6 +1502,10 @@ export interface GameSettings {
   startMode?: "random" | "classic";
   /** Ask before ending a week with idle men, unmanaged rackets, and the like. Defaults to on. */
   confirmEndTurn?: boolean;
+  /** "classic" runs the old shuffled rival menus. Defaults to "brain". */
+  aiBrain?: "classic" | "brain";
+  /** Show the rival-thinking debug panel. */
+  showAiThinking?: boolean;
 }
 
 /** How many districts each family has grabbed on a given turn. */
@@ -1471,6 +1564,10 @@ export interface GameState {
   operations: Operation[];
   events: GameEvent[];
   activeEvent: GameEvent | null;
+  /** Lingering effects of event choices. Absent on older saves. */
+  eventModifiers?: EventModifier[];
+  /** Cards an earlier choice set in motion. Absent on older saves. */
+  pendingFollowUps?: PendingFollowUp[];
   turnLog: TurnLogEntry[];
   /** Top line of each week's paper, capped at 100. The turn log itself only keeps 200. */
   headlines?: TurnLogEntry[];
@@ -1542,6 +1639,8 @@ export interface GameState {
    * the weekly warrant roll picks men up more readily.
    */
   ratLeakTurn?: number;
+  /** Week of the last federal RICO indictment against the player. */
+  lastIndictmentTurn?: number;
   /** Which man is still talking, when a real rat was spared. */
   ratLeakCrewId?: string;
   /** How many weeks that leak runs. Defaults to 4. */
@@ -1628,7 +1727,145 @@ export interface GameState {
   pendingHitResult: HitResult | null;
   /** Lookout report cards waiting to be dismissed (FIFO, player only). */
   pendingReports: LookoutReport[];
+  /** What each rival family remembers, believes, and is working toward (`engine/ai`). */
+  aiMinds?: Partial<Record<FamilyName, FamilyMind>>;
+  /** This week's rival reasoning, for the debug panel. Never saved. */
+  aiTrace?: AiTrace | null;
   started: boolean;
+}
+
+/* ------------------------------------------------------------------ */
+/* Rival family brain                                                  */
+/* ------------------------------------------------------------------ */
+
+export type AiGoalKind =
+  | "expand"
+  | "consolidate"
+  | "enrich"
+  | "retaliate"
+  | "contain_leader"
+  | "recover"
+  | "seek_peace";
+
+export interface AiGoal {
+  kind: AiGoalKind;
+  target?: FamilyName;
+  territoryId?: string;
+  since: number;
+  /** Steps of the plan carried out so far. */
+  step: number;
+  failures: number;
+  /** Score the goal won with, for commitment against challengers. */
+  score: number;
+}
+
+export type AiMemoryKind =
+  | "hit_us"
+  | "killed_boss"
+  | "took_turf"
+  | "broke_truce"
+  | "kept_deal"
+  | "shook_us"
+  | "hit_our_enemy"
+  | "spared_us";
+
+export interface AiMemory {
+  turn: number;
+  kind: AiMemoryKind;
+  actor: FamilyName;
+  /** Positive is a grievance, negative is goodwill. */
+  weight: number;
+  territoryId?: string;
+}
+
+/** What a family last saw of a block. */
+export interface BlockBelief {
+  owner: FamilyName | null;
+  garrison: number;
+  seen: number;
+}
+
+/** Where a family last saw a man. */
+export interface CrewBelief {
+  territoryId: string;
+  seen: number;
+}
+
+export interface FamilyBeliefs {
+  blocks: Record<string, BlockBelief>;
+  crew: Record<string, CrewBelief>;
+}
+
+export interface AdaptState {
+  /** Week the family last took a block; it digests new turf before reaching again. */
+  lastCapture?: number;
+  /** Weeks the player took or hit a lightly held block of ours. */
+  weakHits: number[];
+  /** Men the family now keeps on each border block, at least. */
+  minBorder: number;
+  /** Weeks the player hit us. */
+  playerHits: number[];
+}
+
+export interface MindStats {
+  goalSwitches: number;
+  plansDone: number;
+  plansAbandoned: number;
+  scouts: number;
+}
+
+export interface FamilyMind {
+  goal: AiGoal | null;
+  memories: AiMemory[];
+  beliefs: FamilyBeliefs;
+  /** -100..100 per family. Falls fast on a broken word, recovers slowly. */
+  trust: Partial<Record<FamilyName, number>>;
+  adapt: AdaptState;
+  stats: MindStats;
+}
+
+export type RivalPactKind = "truce" | "coalition";
+
+export interface RivalPact {
+  a: FamilyName;
+  b: FamilyName;
+  kind: RivalPactKind;
+  /** Coalition: the family they are lined up against. */
+  target?: FamilyName;
+  since: number;
+  /** Exclusive. */
+  until: number;
+}
+
+export interface RivalPactEvent {
+  turn: number;
+  a: FamilyName;
+  b: FamilyName;
+  kind: RivalPactKind;
+  event: "signed" | "broken" | "expired" | "dissolved";
+  /** Who broke it. */
+  by?: FamilyName;
+  cause?: string;
+}
+
+export interface AiOptionTrace {
+  action: string;
+  score: number;
+  reasons: string[];
+}
+
+export interface AiFamilyTrace {
+  goal: AiGoal | null;
+  goalReason: string;
+  options: AiOptionTrace[];
+  chosen: string[];
+}
+
+export interface AiTrace {
+  turn: number;
+  families: Partial<Record<FamilyName, AiFamilyTrace>>;
+  /** Wall time of the rival turns, for the sim. */
+  ms: number;
 }
 
 export const FAMILY_HEX: Record<FamilyName, string> = {

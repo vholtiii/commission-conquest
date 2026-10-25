@@ -10,7 +10,9 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest run",
-    "sim": "vitest run --config vitest.sim.config.ts"
+    "sim": "vitest run --config vitest.sim.config.ts src/engine/sim/matrix.test.ts src/engine/sim/strategies.test.ts",
+    "sim:ai": "vitest run --config vitest.sim.config.ts src/engine/sim/aiMatrix.test.ts",
+    "sim:heat": "vitest run --config vitest.sim.config.ts src/engine/sim/heatStudy.test.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

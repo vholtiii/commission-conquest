@@ -21,7 +21,6 @@ import {
   thud,
   tyreSqueal,
 } from "@/audio/sfx";
-import { applyShake } from "./cameraRig";
 import { phaseAt, timelineFor, totalDuration, type PhaseDef } from "./timeline";
 import { siteFor } from "./site";
 import { useReelHold } from "./reelHold";
@@ -119,7 +118,7 @@ export default function HitCinematic({ layout, controlsRef }: Props) {
     [current?.operationId, current?.approach, current?.perspective],
   );
   const site = useMemo(
-    () => (current ? siteFor(layout, current) : null),
+    () => (current ? siteFor(layout, current, useGameStore.getState().territories) : null),
     [current?.operationId, layout],
   );
 
@@ -215,11 +214,6 @@ export default function HitCinematic({ layout, controlsRef }: Props) {
       finishedRef.current = true;
       useReelHold.getState().setHeld(true);
     }
-  });
-
-  const { camera } = useThree();
-  useFrame((_, dt) => {
-    applyShake(camera, shake, dt);
   });
 
   if (!current || !site || !live) return null;

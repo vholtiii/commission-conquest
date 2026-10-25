@@ -3,7 +3,8 @@ import { ALL_FAMILY_NAMES } from "@/data/families";
 import type { FamilyName, GameLength, GameSettings } from "@/types/game";
 import { balanceNotes, simulateGame, writeReport, type SimResult } from "./runSim";
 
-const SEEDS = [11, 29, 47, 83];
+// Eight seeds: four left the rate gates flipping on any change to the random stream.
+const SEEDS = [11, 29, 47, 83, 131, 173, 211, 257];
 
 function matrix(): SimResult[] {
   const games: SimResult[] = [];

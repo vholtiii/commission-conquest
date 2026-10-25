@@ -1,11 +1,12 @@
 import { useMemo, useRef } from "react";
-import { useFrame, useThree } from "@react-three/fiber";
+import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import { FAMILY_HEX, type FamilyName } from "@/types/game";
 import { ReelSedan } from "@/scene/ReelSedan";
 import Goon from "./props/Goon";
 import MuzzleFlash from "./props/MuzzleFlash";
-import { coverageShot, ease, moveCam, reelSide, type Coverage } from "./cameraRig";
+import { coverageShot, ease, facingOf, kerbShot, reelSide, trackShot } from "./cameraRig";
+import { useReelCamera } from "./useReelCamera";
 import Headlamps from "./props/Headlamps";
 import type { SceneProps } from "./sceneProps";
 
@@ -18,8 +19,7 @@ function paint(family: FamilyName): string {
  * single shot comes from the back room, and someone else drives his car away.
  */
 export default function SummonsCinematic({ cinematic, site, phase, local, clock, shake }: SceneProps) {
-  const { camera } = useThree();
-  const controls = useThree((s) => s.controls as unknown as { target: THREE.Vector3; update: () => void } | null);
+  const cam = useReelCamera(site.space, cinematic.operationId, shake);
   const color = paint(cinematic.targetFamily);
 
   const stage = useMemo(() => {
@@ -30,12 +30,14 @@ export default function SummonsCinematic({ cinematic, site, phase, local, clock,
     const approach = site.road.clone().addScaledVector(fwd, -6);
     const away = site.road.clone().addScaledVector(fwd, 8);
     const manStart = site.road.clone().addScaledVector(kerb, -0.55);
-    return { door, approach, away, manStart };
+    const doorman = new THREE.Vector3(door.x + 0.45, 0, door.z - 0.15);
+    const doormanHead = doorman.clone().setY(0.9);
+    return { door, approach, away, manStart, doorman, doormanHead, heading: facingOf(fwd) };
   }, [site]);
 
   const carRig = useRef<THREE.Group>(null);
   const manRef = useRef<THREE.Group>(null);
-  const tmp = useMemo(() => ({ car: new THREE.Vector3(), man: new THREE.Vector3(), eye: new THREE.Vector3() }), []);
+  const tmp = useMemo(() => ({ car: new THREE.Vector3(), man: new THREE.Vector3(), manHead: new THREE.Vector3() }), []);
 
   const lampsOn = phase === "drive" || phase === "drive_off";
   const walking = phase === "drive" && local > 0.4;
@@ -43,7 +45,7 @@ export default function SummonsCinematic({ cinematic, site, phase, local, clock,
   const showMan = phase === "drive" && local >= 0.38;
 
   useFrame((_, dt) => {
-    const { phase: ph, local: lc, progress } = clock.current;
+    const { phase: ph, local: lc } = clock.current;
 
     if (ph === "drive_off") tmp.car.copy(site.road).lerp(stage.away, lc * lc);
     else {
@@ -54,24 +56,29 @@ export default function SummonsCinematic({ cinematic, site, phase, local, clock,
 
     const manK = ph === "drive" ? ease(Math.max(0, (lc - 0.4) / 0.6)) : ph === "call" ? 0 : 1;
     tmp.man.copy(stage.manStart).lerp(stage.door, manK);
+    tmp.manHead.copy(tmp.man).setY(0.9);
     if (manRef.current) manRef.current.position.copy(tmp.man);
 
-    if (ph === "drive") {
-      tmp.eye.set(
-        tmp.man.x - Math.sin(site.facing) * 1.6,
-        1.55,
-        tmp.man.z - Math.cos(site.facing) * 1.6,
-      );
-      moveCam(camera, controls, tmp.eye, stage.door, 0.18, dt);
-      return;
+    const side = reelSide(cinematic.operationId);
+    if (ph === "call") {
+      cam.frame(ph, coverageShot(stage.door, site.facing, "wide", { side, drift: lc * 0.3 }), { k: 0.08, dt, coverage: "wide" });
+    } else if (ph === "drive" && lc < 0.4) {
+      cam.frame("car", trackShot(tmp.car, stage.heading, side, { back: 3.4, height: 1.3 }), { k: 0.25, dt, coverage: "wide", follow: true });
+    } else if (ph === "drive") {
+      // From the pavement, so his own car is not filling the foreground.
+      cam.frame("walk", kerbShot(stage.door, site.facing, tmp.man, side), {
+        k: 0.18,
+        dt,
+        coverage: "medium",
+        handheld: 0.008,
+        follow: true,
+      });
+    } else if (ph === "back_room") {
+      cam.frame(ph, kerbShot(stage.door, site.facing, stage.doorman, -side), { k: 0.5, dt, coverage: "close", cut: true });
+      shake.current = Math.max(shake.current, 0.05);
+    } else {
+      cam.frame(ph, trackShot(tmp.car, stage.heading, side, { back: 4.5, height: 2.4 }), { k: 0.15, dt, coverage: "pull", follow: true });
     }
-    const coverage: Coverage = ph === "call" ? "wide" : ph === "back_room" ? "close" : "pull";
-    const shot = coverageShot(stage.door, site.facing, coverage, {
-      drift: progress,
-      side: reelSide(cinematic.operationId),
-    });
-    moveCam(camera, controls, shot.pos, shot.look, ph === "back_room" ? 0.5 : 0.1, dt);
-    if (ph === "back_room") shake.current = Math.max(shake.current, 0.05);
   });
 
   const glow = phase === "back_room" ? 1 - local * 0.7 : phase === "drive_off" ? 0.1 : 0.85;
@@ -86,7 +93,15 @@ export default function SummonsCinematic({ cinematic, site, phase, local, clock,
       </group>
       <pointLight position={[door.x, 1.3, door.z]} color="#ffb060" intensity={glow * 2.4} distance={6} />
       {phase !== "call" && (
-        <Goon position={[door.x + 0.45, 0, door.z - 0.15]} rot={site.facing + Math.PI} role="associate" color="#2a2420" />
+        <Goon
+          position={[stage.doorman.x, 0, stage.doorman.z]}
+          rot={site.facing + Math.PI}
+          pose={phase === "drive" && local > 0.85 ? "talk" : "stand"}
+          lookAt={showMan ? tmp.manHead : undefined}
+          seed={401}
+          role="associate"
+          color="#2a2420"
+        />
       )}
       <mesh position={[site.building.x, 1.15, site.building.z]}>
         <boxGeometry args={[0.7, 0.45, 0.08]} />
@@ -94,7 +109,16 @@ export default function SummonsCinematic({ cinematic, site, phase, local, clock,
       </mesh>
       {showMan && (
         <group ref={manRef} position={[stage.manStart.x, 0, stage.manStart.z]}>
-          <Goon position={[0, 0, 0]} rot={site.facing + Math.PI} pose="walk" moving={walking} role="soldier" color={color} />
+          <Goon
+            position={[0, 0, 0]}
+            rot={site.facing + Math.PI}
+            pose={local < 0.44 ? "getIn" : "walk"}
+            moving={walking}
+            lookAt={local > 0.6 ? stage.doormanHead : undefined}
+            seed={53}
+            role="soldier"
+            color={color}
+          />
         </group>
       )}
       <MuzzleFlash active={phase === "back_room"} from={inside} to={[door.x, 0.8, door.z]} shots={1} />

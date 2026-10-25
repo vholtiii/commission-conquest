@@ -76,6 +76,7 @@ export function emptyDiplomacy(): DiplomacyState {
 
 export function diplomacyOf(state: GameState): DiplomacyState {
   return {
+    ...state.diplomacy,
     pacts: state.diplomacy?.pacts ?? {},
     cooldowns: state.diplomacy?.cooldowns ?? {},
   };

@@ -48,13 +48,14 @@ export function sentenceWeeks(wanted: number): number {
 /**
  * Send a crew member to jail. Men below the boss draw a sentence by how wanted
  * they are. The boss gets a 4-turn window and, if an underboss is ready, that
- * man runs the family without taking the title.
+ * man runs the family without taking the title. `weeks` overrides a non-boss
+ * sentence (a federal case runs past the usual cap).
  */
-export function jailInCrew(crew: CrewMember[], crewId: string, turn: number): CrewMember[] {
+export function jailInCrew(crew: CrewMember[], crewId: string, turn: number, weeks?: number): CrewMember[] {
   const member = crew.find((c) => c.id === crewId);
   if (!member || member.status === "dead" || member.status === "jailed") return crew;
   if (member.role !== "boss") {
-    const until = turn + sentenceWeeks(member.wanted);
+    const until = turn + (weeks ?? sentenceWeeks(member.wanted));
     return crew.map((c) =>
       c.id === crewId
         ? { ...c, status: "jailed" as const, jailedUntilTurn: until, caseFought: undefined }

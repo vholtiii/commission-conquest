@@ -13,6 +13,12 @@ import { useGameStore } from "@/engine/store";
 interface Props {
   layout: CityLayout;
   territories: Territory[];
+  labels?: boolean;
+}
+
+/** Racket fronts on an open lot stay low; on a building block they tower over it. */
+export function racketHeight(level: number, lowProfile: boolean): number {
+  return lowProfile ? 1.3 + level * 0.3 : 2.6 + level * 0.9;
 }
 
 const RISE_DELAY = 0.8;
@@ -513,12 +519,14 @@ function RacketBuilding({
   layout,
   isPlayerOwned,
   turn,
+  labelled,
 }: {
   territory: Territory;
   racketIndex: number;
   layout: CityLayout;
   isPlayerOwned: boolean;
   turn: number;
+  labelled: boolean;
 }) {
   const racket = territory.rackets[racketIndex]!;
   const site =
@@ -542,7 +550,7 @@ function RacketBuilding({
   const freshness = isPlayerOwned ? racketFreshness(racket, turn) : null;
   const visual = RACKET_VISUALS[racket.type];
   const lowProfile = !!block && block.kind !== "building";
-  const height = lowProfile ? 1.3 + racket.level * 0.3 : 2.6 + racket.level * 0.9;
+  const height = racketHeight(racket.level, lowProfile);
   const footprint: [number, number] = lowProfile ? [2.4, 1.6] : [2.0, 2.0];
   const glow = 0.75 + racket.level * 0.28;
   const isSafehouse = racket.type === "safehouse";
@@ -730,7 +738,7 @@ function RacketBuilding({
         </mesh>
       )}
 
-      <Html position={[0, height + 0.95, 0]} center occlude={false} zIndexRange={[4, 1]}>
+      {labelled && <Html position={[0, height + 0.95, 0]} center occlude={false} zIndexRange={[4, 1]}>
         <div className="pointer-events-none flex select-none flex-col items-center gap-0.5">
           {freshness && (
             <span
@@ -780,7 +788,7 @@ function RacketBuilding({
             {RACKET_LABELS[racket.type]}
           </span>
         </div>
-      </Html>
+      </Html>}
     </group>
   );
 }
@@ -802,7 +810,7 @@ export function useOccupiedRacketBlocks(
   }, [layout, territories]);
 }
 
-export default function RacketBuildings({ layout, territories }: Props) {
+export default function RacketBuildings({ layout, territories, labels = true }: Props) {
   const playerFamily = useGameStore((s) => s.playerFamily);
   const turn = useGameStore((s) => s.turn);
   const discovered = territories.filter((t) => t.discovered && t.rackets.length > 0);
@@ -818,6 +826,7 @@ export default function RacketBuildings({ layout, territories }: Props) {
             layout={layout}
             isPlayerOwned={!!playerFamily && t.owner === playerFamily}
             turn={turn}
+            labelled={labels}
           />
         )),
       )}

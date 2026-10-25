@@ -115,12 +115,17 @@ function Rain({ amount, low }: { amount: number; low: boolean }) {
   const dummy = useMemo(() => new THREE.Object3D(), []);
   const drops = useMemo(
     () =>
-      Array.from({ length: count }, () => ({
-        x: (Math.random() - 0.5) * 16,
-        y: Math.random() * 12,
-        z: (Math.random() - 0.5) * 16,
-        v: 0.65 + Math.random() * 0.7,
-      })),
+      Array.from({ length: count }, () => {
+        // A drop right at the lens reads as a white pole across the frame.
+        const a = Math.random() * Math.PI * 2;
+        const r = 2.4 + Math.random() * 5.6;
+        return {
+          x: Math.sin(a) * r,
+          y: Math.random() * 12,
+          z: Math.cos(a) * r,
+          v: 0.65 + Math.random() * 0.7,
+        };
+      }),
     [count],
   );
   const { camera } = useThree();
@@ -144,7 +149,7 @@ function Rain({ amount, low }: { amount: number; low: boolean }) {
 
   return (
     <instancedMesh ref={mesh} args={[undefined, undefined, count]} frustumCulled={false}>
-      <boxGeometry args={[0.018, 0.5, 0.018]} />
+      <boxGeometry args={[0.008, 0.5, 0.008]} />
       <meshBasicMaterial color="#d5dee8" transparent opacity={0.28 + amount * 0.22} depthWrite={false} />
     </instancedMesh>
   );

@@ -117,15 +117,20 @@ export default function CityScene() {
           occupied={occupied}
           territories={territories}
         />
-        <RacketBuildings layout={layout} territories={territories} />
+        <RacketBuildings layout={layout} territories={territories} labels={!cinematicPlaying} />
         <RacketLightPool layout={layout} territories={territories} />
         <BlockPlumbing layout={layout} territories={territories} />
         <AmbientTells layout={layout} territories={territories} />
-        <DistrictOverlay layout={layout} territories={territories} />
-        <Markers layout={layout} territories={territories} />
-        <StreetLabels layout={layout} />
-        <BoroughOverlay layout={layout} territories={territories} />
-        <StrategicOverlay layout={layout} territories={territories} />
+        {/* Map chrome reads as paint on the street once the camera is at eye level. */}
+        {!cinematicPlaying && (
+          <>
+            <DistrictOverlay layout={layout} territories={territories} />
+            <Markers layout={layout} territories={territories} />
+            <StreetLabels layout={layout} />
+            <BoroughOverlay layout={layout} territories={territories} />
+            <StrategicOverlay layout={layout} territories={territories} />
+          </>
+        )}
         <PendingOpsOverlay layout={layout} />
         <SitdownOverlay layout={layout} />
         <SupplyRouteOverlay layout={layout} />
