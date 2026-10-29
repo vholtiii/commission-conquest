@@ -1716,6 +1716,12 @@ export interface GameState {
   hitTargetPreviewId: string | null;
   /** Supply route drawn on the map after clicking it in the Warehouse panel. */
   supplyRouteFocusId: string | null;
+  /**
+   * Roads drawn together from the Rackets Routes tab.
+   * Null means that tab is closed and the map falls back to one focused route.
+   * An empty list means the tab is open and every road is hidden.
+   */
+  shownSupplyRouteIds?: string[] | null;
   /** Candidate roads drawn on the map while a new supply route is being planned. */
   supplyRoutePreview: SupplyRoutePreview | null;
   /** Where each boss has been holding court, and since when (`bossPresence.ts`). */

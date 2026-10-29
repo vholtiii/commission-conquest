@@ -43,7 +43,7 @@ import { applySuccession } from "./succession";
 import { territoryHops } from "./territoryHops";
 import { isDefunct, scatterFamily, settleRivalChair } from "./defection";
 import { startInterregnum } from "./interregnum";
-import { declareMourning, handsDown } from "./mourning";
+import { declareMourning, handsDown, tableHit } from "./mourning";
 import { pullForJob, releaseCrewHome } from "./jobReturn";
 import { noteErrandCasing, payCommissionKill } from "./commissionErrand";
 import { applyHitPractice } from "./practice";
@@ -1749,7 +1749,7 @@ export function resolvePendingOperations(
       (!opts.skipFamily || o.family !== opts.skipFamily),
   );
   for (const op of pendingHits) {
-    if (handsDown(current)) continue;
+    if (handsDown(current) && !tableHit(op)) continue;
     if (isDefunct(current, op.targetFamily)) {
       const stopped = scatterFamily(current, op.targetFamily, rng);
       current = stopped.state;

@@ -412,6 +412,7 @@ export function buildInitialState(
     selectedCrewId: null,
     hitTargetPreviewId: null,
     supplyRouteFocusId: null,
+    shownSupplyRouteIds: null,
     supplyRoutePreview: null,
     focusReason: null,
     pendingHitResult: null,

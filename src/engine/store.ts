@@ -22,6 +22,7 @@ import type {
 import { RACKET_LABELS } from "@/types/game";
 import { alignTerritoriesToMap, buildInitialState, startGame } from "./initialState";
 import { endTurn, resolvePlayerHits } from "./turnPipeline";
+import { readSlotGame, readSlotInfo, writeSlot } from "./saveSlots";
 import { backfillSentences, familyHeadless, newlyJailed, releaseBoss, releaseMember } from "./jail";
 import {
   activeRetainer,
@@ -372,6 +373,8 @@ interface GameStore extends GameState {
   reopenPassageTalks: (routeId: string) => void;
   /** Draw one standing route on the map (null clears). */
   setSupplyRouteFocus: (id: string | null) => void;
+  /** Draw these roads together. Null leaves the map on the single focused route. */
+  setShownSupplyRoutes: (ids: string[] | null) => void;
   /** Draw the candidate roads for a route being planned (null clears). */
   setSupplyRoutePreview: (preview: SupplyRoutePreview | null) => void;
   answerPassage: (id: string, answer: PassageAnswer, offer?: PassageTerms) => void;
@@ -453,7 +456,8 @@ interface GameStore extends GameState {
   nextTurn: () => void;
   payFuneral: (deadCrewId: string) => void;
   captureTerritory: (territoryId: string, attackerIds: string[]) => void;
-  saveSlot: (slot: number) => void;
+  /** Write the game to a slot under this name. False if the browser refused it. */
+  saveSlot: (slot: number, name?: string) => boolean;
   loadSlot: (slot: number) => boolean;
   /** Liquor panel: stock and buying, or the standing routes. */
   liquorView: "stock" | "routes";
@@ -506,6 +510,7 @@ export const useGameStore = create<GameStore>()(
           liquorView: panel === "warehouse" ? "stock" : s.liquorView,
           hitTargetPreviewId: panel === "hit_planner" ? s.hitTargetPreviewId : null,
           supplyRouteFocusId: panel === "warehouse" ? s.supplyRouteFocusId : null,
+          shownSupplyRouteIds: panel === "rackets" ? s.shownSupplyRouteIds : null,
           supplyRoutePreview: panel === "warehouse" ? s.supplyRoutePreview : null,
           lawyerFocusCrewId: null,
         })),
@@ -530,6 +535,7 @@ export const useGameStore = create<GameStore>()(
           selectedCrewId: null,
           hitTargetPreviewId: null,
           supplyRouteFocusId: null,
+          shownSupplyRouteIds: null,
           supplyRoutePreview: null,
           focusReason: null,
           activePanel: id
@@ -1817,6 +1823,7 @@ export const useGameStore = create<GameStore>()(
       },
 
       setSupplyRouteFocus: (id) => set({ supplyRouteFocusId: id }),
+      setShownSupplyRoutes: (ids) => set({ shownSupplyRouteIds: ids }),
       setSupplyRoutePreview: (preview) => set({ supplyRoutePreview: preview }),
 
       toggleSupplyRoute: (id) => {
@@ -2429,10 +2436,8 @@ export const useGameStore = create<GameStore>()(
           toast.error("The hit is already out.");
           return;
         }
-        if (handsDown(s)) {
-          toast.error("The city is quiet", { description: "A funeral holds the families. Nobody gets shot." });
-          return;
-        }
+        // A funeral holds every other hit. The table's order still goes out.
+        const duringFuneral = handsDown(s);
         if (dinnerActive(s)) {
           toast.error("The family is at the table");
           return;
@@ -2528,7 +2533,11 @@ export const useGameStore = create<GameStore>()(
         for (const note of truckNotes) {
           toast.warning("Truck left behind", { description: note.text });
         }
-        toast.message("Hit ordered", { description: errand.targetName });
+        toast.message("Hit ordered", {
+          description: duringFuneral
+            ? `${errand.targetName}. The funeral holds the city. The table's order still goes.`
+            : errand.targetName,
+        });
       },
 
       breakDeal: (dealId) => {
@@ -2897,13 +2906,24 @@ export const useGameStore = create<GameStore>()(
         if (brokePact) toast.warning(`You broke your word with ${t.owner}.`);
       },
 
-      saveSlot: (slot) => {
-        localStorage.setItem(`commission_save_${slot}`, JSON.stringify(cloneState(get())));
+      saveSlot: (slot, name) => {
+        const result = writeSlot(slot, cloneState(get()), name);
+        if ("error" in result) {
+          toast.error("Couldn't save", { description: result.error });
+          return false;
+        }
+        toast.success(`Saved to slot ${slot}`, {
+          description: `${result.info.name} · week ${result.info.turn}`,
+        });
+        return true;
       },
 
       loadSlot: (slot) => {
-        const raw = localStorage.getItem(`commission_save_${slot}`);
-        if (!raw) return false;
+        const raw = readSlotGame(slot);
+        if (!raw) {
+          toast.error(`Slot ${slot} is empty`);
+          return false;
+        }
         try {
           const loaded = JSON.parse(raw) as GameState;
           const plan = loaded.launderPlan ?? {};
@@ -2968,6 +2988,7 @@ export const useGameStore = create<GameStore>()(
             flyToNonce: loaded.flyToNonce ?? 0,
             flyToFocus: null,
             supplyRouteFocusId: null,
+            shownSupplyRouteIds: null,
             supplyRoutePreview: null,
             focusReason: loaded.focusReason ?? null,
             intel: loadedIntel,
@@ -3035,9 +3056,14 @@ export const useGameStore = create<GameStore>()(
             mattressReadyUntil: loaded.mattressReadyUntil ?? 0,
             mourningUntil: loaded.mourningUntil ?? 0,
             ratAffair: loaded.ratAffair ?? null,
+            activePanel: "none",
+          });
+          toast.success(`Loaded slot ${slot}`, {
+            description: readSlotInfo(slot)?.name ?? `Week ${loaded.turn ?? 1}`,
           });
           return true;
         } catch {
+          toast.error("Couldn't load", { description: `The save in slot ${slot} is damaged.` });
           return false;
         }
       },
@@ -3094,6 +3120,7 @@ export const useGameStore = create<GameStore>()(
           "setRouteRunHot",
           "reopenPassageTalks",
           "setSupplyRouteFocus",
+          "setShownSupplyRoutes",
           "setSupplyRoutePreview",
           "setLiquorView",
           "showLiquorRoutes",
@@ -3197,6 +3224,7 @@ export const useGameStore = create<GameStore>()(
           pendingHitCinematic: p.pendingHitCinematic ?? null,
           hitTargetPreviewId: p.hitTargetPreviewId ?? null,
           supplyRouteFocusId: null,
+          shownSupplyRouteIds: null,
           supplyRoutePreview: null,
           focusReason: p.focusReason ?? null,
           intel: mergedIntel,

@@ -778,6 +778,10 @@ export function RouteRow({
   onTalk,
   onFocus,
   onGoTo,
+  focusTips = [
+    "Trace this route. A ring marks the start and an arrow the stop.",
+    "Hide this road on the map.",
+  ],
 }: {
   route: SupplyRoute;
   focused: boolean;
@@ -789,6 +793,8 @@ export function RouteRow({
   onTalk: () => void;
   /** Toggle the dotted road on the map. */
   onFocus: () => void;
+  /** Tooltip while the road is hidden, then while it is shown. */
+  focusTips?: [string, string];
   /** Fly to the destination district. */
   onGoTo: () => void;
 }) {
@@ -815,7 +821,7 @@ export function RouteRow({
       style={focused ? { borderColor: MAP_STATUS.supplyRoute } : undefined}
     >
       <div className="flex items-center justify-between gap-2">
-        <Tip content={focused ? "Hide this road on the map." : "Trace this route. A ring marks the start and an arrow the stop."}>
+        <Tip content={focused ? focusTips[1] : focusTips[0]}>
           <button
             type="button"
             onClick={onFocus}

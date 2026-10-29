@@ -1,17 +1,172 @@
 import { useState } from "react";
-import { Save, FolderOpen, RotateCcw } from "lucide-react";
+import { Save, FolderOpen, RotateCcw, Trash2 } from "lucide-react";
 import { useGameStore } from "@/engine/store";
+import {
+  SAVE_NAME_MAX,
+  defaultSaveName,
+  deleteSlot,
+  readSaveSlots,
+  renameSlot,
+  type SaveSlotInfo,
+} from "@/engine/saveSlots";
 import type { GameLength, GameSettings } from "@/types/game";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { setAmbienceVolume } from "@/audio/ambience";
+import { formatDate } from "../formatters";
 import PanelShell from "./PanelShell";
 
-const SLOTS = [1, 2, 3];
+function savedWhen(at: number): string {
+  if (!at) return "Saved earlier";
+  const d = new Date(at);
+  return `Saved ${d.toLocaleDateString(undefined, { month: "short", day: "numeric" })}, ${d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}`;
+}
 
-export default function MenuPanel() {
+function SaveSlots() {
   const saveSlot = useGameStore((s) => s.saveSlot);
   const loadSlot = useGameStore((s) => s.loadSlot);
+  const playerFamily = useGameStore((s) => s.playerFamily);
+  const turn = useGameStore((s) => s.turn);
+  const [slots, setSlots] = useState(readSaveSlots);
+  const [names, setNames] = useState<Record<number, string>>(() =>
+    Object.fromEntries(readSaveSlots().map((info, i) => [i + 1, info?.name ?? ""])),
+  );
+  const [confirm, setConfirm] = useState<{ slot: number; kind: "save" | "load" | "delete" } | null>(null);
+
+  const refresh = () => {
+    const next = readSaveSlots();
+    setSlots(next);
+    setNames((prev) => {
+      const out = { ...prev };
+      next.forEach((info, i) => {
+        if (info) out[i + 1] = info.name;
+      });
+      return out;
+    });
+  };
+  const suggestion = defaultSaveName({ playerFamily, turn });
+
+  const doSave = (slot: number) => {
+    setConfirm(null);
+    if (saveSlot(slot, names[slot])) refresh();
+  };
+  const doLoad = (slot: number) => {
+    setConfirm(null);
+    loadSlot(slot);
+  };
+  const doDelete = (slot: number) => {
+    setConfirm(null);
+    deleteSlot(slot);
+    setNames((prev) => ({ ...prev, [slot]: "" }));
+    refresh();
+  };
+  const commitName = (slot: number, info: SaveSlotInfo | null) => {
+    if (!info) return;
+    const typed = (names[slot] ?? "").trim();
+    if (!typed || typed === info.name) {
+      setNames((prev) => ({ ...prev, [slot]: info.name }));
+      return;
+    }
+    if (renameSlot(slot, typed)) refresh();
+  };
+
+  return (
+    <div className="space-y-1.5">
+      {slots.map((info, i) => {
+        const slot = i + 1;
+        const asking = confirm?.slot === slot ? confirm.kind : null;
+        return (
+          <div key={slot} className="rounded-md border border-panel-border bg-panel/50 px-3 py-2">
+            <div className="flex items-center gap-2">
+              <span className="w-10 shrink-0 text-[11px] text-muted-foreground">Slot {slot}</span>
+              <input
+                value={names[slot] ?? ""}
+                maxLength={SAVE_NAME_MAX}
+                placeholder={info ? info.name : suggestion}
+                aria-label={`Name for save slot ${slot}`}
+                onChange={(e) => setNames((prev) => ({ ...prev, [slot]: e.target.value }))}
+                onBlur={() => commitName(slot, info)}
+                onKeyDown={(e) => {
+                  if (e.key !== "Enter") return;
+                  e.preventDefault();
+                  if (info) setConfirm({ slot, kind: "save" });
+                  else doSave(slot);
+                }}
+                className="h-7 min-w-0 flex-1 rounded-md border border-panel-border bg-panel/60 px-2 text-xs placeholder:text-muted-foreground/70 focus:border-steel focus:outline-none"
+              />
+            </div>
+            <p className="mt-1 text-[10px] text-muted-foreground">
+              {info
+                ? `${info.family ?? "No family"} · week ${info.turn}${info.date ? ` · ${formatDate(info.date)}` : ""} · ${savedWhen(info.savedAt)}`
+                : "Empty. Type a name, then save."}
+            </p>
+
+            {asking ? (
+              <div className="mt-1.5 flex items-center justify-between gap-2 text-[11px]">
+                <span className={asking === "delete" ? "text-heat" : "text-amber-200"}>
+                  {asking === "save"
+                    ? "Write over this save?"
+                    : asking === "load"
+                      ? "Load it? Anything since your last save is lost."
+                      : "Delete this save?"}
+                </span>
+                <div className="flex shrink-0 gap-1.5">
+                  <Button
+                    size="sm"
+                    className={`h-6 px-2 text-[11px] ${asking === "delete" ? "bg-heat hover:bg-heat/80" : ""}`}
+                    onClick={() => (asking === "save" ? doSave(slot) : asking === "load" ? doLoad(slot) : doDelete(slot))}
+                  >
+                    {asking === "save" ? "Overwrite" : asking === "load" ? "Load" : "Delete"}
+                  </Button>
+                  <Button size="sm" variant="secondary" className="h-6 px-2 text-[11px]" onClick={() => setConfirm(null)}>
+                    Cancel
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div className="mt-1.5 flex gap-1.5">
+                <Button
+                  size="sm"
+                  className="h-7 flex-1 gap-1 px-2 text-[11px]"
+                  disabled={!playerFamily}
+                  title={playerFamily ? undefined : "Pick a family before you save."}
+                  onClick={() => (info ? setConfirm({ slot, kind: "save" }) : doSave(slot))}
+                >
+                  <Save className="h-3 w-3" /> Save
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  className="h-7 flex-1 gap-1 px-2 text-[11px]"
+                  disabled={!info}
+                  onClick={() => setConfirm({ slot, kind: "load" })}
+                >
+                  <FolderOpen className="h-3 w-3" /> Load
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 px-2 text-[11px] text-muted-foreground hover:text-heat"
+                  disabled={!info}
+                  aria-label={`Delete save slot ${slot}`}
+                  title="Delete this save"
+                  onClick={() => setConfirm({ slot, kind: "delete" })}
+                >
+                  <Trash2 className="h-3 w-3" />
+                </Button>
+              </div>
+            )}
+          </div>
+        );
+      })}
+      <p className="text-[10px] text-muted-foreground">
+        The game also keeps itself as you play. Slots are saves you name and come back to.
+      </p>
+    </div>
+  );
+}
+
+export default function MenuPanel() {
   const newGame = useGameStore((s) => s.newGame);
   const settings = useGameStore((s) => s.settings);
   const updateSettings = useGameStore((s) => s.updateSettings);
@@ -23,24 +178,7 @@ export default function MenuPanel() {
       <div className="space-y-5">
         <div>
           <h3 className="mb-1.5 text-xs uppercase tracking-wide text-muted-foreground">Save Slots</h3>
-          <div className="space-y-1.5">
-            {SLOTS.map((slot) => (
-              <div
-                key={slot}
-                className="flex items-center justify-between rounded-md border border-panel-border bg-panel/50 px-3 py-2"
-              >
-                <span className="text-sm">Slot {slot}</span>
-                <div className="flex gap-1.5">
-                  <Button size="sm" variant="secondary" className="h-7 gap-1 px-2 text-[11px]" onClick={() => saveSlot(slot)}>
-                    <Save className="h-3 w-3" /> Save
-                  </Button>
-                  <Button size="sm" variant="secondary" className="h-7 gap-1 px-2 text-[11px]" onClick={() => loadSlot(slot)}>
-                    <FolderOpen className="h-3 w-3" /> Load
-                  </Button>
-                </div>
-              </div>
-            ))}
-          </div>
+          <SaveSlots />
         </div>
 
         <div>

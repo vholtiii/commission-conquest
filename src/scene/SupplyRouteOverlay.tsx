@@ -90,13 +90,16 @@ function DirectedRoad({ points, color }: { points: Pt[]; color: string }) {
 }
 
 /**
- * One liquor road at a time. A route being planned wins over a standing
- * route you had traced. The ring is the warehouse; the arrow is the stop.
+ * Liquor roads on the map. A route being planned wins. Otherwise the Rackets
+ * Routes tab draws every road it has switched on, and the Warehouse panel
+ * draws the one route you clicked. The ring is the warehouse; the arrow is the stop.
  */
 export default function SupplyRouteOverlay({ layout }: Props) {
   const focusId = useGameStore((s) => s.supplyRouteFocusId);
+  const shownIds = useGameStore((s) => s.shownSupplyRouteIds);
   const preview = useGameStore((s) => s.supplyRoutePreview);
   const supplyRoutes = useGameStore((s) => s.supplyRoutes ?? []);
+  const routes = useGameStore((s) => s.routes);
   const hitPlaying = useGameStore((s) => s.cinematicQueue.length > 0);
   const sitdownPhase = useGameStore((s) => s.sitdownPhase);
 
@@ -104,26 +107,43 @@ export default function SupplyRouteOverlay({ layout }: Props) {
     () => new Map(layout.centers.map((c) => [c.territoryId, c])),
     [layout],
   );
-  const toPoints = (path: string[]) =>
+  const toPoints = (path: string[], lift: number) =>
     path
       .map((tid) => centerById.get(tid))
       .filter(Boolean)
-      .map((c) => [c!.worldX, Y, c!.worldZ] as Pt);
+      .map((c) => [c!.worldX, Y + lift, c!.worldZ] as Pt);
 
   if (hitPlaying || sitdownPhase) return null;
 
   const previewRoad = preview
     ? preview.options.find((o) => o.id === preview.chosenId) ?? preview.options[0]
     : undefined;
-  const focused = !preview && focusId ? supplyRoutes.find((r) => r.id === focusId) : undefined;
-  const path = previewRoad?.path ?? focused?.path;
-  if (!path) return null;
-  const pts = toPoints(path);
-  if (pts.length < 2) return null;
+  const paths: string[][] = [];
+  if (previewRoad) {
+    paths.push(previewRoad.path);
+  } else if (shownIds) {
+    const byId = new Map<string, string[]>();
+    for (const route of supplyRoutes) byId.set(route.id, route.path);
+    for (const route of routes) byId.set(route.id, route.path);
+    for (const id of shownIds) {
+      const path = byId.get(id);
+      if (path) paths.push(path);
+    }
+  } else if (focusId) {
+    const path = supplyRoutes.find((r) => r.id === focusId)?.path;
+    if (path) paths.push(path);
+  }
+
+  const roads = paths
+    .map((path, i) => ({ points: toPoints(path, i * 0.05), key: path.join(">") + i }))
+    .filter((road) => road.points.length >= 2);
+  if (roads.length === 0) return null;
 
   return (
     <group>
-      <DirectedRoad points={pts} color={MAP_STATUS.supplyRoute} />
+      {roads.map((road) => (
+        <DirectedRoad key={road.key} points={road.points} color={MAP_STATUS.supplyRoute} />
+      ))}
     </group>
   );
 }

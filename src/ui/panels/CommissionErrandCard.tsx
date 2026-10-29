@@ -7,6 +7,7 @@ import {
   hotHighRanks,
 } from "@/engine/commissionErrand";
 import { WARRANT } from "@/engine/heat";
+import { handsDown } from "@/engine/mourning";
 import { Button } from "@/components/ui/button";
 
 const SELECT = "w-full rounded-md border border-panel-border bg-panel/60 px-2 py-1.5 text-xs";
@@ -19,6 +20,7 @@ export default function CommissionErrandCard() {
   const operations = useGameStore((s) => s.operations);
   const playerFamily = useGameStore((s) => s.playerFamily);
   const heat = useGameStore((s) => s.heat.level);
+  const funeral = useGameStore((s) => handsDown(s));
   const accept = useGameStore((s) => s.acceptCommissionErrand);
   const decline = useGameStore((s) => s.declineCommissionErrand);
   const caseLead = useGameStore((s) => s.caseCommissionErrand);
@@ -186,6 +188,11 @@ export default function CommissionErrandCard() {
           <Button size="sm" className="h-7 text-xs" onClick={send}>
             Hit him in {hideout}
           </Button>
+          {funeral && (
+            <p className="text-[11px] text-muted-foreground">
+              A funeral holds the city. The table's order still goes out.
+            </p>
+          )}
         </div>
       )}
     </section>

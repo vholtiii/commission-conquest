@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, MapPin, Ship, Truck, Handshake, UserX } from "lucide-react";
 import {
   FAMILY_HEX,
@@ -425,23 +425,39 @@ function RoutesTab() {
   const setHot = useGameStore((s) => s.setRouteRunHot);
   const reopen = useGameStore((s) => s.reopenPassageTalks);
   const selectTerritory = useGameStore((s) => s.selectTerritory);
-  const focusId = useGameStore((s) => s.supplyRouteFocusId);
-  const setFocus = useGameStore((s) => s.setSupplyRouteFocus);
+  const shownIds = useGameStore((s) => s.shownSupplyRouteIds);
+  const setShown = useGameStore((s) => s.setShownSupplyRoutes);
   const setPanel = useGameStore((s) => s.setPanel);
-  const [tracedHere, setTracedHere] = useState(false);
-
-  useEffect(
-    () => () => {
-      if (tracedHere) useGameStore.getState().setSupplyRouteFocus(null);
-    },
-    [tracedHere],
-  );
+  const hiddenRef = useRef(new Set<string>());
 
   const nameOf = (id: string) => territories.find((t) => t.id === id)?.name ?? id;
   const crewName = (id: string) => crew.find((c) => c.id === id)?.name ?? "—";
   const trucks = routes.filter((r) => r.family === playerFamily && r.status === "active");
   const contracts = activeDeals({ deals, turn, playerFamily }).filter((d) => d.kind === "liquor");
   const total = supplyRoutes.length + trucks.length + pendingShipments.length + contracts.length;
+  const drawableKey = [...supplyRoutes.map((r) => r.id), ...trucks.map((r) => r.id)].join("|");
+  const drawableIds = drawableKey.length ? drawableKey.split("|") : [];
+
+  useEffect(() => {
+    const ids = drawableKey.length ? drawableKey.split("|") : [];
+    setShown(ids.filter((id) => !hiddenRef.current.has(id)));
+  }, [drawableKey, setShown]);
+  useEffect(() => () => setShown(null), [setShown]);
+
+  const shown = new Set(shownIds ?? []);
+  const shownCount = drawableIds.filter((id) => shown.has(id)).length;
+  const toggleLine = (id: string) => {
+    const current = useGameStore.getState().shownSupplyRouteIds ?? [];
+    const on = current.includes(id);
+    if (on) hiddenRef.current.add(id);
+    else hiddenRef.current.delete(id);
+    setShown(on ? current.filter((x) => x !== id) : [...current, id]);
+  };
+  const setAll = (on: boolean) => {
+    if (on) hiddenRef.current.clear();
+    else for (const id of drawableIds) hiddenRef.current.add(id);
+    setShown(on ? [...drawableIds] : []);
+  };
 
   return (
     <>
@@ -449,31 +465,44 @@ function RoutesTab() {
         <p className="mb-3 text-xs text-muted-foreground">No liquor on the move. Open a supply route from a warehouse.</p>
       )}
 
+      {drawableIds.length > 0 && (
+        <div className="mb-3 flex items-center justify-between gap-2 text-[10px]">
+          <span className="text-muted-foreground">
+            {shownCount} of {drawableIds.length} on the map
+            <span
+              className="ml-1 inline-block h-[3px] w-5 align-middle"
+              style={{ borderTop: `2px dotted ${MAP_STATUS.supplyRoute}` }}
+            />
+          </span>
+          <button
+            type="button"
+            onClick={() => setAll(shownCount < drawableIds.length)}
+            className="text-steel-light underline-offset-2 hover:underline"
+          >
+            {shownCount === drawableIds.length ? "Hide all" : "Show all"}
+          </button>
+        </div>
+      )}
+
       <Section icon={<Truck className="h-3 w-3" />} title="Supply routes" count={supplyRoutes.length}>
         {supplyRoutes.map((r) => (
           <RouteRow
             key={r.id}
             route={r}
-            focused={focusId === r.id}
+            focused={shown.has(r.id)}
             nameOf={nameOf}
             crewName={crewName}
             onCancel={() => cancel(r.id)}
             onToggle={() => toggle(r.id)}
             onHot={(v) => setHot(r.id, v)}
             onTalk={() => reopen(r.id)}
-            onFocus={() => {
-              setTracedHere(true);
-              setFocus(focusId === r.id ? null : r.id);
-            }}
+            onFocus={() => toggleLine(r.id)}
+            focusTips={["Show this route on the map.", "Hide this route on the map."]}
             onGoTo={() => selectTerritory(r.destTerritoryId, { toastLabel: "Supply route" })}
           />
         ))}
         <p className="text-[9px] text-muted-foreground">
-          Click a route to trace it. The ring is the start, the arrow the stop
-          <span
-            className="ml-1 inline-block h-[3px] w-5 align-middle"
-            style={{ borderTop: `2px dotted ${MAP_STATUS.supplyRoute}` }}
-          />
+          Every route starts on the map. Click one to hide or show it. The ring is the start, the arrow the stop.
         </p>
       </Section>
 
@@ -481,12 +510,26 @@ function RoutesTab() {
         {trucks.map((r) => (
           <div
             key={r.id}
-            className="flex items-center justify-between gap-2 rounded-md border border-panel-border bg-panel/50 p-2 text-[10px]"
+            className={`flex items-center justify-between gap-2 rounded-md border bg-panel/50 p-2 text-[10px] ${
+              shown.has(r.id) ? "" : "border-panel-border"
+            }`}
+            style={shown.has(r.id) ? { borderColor: MAP_STATUS.supplyRoute } : undefined}
           >
             <div className="min-w-0">
-              <div className="truncate font-medium text-foreground">
-                {nameOf(r.sourceTerritoryId)} → {nameOf(r.destTerritoryId)}
-              </div>
+              <button
+                type="button"
+                title={shown.has(r.id) ? "Hide this route on the map." : "Show this route on the map."}
+                onClick={() => toggleLine(r.id)}
+                className="flex min-w-0 items-center gap-1.5 text-left font-medium text-foreground hover:underline"
+              >
+                <span
+                  className="inline-block h-[3px] w-4 shrink-0"
+                  style={{ borderTop: `2px dotted ${shown.has(r.id) ? MAP_STATUS.supplyRoute : MAP_STATUS.supplyOption}` }}
+                />
+                <span className="truncate">
+                  {nameOf(r.sourceTerritoryId)} → {nameOf(r.destTerritoryId)}
+                </span>
+              </button>
               <div className="text-muted-foreground">
                 {r.cargo} crates · {crewName(r.driverId)} · {Math.max(0, r.path.length - 1)} hops
               </div>
