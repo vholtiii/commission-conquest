@@ -6,7 +6,6 @@ import type {
   Racket,
 } from "@/types/game";
 import { FAMILIES, getFamilyDef } from "@/data/families";
-import territoriesRaw from "@/data/territories.json";
 import { createRng } from "./rng";
 import {
   createCrewMember,
@@ -26,25 +25,11 @@ import {
 } from "./economy";
 import { computeTerritorySlots, maxRacketsFor, allowedRacketTypes } from "./territoryValue";
 import { districtsThatTouch, nextRacketSiteIndex } from "./cityLayout";
+import { mapDims, rawTerritoriesFor, type MapDistrict, type MapSize } from "./mapSize";
 import { emptyVictory, finalTurnFor } from "./victory";
 import { lawyerName } from "./lawyer";
 import { ERRAND_FIRST_TURN } from "./commissionErrand";
 import { dealStartingHoldings } from "./startPositions";
-
-interface TerritoryRaw {
-  id: string;
-  name: string;
-  owner: FamilyName | null;
-  baseIncome: number;
-  defenseBonus: number;
-  isStrategic: boolean;
-  x: number;
-  y: number;
-  adjacentTerritories: string[];
-  businessType: string | null;
-  strategicBonus?: Territory["strategicBonus"];
-  emptyLot?: boolean;
-}
 
 const BOROUGH_MAP: Record<string, string> = {
   manhattan: "Manhattan",
@@ -115,14 +100,17 @@ function inferBorough(id: string): string {
  * that share a side. Old saves keep their owners and rackets; a road follows
  * the map, including a save written when two districts sat on one dot.
  */
-export function alignTerritoriesToMap<T extends Territory>(territories: T[]): T[] {
-  const byRaw = new Map((territoriesRaw as TerritoryRaw[]).map((t) => [t.id, t]));
+export function alignTerritoriesToMap<T extends Territory>(
+  territories: T[],
+  size?: MapSize,
+): T[] {
+  const byRaw = new Map(rawTerritoriesFor(size).map((t) => [t.id, t]));
   const placed = territories.map((t) => {
     const raw = byRaw.get(t.id);
     if (!raw || (t.x === raw.x && t.y === raw.y)) return t;
     return { ...t, x: raw.x, y: raw.y };
   });
-  const borders = districtsThatTouch(placed);
+  const borders = districtsThatTouch(placed, mapDims(size));
   return placed.map((t) => {
     const next = borders.get(t.id);
     if (!next) return t;
@@ -130,8 +118,8 @@ export function alignTerritoriesToMap<T extends Territory>(territories: T[]): T[
   });
 }
 
-function loadTerritories(rng: ReturnType<typeof createRng>): Territory[] {
-  const built = (territoriesRaw as TerritoryRaw[]).map((raw) => {
+function loadTerritories(rng: ReturnType<typeof createRng>, size: MapSize): Territory[] {
+  const built = rawTerritoriesFor(size).map((raw: MapDistrict) => {
     const rackets: Racket[] = [];
     const racketType = mapBusinessTypeToRacket(raw.businessType);
     if (racketType && raw.owner) {
@@ -151,7 +139,7 @@ function loadTerritories(rng: ReturnType<typeof createRng>): Territory[] {
       id: raw.id,
       name: raw.name,
       owner: raw.owner,
-      borough: inferBorough(raw.id),
+      borough: raw.borough ?? inferBorough(raw.id),
       baseIncome: raw.baseIncome,
       defenseBonus: raw.defenseBonus,
       isStrategic: raw.isStrategic,
@@ -169,7 +157,7 @@ function loadTerritories(rng: ReturnType<typeof createRng>): Territory[] {
       racketSlots: MAX_RACKETS_PER_DISTRICT,
     };
   });
-  return alignTerritoriesToMap(built);
+  return alignTerritoriesToMap(built, size);
 }
 
 function createFamilyRoster(
@@ -246,6 +234,7 @@ const DEFAULT_SETTINGS: GameSettings = {
   graphics: "auto",
   ambienceVolume: 0.4,
   startMode: "random",
+  mapSize: "normal",
 };
 
 /**
@@ -269,20 +258,25 @@ export function buildInitialState(
   settings: Partial<GameSettings> = {},
 ): GameState {
   const difficulty = settings.difficulty ?? DEFAULT_SETTINGS.difficulty;
+  const mapSize: MapSize =
+    settings.mapSize === "small" || settings.mapSize === "large" ? settings.mapSize : "normal";
   const mergedSettings: GameSettings = {
     ...DEFAULT_SETTINGS,
     ...settings,
     seed,
     difficulty,
+    mapSize,
     aiAggression: aggressionForDifficulty(difficulty),
   };
+  // The classic holdings are drawn on the normal map. A smaller or larger city deals.
+  if (mapSize !== "normal") mergedSettings.startMode = "random";
   const rng = createRng(seed);
 
-  let territories = computeTerritorySlots(loadTerritories(rng), seed);
+  let territories = computeTerritorySlots(loadTerritories(rng, mapSize), seed, mapDims(mapSize));
   const dealt =
     mergedSettings.startMode === "classic"
       ? null
-      : dealStartingHoldings(territories, seed);
+      : dealStartingHoldings(territories, seed, mapSize !== "normal");
   if (dealt) territories = dealt.territories;
   const homeSeats = dealt?.homeSeats;
   let crew = FAMILIES.flatMap((f) => createFamilyRoster(rng, f.name));

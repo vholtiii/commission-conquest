@@ -1,18 +1,27 @@
 import { useState } from "react";
 import { FAMILIES } from "@/data/families";
 import type { FamilyName, GameLength, GameSettings } from "@/types/game";
+import { districtCount, type MapSize } from "@/engine/mapSize";
 import { useGameStore } from "@/engine/store";
 import { Button } from "@/components/ui/button";
 
 export default function FamilySelectScreen() {
   const selectFamily = useGameStore((s) => s.selectFamily);
   const newGame = useGameStore((s) => s.newGame);
-  const [difficulty, setDifficulty] = useState<GameSettings["difficulty"]>("normal");
-  const [gameLength, setGameLength] = useState<GameLength>("medium");
-  const [startMode, setStartMode] = useState<NonNullable<GameSettings["startMode"]>>("random");
+  const [difficulty, setDifficulty] = useState<GameSettings["difficulty"]>(
+    () => useGameStore.getState().settings.difficulty,
+  );
+  const [gameLength, setGameLength] = useState<GameLength>(
+    () => useGameStore.getState().settings.gameLength ?? "medium",
+  );
+  const [mapSize, setMapSize] = useState<MapSize>(() => useGameStore.getState().settings.mapSize ?? "normal");
+  const [startMode, setStartMode] = useState<NonNullable<GameSettings["startMode"]>>(
+    () => (useGameStore.getState().settings.startMode === "classic" ? "classic" : "random"),
+  );
+  const opening = mapSize === "normal" ? startMode : "random";
 
   const lead = (name: FamilyName) => {
-    newGame({ difficulty, gameLength, startMode });
+    newGame({ difficulty, gameLength, mapSize, startMode: opening });
     selectFamily(name);
   };
 
@@ -66,27 +75,65 @@ export default function FamilySelectScreen() {
             </button>
           ))}
         </div>
+        <div className="flex gap-1.5" role="group" aria-label="Map size">
+          {(
+            [
+              ["small", "Small"],
+              ["normal", "Normal"],
+              ["large", "Large"],
+            ] as const
+          ).map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              aria-pressed={mapSize === id}
+              onClick={() => setMapSize(id)}
+              className={`flex-1 rounded-md border px-2 py-1.5 text-[11px] ${
+                mapSize === id
+                  ? "border-steel bg-steel/20 text-steel-light"
+                  : "border-panel-border bg-panel/50 hover:bg-panel-elevated"
+              }`}
+            >
+              <span className="block">{label}</span>
+              <span className="block text-[10px] opacity-80">{districtCount(id)} districts</span>
+            </button>
+          ))}
+        </div>
         <div className="flex gap-1.5">
           {(
             [
               ["random", "Random starts"],
               ["classic", "Classic map"],
             ] as const
-          ).map(([id, label]) => (
-            <button
-              key={id}
-              type="button"
-              onClick={() => setStartMode(id)}
-              className={`flex-1 rounded-md border px-2 py-1.5 text-[11px] ${
-                startMode === id
-                  ? "border-steel bg-steel/20 text-steel-light"
-                  : "border-panel-border bg-panel/50 hover:bg-panel-elevated"
-              }`}
-            >
-              {label}
-            </button>
-          ))}
+          ).map(([id, label]) => {
+            const locked = id === "classic" && mapSize !== "normal";
+            return (
+              <button
+                key={id}
+                type="button"
+                disabled={locked}
+                title={locked ? "The classic layout is the normal map" : undefined}
+                onClick={() => {
+                  if (!locked) setStartMode(id);
+                }}
+                className={`flex-1 rounded-md border px-2 py-1.5 text-[11px] ${
+                  locked
+                    ? "cursor-not-allowed border-panel-border bg-panel/30 text-muted-foreground/50"
+                    : opening === id
+                      ? "border-steel bg-steel/20 text-steel-light"
+                      : "border-panel-border bg-panel/50 hover:bg-panel-elevated"
+                }`}
+              >
+                {label}
+              </button>
+            );
+          })}
         </div>
+        {mapSize !== "normal" && (
+          <p className="text-[10px] text-muted-foreground">
+            Small and large maps deal the opening districts. The classic layout is the normal map.
+          </p>
+        )}
       </div>
 
       <div className="grid w-full max-w-5xl grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">

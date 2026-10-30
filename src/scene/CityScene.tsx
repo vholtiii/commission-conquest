@@ -3,7 +3,8 @@ import { Canvas } from "@react-three/fiber";
 import { MapControls, PerformanceMonitor } from "@react-three/drei";
 import * as THREE from "three";
 import { useGameStore } from "@/engine/store";
-import { getCityLayout } from "@/engine/cityLayout";
+import { getCityLayout, cameraPullback } from "@/engine/cityLayout";
+import { mapDims } from "@/engine/mapSize";
 import ProceduralBuildings from "./ProceduralBuildings";
 import DistrictOverlay from "./DistrictOverlay";
 import Markers from "./Markers";
@@ -33,6 +34,7 @@ import { TIER_DPR, type GraphicsTier } from "./sceneTheme";
 export default function CityScene() {
   const territories = useGameStore((s) => s.territories);
   const seed = useGameStore((s) => s.seed);
+  const mapSize = useGameStore((s) => s.settings.mapSize);
   const selectTerritory = useGameStore((s) => s.selectTerritory);
   const cinematicPlaying = useGameStore(
     (s) =>
@@ -48,7 +50,11 @@ export default function CityScene() {
         ? "high"
         : "auto";
 
-  const layout = useMemo(() => getCityLayout(territories, seed), [territories, seed]);
+  const layout = useMemo(
+    () => getCityLayout(territories, seed, mapDims(mapSize)),
+    [territories, seed, mapSize],
+  );
+  const pullback = cameraPullback(layout.gridW);
   const occupied = useOccupiedRacketBlocks(layout, territories);
 
   // Shared with the fly-to camera and the hit reel.
@@ -62,7 +68,7 @@ export default function CityScene() {
         flat={postFx}
         frameloop="always"
         dpr={TIER_DPR[tier]}
-        camera={{ position: [0, 34, 30], fov: 42, near: 0.1, far: 300 }}
+        camera={{ position: [0, 34, 30], fov: 42, near: 0.1, far: pullback * 2 }}
         onPointerMissed={(e) => {
           // A pan that ends on water must keep the selection. Only a left
           // click that barely moved clears it. R3F already skips this when
@@ -94,7 +100,7 @@ export default function CityScene() {
           maxPolarAngle={Math.PI / 3}
           minPolarAngle={Math.PI / 8}
           minDistance={12}
-          maxDistance={150}
+          maxDistance={pullback}
           enableDamping
           dampingFactor={0.08}
           screenSpacePanning

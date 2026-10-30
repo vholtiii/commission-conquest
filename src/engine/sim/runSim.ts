@@ -154,6 +154,8 @@ export interface SimRequest {
   aiBrain?: GameSettings["aiBrain"];
   /** Move the summit to this week, for long AI runs. */
   maxTurns?: number;
+  /** Small, normal, or large city. Missing plays the normal map. */
+  mapSize?: GameSettings["mapSize"];
 }
 
 export interface SimResult {
@@ -279,6 +281,7 @@ function playGame(request: SimRequest): SimResult {
       seed: request.seed,
       difficulty: request.difficulty,
       gameLength: request.gameLength,
+      mapSize: request.mapSize,
       aiAggression: request.difficulty === "easy" ? 0.45 : request.difficulty === "hard" ? 1.5 : 1,
     }),
     request.family,

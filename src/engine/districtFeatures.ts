@@ -4,7 +4,7 @@
  * suits it, and a little more when the right neighbour is on the same block.
  */
 import type { RacketType, Territory } from "@/types/game";
-import { getCityLayout, waterfrontScores } from "./cityLayout";
+import { getCityLayout, waterfrontScores, type GridDims } from "./cityLayout";
 
 export type DistrictFeature = "docks" | "downtown" | "industrial" | "residential";
 
@@ -44,8 +44,12 @@ function boroughFeature(t: Pick<Territory, "id" | "borough" | "isStrategic" | "e
 }
 
 /** Stamp every district. The 6 or 7 most water-facing blocks become docks; the seed picks which count. */
-export function stampDistrictFeatures(territories: Territory[], seed: number): Territory[] {
-  const scores = waterfrontScores(getCityLayout(territories, seed));
+export function stampDistrictFeatures(
+  territories: Territory[],
+  seed: number,
+  dims?: GridDims,
+): Territory[] {
+  const scores = waterfrontScores(getCityLayout(territories, seed, dims));
   const ranked = [...scores.entries()]
     .filter(([, n]) => n > 0)
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));

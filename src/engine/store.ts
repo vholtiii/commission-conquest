@@ -44,6 +44,7 @@ import {
 import { migrateMinds } from "./ai/minds";
 import { emptyVictory, finalTurnFor, seedRivalInfluence } from "./victory";
 import { ensureRacketSites, getCityLayout, nextRacketSiteIndex, racketBlockFor } from "./cityLayout";
+import { mapDims } from "./mapSize";
 import { bringCrewOnHit, buildHitCinematic, commitHitCrew, planHit } from "./hitOps";
 import {
   acceptCommissionErrand as takeErrand,
@@ -237,7 +238,7 @@ function focusOnTerritory(
   state: GameState,
   territoryId: string,
 ): { x: number; z: number; distance: number } | null {
-  const center = getCityLayout(state.territories, state.seed).centers.find(
+  const center = getCityLayout(state.territories, state.seed, mapDims(state.settings?.mapSize)).centers.find(
     (c) => c.territoryId === territoryId,
   );
   if (!center) return null;
@@ -250,7 +251,7 @@ function focusOnRacket(
   racketId: string,
 ): { x: number; z: number; distance: number } | null {
   const territory = state.territories.find((t) => t.id === territoryId);
-  const layout = getCityLayout(state.territories, state.seed);
+  const layout = getCityLayout(state.territories, state.seed, mapDims(state.settings?.mapSize));
   const index = territory?.rackets.findIndex((r) => r.id === racketId) ?? -1;
   const racket = index >= 0 ? territory!.rackets[index]! : undefined;
   const site = typeof racket?.siteIndex === "number" ? racket.siteIndex : index;
@@ -477,6 +478,7 @@ const defaultSettings: GameSettings = {
   postFx: true,
   graphics: "auto",
   ambienceVolume: 0.4,
+  mapSize: "normal",
 };
 
 function cloneState(s: GameState): GameState {
@@ -2927,14 +2929,17 @@ export const useGameStore = create<GameStore>()(
         try {
           const loaded = JSON.parse(raw) as GameState;
           const plan = loaded.launderPlan ?? {};
+          const dims = mapDims(loaded.settings?.mapSize);
           let territories = normalizeTerritoryRackets(
             ensureTerritorySlots(
               loaded.territories ?? [],
               loaded.seed ?? defaultSettings.seed,
+              dims,
             ),
           ).map((t) => ({ ...t, rackets: ensureRacketSites(t.rackets) }));
           territories = alignTerritoriesToMap(
             migrateLaunderSites(territories, plan, loaded.playerFamily ?? null),
+            loaded.settings?.mapSize,
           );
           const loadedIntel = normalizeIntel(loaded.intel);
           territories = revealKnownDistricts({
@@ -3161,10 +3166,13 @@ export const useGameStore = create<GameStore>()(
         const p = (persisted ?? {}) as Partial<GameState>;
         const seed = p.seed ?? current.seed ?? defaultSettings.seed;
         const plan = p.launderPlan ?? current.launderPlan ?? {};
+        const savedSize = p.settings?.mapSize ?? current.settings?.mapSize;
+        const dims = mapDims(savedSize);
         let territories = normalizeTerritoryRackets(
           ensureTerritorySlots(
             (p.territories ?? current.territories) as GameState["territories"],
             seed,
+            dims,
           ),
         ).map((t) => ({ ...t, rackets: ensureRacketSites(t.rackets) }));
         territories = alignTerritoriesToMap(
@@ -3173,6 +3181,7 @@ export const useGameStore = create<GameStore>()(
             plan,
             p.playerFamily ?? current.playerFamily ?? null,
           ),
+          savedSize,
         );
         const mergedIntel = normalizeIntel(p.intel ?? current.intel);
         territories = revealKnownDistricts({

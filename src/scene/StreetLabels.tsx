@@ -1,10 +1,6 @@
 import { useMemo } from "react";
 import { Text } from "@react-three/drei";
-import {
-  GRID_H,
-  GRID_W,
-  type CityLayout,
-} from "@/engine/cityLayout";
+import { type CityLayout } from "@/engine/cityLayout";
 import { useMapView } from "@/engine/mapView";
 import { avenueName, streetName } from "@/data/streets";
 
@@ -24,10 +20,15 @@ interface StreetLabel {
 /** Road paint: pale cream, a touch transparent so the asphalt grain shows through. */
 const PAINT = "#e9dfc4";
 const PAINT_EDGE = "#1a1814";
-const AVENUE_ROWS = [6, 14, 22, 30];
-const STREET_COLS = [6, 14, 22, 30, 38];
 const FLAT_X: [number, number, number] = [-Math.PI / 2, 0, 0];
 const FLAT_Z: [number, number, number] = [-Math.PI / 2, 0, Math.PI / 2];
+
+/** Label stops along a corridor. On the normal grid this is 6, 14, 22, 30 and, across, 38. */
+function labelStops(limit: number): number[] {
+  const stops: number[] = [];
+  for (let i = 6; i < limit - 2; i += 8) stops.push(i);
+  return stops;
+}
 
 /** Place sparse labels along road corridors; skip water and intersections. */
 function buildStreetLabels(layout: CityLayout): StreetLabel[] {
@@ -43,9 +44,9 @@ function buildStreetLabels(layout: CityLayout): StreetLabel[] {
   };
 
   // Avenues (N–S): gx % 4 === 0
-  for (let gx = 4; gx < GRID_W - 2; gx += 4) {
+  for (let gx = 4; gx < layout.gridW - 2; gx += 4) {
     const corridor = gx / 4;
-    for (const gz of AVENUE_ROWS) {
+    for (const gz of labelStops(layout.gridH)) {
       if (gz % 4 === 0) continue;
       if (!isUsableRoad(gx, gz)) continue;
       const b = byKey.get(`${gx},${gz}`)!;
@@ -60,9 +61,9 @@ function buildStreetLabels(layout: CityLayout): StreetLabel[] {
   }
 
   // Streets (E–W): gz % 4 === 0
-  for (let gz = 4; gz < GRID_H - 2; gz += 4) {
+  for (let gz = 4; gz < layout.gridH - 2; gz += 4) {
     const corridor = gz / 4;
-    for (const gx of STREET_COLS) {
+    for (const gx of labelStops(layout.gridW)) {
       if (gx % 4 === 0) continue;
       if (!isUsableRoad(gx, gz)) continue;
       const b = byKey.get(`${gx},${gz}`)!;

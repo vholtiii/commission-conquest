@@ -10,6 +10,7 @@ import {
   type SaveSlotInfo,
 } from "@/engine/saveSlots";
 import type { GameLength, GameSettings } from "@/types/game";
+import { districtCount, mapSizeLabel, type MapSize } from "@/engine/mapSize";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { setAmbienceVolume } from "@/audio/ambience";
@@ -97,7 +98,7 @@ function SaveSlots() {
             </div>
             <p className="mt-1 text-[10px] text-muted-foreground">
               {info
-                ? `${info.family ?? "No family"} · week ${info.turn}${info.date ? ` · ${formatDate(info.date)}` : ""} · ${savedWhen(info.savedAt)}`
+                ? `${info.family ?? "No family"} · ${mapSizeLabel(info.mapSize)} map · week ${info.turn}${info.date ? ` · ${formatDate(info.date)}` : ""} · ${savedWhen(info.savedAt)}`
                 : "Empty. Type a name, then save."}
             </p>
 
@@ -172,6 +173,7 @@ export default function MenuPanel() {
   const updateSettings = useGameStore((s) => s.updateSettings);
   const [difficulty, setDifficulty] = useState<GameSettings["difficulty"]>(settings.difficulty);
   const [gameLength, setGameLength] = useState<GameLength>(settings.gameLength ?? "medium");
+  const [mapSize, setMapSize] = useState<MapSize>(settings.mapSize ?? "normal");
 
   return (
     <PanelShell title="Menu" subtitle="Save, load, or start over">
@@ -316,9 +318,33 @@ export default function MenuPanel() {
               </button>
             ))}
           </div>
+          <div className="mt-1.5 flex gap-1.5" role="group" aria-label="Map size">
+            {(
+              [
+                ["small", "Small"],
+                ["normal", "Normal"],
+                ["large", "Large"],
+              ] as const
+            ).map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                aria-pressed={mapSize === id}
+                onClick={() => setMapSize(id)}
+                className={`flex-1 rounded-md border px-2 py-1.5 text-[11px] ${
+                  mapSize === id
+                    ? "border-steel bg-steel/20 text-steel-light"
+                    : "border-panel-border bg-panel/50 hover:bg-panel-elevated"
+                }`}
+              >
+                <span className="block">{label}</span>
+                <span className="block text-[10px] opacity-80">{districtCount(id)} districts</span>
+              </button>
+            ))}
+          </div>
           <Button
             className="mt-2 w-full gap-2 bg-heat font-ui font-bold uppercase hover:bg-heat/80"
-            onClick={() => newGame({ difficulty, gameLength })}
+            onClick={() => newGame({ difficulty, gameLength, mapSize })}
           >
             <RotateCcw className="h-4 w-4" /> Start New Game
           </Button>

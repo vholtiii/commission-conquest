@@ -1,7 +1,7 @@
 import { useEffect, useRef, type MutableRefObject } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
-import type { CityLayout } from "@/engine/cityLayout";
+import { cameraPullback, type CityLayout } from "@/engine/cityLayout";
 import { useGameStore } from "@/engine/store";
 import { useMapView } from "@/engine/mapView";
 import { FOG_DENSITY } from "./Atmosphere";
@@ -17,7 +17,6 @@ const OVERVIEW_DIST_FAR = 110;
 const OVERVIEW_POLAR = 0.12;
 const NORMAL_FOG_DENSITY = FOG_DENSITY;
 const OVERVIEW_FOG_DENSITY = 0.0035;
-const MAX_DISTANCE = 150;
 const POLAR_BAND = 0.1;
 const POLAR_MIN_CLAMP = 0.05;
 const POLAR_MAX_CLAMP = 1.2;
@@ -66,7 +65,7 @@ function fitOverviewHeight(layout: CityLayout, camera: THREE.PerspectiveCamera):
   const aspect = Math.max(0.5, camera.aspect || 1);
   const byDepth = layout.depth / 2 / halfV;
   const byWidth = layout.width / 2 / (halfV * aspect);
-  return Math.min(MAX_DISTANCE, Math.max(95, 1.08 * Math.max(byDepth, byWidth)));
+  return Math.min(cameraPullback(layout.gridW), Math.max(95, 1.08 * Math.max(byDepth, byWidth)));
 }
 
 /** Animates the camera + controls target toward the selected district when flyToTerritoryId changes.

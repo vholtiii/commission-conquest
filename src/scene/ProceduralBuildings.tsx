@@ -3,7 +3,7 @@ import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import { Instance, Instances, Text } from "@react-three/drei";
 import type { CityLayout } from "@/engine/cityLayout";
-import { BLOCK_SIZE, GRID_W, ROAD_GAP, blockKey } from "@/engine/cityLayout";
+import { BLOCK_SIZE, ROAD_GAP, blockKey } from "@/engine/cityLayout";
 import type { FamilyName, Territory } from "@/types/game";
 import { FAMILY_HEX } from "@/types/game";
 import { useGameStore } from "@/engine/store";
@@ -101,7 +101,7 @@ function riverSheets(layout: CityLayout): RiverSheet[] {
     if (b.kind !== "water") continue;
     const key = cellKey(b.gx, b.gz);
     if (b.gx <= 2) west.push(key);
-    else if (b.gx >= GRID_W - 3) east.push(key);
+    else if (b.gx >= layout.gridW - 3) east.push(key);
     else south.push(key);
   }
   const sheets: RiverSheet[] = [];

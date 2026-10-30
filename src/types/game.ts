@@ -1484,6 +1484,8 @@ export interface GameSettings {
   difficulty: "easy" | "normal" | "hard";
   /** Short 30, medium 50, long 80. Copied onto victory.finalTurn at start. */
   gameLength?: GameLength;
+  /** Small trims the city, large adds the outer towns. Missing means the normal map. */
+  mapSize?: "small" | "normal" | "large";
   aiAggression: number;
   seed: number;
   /** When true, skip the hit cinematic and show the result immediately. */

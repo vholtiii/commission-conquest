@@ -5,6 +5,7 @@
 import type { CrewMember, FamilyName, GameState, Operation, TurnLogEntry } from "@/types/game";
 import { ALL_FAMILY_NAMES, getFamilyDef } from "@/data/families";
 import { districtsThatTouch } from "./cityLayout";
+import { mapDims } from "./mapSize";
 import { isDefunct } from "./defection";
 import { jailInCrew } from "./jail";
 import { resolveCrewTerritoryId } from "./crewLocation";
@@ -105,7 +106,7 @@ function hops(rng: Rng): number {
 }
 
 function trail(state: GameState, hideoutId: string, rng: Rng): string[] {
-  const adj = districtsThatTouch(state.territories);
+  const adj = districtsThatTouch(state.territories, mapDims(state.settings?.mapSize));
   const away = hops(rng);
   const walked = [hideoutId];
   const seen = new Set([hideoutId]);

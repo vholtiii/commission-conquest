@@ -1,5 +1,5 @@
 import type { FamilyName, RacketType, Territory } from "@/types/game";
-import { getCityLayout, getDistrictBlocks, type CityLayout } from "./cityLayout";
+import { getCityLayout, getDistrictBlocks, type CityLayout, type GridDims } from "./cityLayout";
 import { MAX_RACKETS_PER_DISTRICT } from "./economy";
 import { stampDistrictFeatures } from "./districtFeatures";
 
@@ -120,8 +120,9 @@ export function activeCrewIds(crew: { id: string; status: string }[]): Set<strin
 export function computeTerritorySlots(
   territories: Territory[],
   seed: number,
+  dims?: GridDims,
 ): Territory[] {
-  const layout = getCityLayout(territories, seed);
+  const layout = getCityLayout(territories, seed, dims);
   const slotted = territories.map((t) => {
     const buildingBlocks = buildingBlocksFor(layout, t.id);
     return {
@@ -130,13 +131,14 @@ export function computeTerritorySlots(
       racketSlots: slotsFromBlocks(buildingBlocks),
     };
   });
-  return stampDistrictFeatures(slotted, seed);
+  return stampDistrictFeatures(slotted, seed, dims);
 }
 
 /** Backfill slots on older saves that lack the fields (or still have 1-slot empty lots). */
 export function ensureTerritorySlots(
   territories: Territory[],
   seed: number,
+  dims?: GridDims,
 ): Territory[] {
   if (
     territories.length > 0 &&
@@ -148,9 +150,9 @@ export function ensureTerritorySlots(
         (t.buildingBlocks > 0 || t.racketSlots >= EMPTY_LOT_SLOTS),
     )
   ) {
-    return territories.every((t) => t.feature) ? territories : stampDistrictFeatures(territories, seed);
+    return territories.every((t) => t.feature) ? territories : stampDistrictFeatures(territories, seed, dims);
   }
-  return computeTerritorySlots(territories, seed);
+  return computeTerritorySlots(territories, seed, dims);
 }
 
 export function activeGarrisonSet(

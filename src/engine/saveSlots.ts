@@ -1,4 +1,5 @@
 import type { FamilyName, GameState } from "@/types/game";
+import type { MapSize } from "./mapSize";
 
 export const SAVE_SLOTS = [1, 2, 3, 4, 5] as const;
 export const SAVE_NAME_MAX = 40;
@@ -11,6 +12,8 @@ export interface SaveSlotInfo {
   turn: number;
   date: GameState["date"];
   family: FamilyName | null;
+  /** Missing on saves written before map size existed. Those are the normal map. */
+  mapSize?: MapSize;
 }
 
 const gameKey = (slot: number) => `commission_save_${slot}`;
@@ -40,6 +43,7 @@ export function readSlotInfo(slot: number): SaveSlotInfo | null {
       turn: loaded.turn ?? 1,
       date: loaded.date,
       family: loaded.playerFamily ?? null,
+      mapSize: loaded.settings?.mapSize ?? "normal",
     };
   } catch {
     return null;
@@ -67,6 +71,7 @@ export function writeSlot(
     turn: state.turn,
     date: state.date,
     family: state.playerFamily ?? null,
+    mapSize: state.settings.mapSize ?? "normal",
   };
   const previous = localStorage.getItem(gameKey(slot));
   const previousInfo = localStorage.getItem(infoKey(slot));

@@ -6,6 +6,18 @@ export const GRID_H = 36;
 export const BLOCK_SIZE = 2.2;
 export const ROAD_GAP = 0.55;
 
+export interface GridDims {
+  w: number;
+  h: number;
+}
+
+export const NORMAL_DIMS: GridDims = { w: GRID_W, h: GRID_H };
+
+/** Furthest the camera pulls back. Grows with the grid so a large map still fits. */
+export function cameraPullback(gridW: number): number {
+  return Math.round((150 * gridW) / GRID_W);
+}
+
 export type CellKind = "building" | "road" | "water" | "park";
 
 export interface CityBlock {
@@ -30,15 +42,28 @@ export interface CityLayout {
   centers: DistrictCenter[];
   width: number;
   depth: number;
+  gridW: number;
+  gridH: number;
 }
 
-function isWaterCell(gx: number, gz: number): boolean {
+/**
+ * A larger grid keeps the old city in the middle, block for block, and frames
+ * it with the same rivers. A smaller grid scales those features with the frame.
+ * The normal 48×36 grid takes neither path, so it stays where it is.
+ */
+function featureFrame(w: number, h: number): { ox: number; oz: number; sx: number; sy: number } {
+  if (w > GRID_W) return { ox: (w - GRID_W) / 2, oz: (h - GRID_H) / 2, sx: 1, sy: 1 };
+  return { ox: 0, oz: 0, sx: w / GRID_W, sy: h / GRID_H };
+}
+
+function isWaterCell(gx: number, gz: number, w: number, h: number): boolean {
+  const { ox, sx, sy } = featureFrame(w, h);
   // Hudson (west), East River (east corridor), harbor south
-  if (gx <= 2) return true;
-  if (gx >= GRID_W - 3 && gz > 8 && gz < GRID_H - 6) return true;
-  if (gz >= GRID_H - 3 && gx > 8 && gx < GRID_W - 8) return true;
-  // Central park-ish water / harbor bite
-  if (gx > 20 && gx < 26 && gz > GRID_H - 5) return true;
+  if (gx <= 2 * sx) return true;
+  if (gx >= w - 3 * sx && gz > 8 * sy && gz < h - 6 * sy) return true;
+  if (gz >= h - 3 * sy && gx > 8 * sx && gx < w - 8 * sx) return true;
+  // Harbor bite, kept with the original city when the grid grows
+  if (gx > 20 * sx + ox && gx < 26 * sx + ox && gz > h - 5 * sy) return true;
   return false;
 }
 
@@ -46,9 +71,18 @@ function isRoadCell(gx: number, gz: number): boolean {
   return gx % 4 === 0 || gz % 4 === 0;
 }
 
-function isParkCell(gx: number, gz: number): boolean {
+function isParkCell(gx: number, gz: number, w: number, h: number): boolean {
+  const { ox, oz, sx, sy } = featureFrame(w, h);
   // Central Park-ish + small greens
-  if (gx >= 18 && gx <= 24 && gz >= 12 && gz <= 20 && !isRoadCell(gx, gz)) return true;
+  if (
+    gx >= 18 * sx + ox &&
+    gx <= 24 * sx + ox &&
+    gz >= 12 * sy + oz &&
+    gz <= 20 * sy + oz &&
+    !isRoadCell(gx, gz)
+  ) {
+    return true;
+  }
   if ((gx + gz) % 17 === 0 && !isRoadCell(gx, gz)) return true;
   return false;
 }
@@ -72,22 +106,23 @@ function boroughHeightBias(borough: string): number {
 
 const layoutCache = new Map<string, CityLayout>();
 
-/** Geometry only depends on id, position, borough, and whether the lot is empty. */
+/** Geometry only depends on id, position, borough, whether the lot is empty, and the grid. */
 export function layoutCacheKey(
   territories: Pick<Territory, "id" | "x" | "y" | "borough" | "emptyLot">[],
   seed: number,
+  dims: GridDims = NORMAL_DIMS,
 ): string {
-  return `${seed}|${territories
+  return `${seed}|${dims.w}x${dims.h}|${territories
     .map((t) => `${t.id}:${t.x}:${t.y}:${t.borough}:${t.emptyLot ? 1 : 0}`)
     .join("|")}`;
 }
 
 /** Cached layout. Selection and slot math rebuild the grid only when the map changes. */
-export function getCityLayout(territories: Territory[], seed = 42): CityLayout {
-  const key = layoutCacheKey(territories, seed);
+export function getCityLayout(territories: Territory[], seed = 42, dims: GridDims = NORMAL_DIMS): CityLayout {
+  const key = layoutCacheKey(territories, seed, dims);
   const hit = layoutCache.get(key);
   if (hit) return hit;
-  const layout = buildCityLayout(territories, seed);
+  const layout = buildCityLayout(territories, seed, dims);
   layoutCache.set(key, layout);
   if (layoutCache.size > 4) {
     const oldest = layoutCache.keys().next().value;
@@ -96,10 +131,16 @@ export function getCityLayout(territories: Territory[], seed = 42): CityLayout {
   return layout;
 }
 
-export function buildCityLayout(territories: Territory[], seed = 42): CityLayout {
+export function buildCityLayout(
+  territories: Territory[],
+  seed = 42,
+  dims: GridDims = NORMAL_DIMS,
+): CityLayout {
   const rng = createRng(seed);
-  const width = GRID_W * (BLOCK_SIZE + ROAD_GAP);
-  const depth = GRID_H * (BLOCK_SIZE + ROAD_GAP);
+  const gridW = dims.w;
+  const gridH = dims.h;
+  const width = gridW * (BLOCK_SIZE + ROAD_GAP);
+  const depth = gridH * (BLOCK_SIZE + ROAD_GAP);
 
   const centers: DistrictCenter[] = territories.map((t) => {
     const worldX = (t.x / 100) * width - width / 2;
@@ -110,15 +151,15 @@ export function buildCityLayout(territories: Territory[], seed = 42): CityLayout
   const byId = new Map(territories.map((t) => [t.id, t]));
 
   const blocks: CityBlock[] = [];
-  for (let gz = 0; gz < GRID_H; gz++) {
-    for (let gx = 0; gx < GRID_W; gx++) {
+  for (let gz = 0; gz < gridH; gz++) {
+    for (let gx = 0; gx < gridW; gx++) {
       const worldX = gx * (BLOCK_SIZE + ROAD_GAP) - width / 2 + BLOCK_SIZE / 2;
       const worldZ = gz * (BLOCK_SIZE + ROAD_GAP) - depth / 2 + BLOCK_SIZE / 2;
 
       let kind: CellKind = "building";
-      if (isWaterCell(gx, gz)) kind = "water";
+      if (isWaterCell(gx, gz, gridW, gridH)) kind = "water";
       else if (isRoadCell(gx, gz)) kind = "road";
-      else if (isParkCell(gx, gz)) kind = "park";
+      else if (isParkCell(gx, gz, gridW, gridH)) kind = "park";
 
       let territoryId: string | null = null;
       if (kind === "building" || kind === "park" || kind === "road") {
@@ -153,7 +194,7 @@ export function buildCityLayout(territories: Territory[], seed = 42): CityLayout
     }
   }
 
-  return { blocks, centers, width, depth };
+  return { blocks, centers, width, depth, gridW, gridH };
 }
 
 export function getDistrictBlocks(layout: CityLayout, territoryId: string): CityBlock[] {
@@ -276,20 +317,23 @@ export function ensureRacketSites<T extends { siteIndex?: number }>(rackets: T[]
  */
 export function districtsThatTouch(
   territories: { id: string; x: number; y: number }[],
+  dims: GridDims = NORMAL_DIMS,
 ): Map<string, string[]> {
-  const width = GRID_W * (BLOCK_SIZE + ROAD_GAP);
-  const depth = GRID_H * (BLOCK_SIZE + ROAD_GAP);
+  const gridW = dims.w;
+  const gridH = dims.h;
+  const width = gridW * (BLOCK_SIZE + ROAD_GAP);
+  const depth = gridH * (BLOCK_SIZE + ROAD_GAP);
   const centers = territories.map((t) => ({
     id: t.id,
     worldX: (t.x / 100) * width - width / 2,
     worldZ: (t.y / 100) * depth - depth / 2,
   }));
-  const owner: (string | null)[][] = Array.from({ length: GRID_H }, () =>
-    Array<string | null>(GRID_W).fill(null),
+  const owner: (string | null)[][] = Array.from({ length: gridH }, () =>
+    Array<string | null>(gridW).fill(null),
   );
-  for (let gz = 0; gz < GRID_H; gz++) {
-    for (let gx = 0; gx < GRID_W; gx++) {
-      if (isWaterCell(gx, gz)) continue;
+  for (let gz = 0; gz < gridH; gz++) {
+    for (let gx = 0; gx < gridW; gx++) {
+      if (isWaterCell(gx, gz, gridW, gridH)) continue;
       const worldX = gx * (BLOCK_SIZE + ROAD_GAP) - width / 2 + BLOCK_SIZE / 2;
       const worldZ = gz * (BLOCK_SIZE + ROAD_GAP) - depth / 2 + BLOCK_SIZE / 2;
       let best = Infinity;
@@ -311,8 +355,8 @@ export function districtsThatTouch(
     [0, 1],
     [0, -1],
   ] as const;
-  for (let gz = 0; gz < GRID_H; gz++) {
-    for (let gx = 0; gx < GRID_W; gx++) {
+  for (let gz = 0; gz < gridH; gz++) {
+    for (let gx = 0; gx < gridW; gx++) {
       const a = owner[gz]![gx];
       if (!a) continue;
       for (const [dx, dz] of dirs) {

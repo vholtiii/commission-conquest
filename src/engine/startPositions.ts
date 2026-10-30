@@ -65,7 +65,11 @@ function inBand(pool: Territory[]): Territory[] {
  * Redistribute the districts the map marks as owned. Unowned ground stays
  * unowned. The same seed always deals the same city.
  */
-export function dealStartingHoldings(territories: Territory[], seed: number): StartingDeal {
+export function dealStartingHoldings(
+  territories: Territory[],
+  seed: number,
+  loosenSeats = false,
+): StartingDeal {
   const rng = createRng(seed + 17);
   const pooledIds = new Set(territories.filter((t) => t.owner).map((t) => t.id));
   const cleared = territories.map((t) => (pooledIds.has(t.id) ? { ...t, owner: null } : t));
@@ -159,6 +163,63 @@ export function dealStartingHoldings(territories: Territory[], seed: number): St
       if (moved) break;
     }
     if (!moved) break;
+  }
+
+  // A short pool can pin the expensive blocks as home seats, and those seats
+  // do not trade. On a small or large map a seat may move so the families
+  // still open within about ten percent. The normal map never asks for this.
+  if (loosenSeats && spread() > 0.1) {
+    const tradable = (family: FamilyName) =>
+      held(family).length > 1
+        ? [...held(family)].sort((a, b) => (scoreOf.get(a) ?? 0) - (scoreOf.get(b) ?? 0))
+        : [];
+    const parked = (family: FamilyName, id: string, previous: string | undefined) => {
+      if (previous === id) homeSeats[family] = held(family)[0];
+    };
+    for (let pass = 0; pass < 40 && spread() > 0.1; pass++) {
+      const ranked = [...families].sort((a, b) => total(b) - total(a));
+      const rich = ranked[0]!;
+      let moved = false;
+      for (let pi = ranked.length - 1; pi >= 1 && !moved; pi--) {
+        const poor = ranked[pi]!;
+        for (const gift of tradable(rich)) {
+          const before = imbalance();
+          const seat = homeSeats[rich];
+          ownerOf.set(gift, poor);
+          parked(rich, gift, seat);
+          if (improved(before, imbalance())) {
+            moved = true;
+            break;
+          }
+          ownerOf.set(gift, rich);
+          homeSeats[rich] = seat;
+        }
+      }
+      if (moved) continue;
+      const poor = ranked[ranked.length - 1]!;
+      for (const give of [...tradable(rich)].reverse()) {
+        for (const take of tradable(poor)) {
+          if ((scoreOf.get(give) ?? 0) <= (scoreOf.get(take) ?? 0)) continue;
+          const before = imbalance();
+          const richSeat = homeSeats[rich];
+          const poorSeat = homeSeats[poor];
+          ownerOf.set(give, poor);
+          ownerOf.set(take, rich);
+          parked(rich, give, richSeat);
+          parked(poor, take, poorSeat);
+          if (improved(before, imbalance())) {
+            moved = true;
+            break;
+          }
+          ownerOf.set(give, rich);
+          ownerOf.set(take, poor);
+          homeSeats[rich] = richSeat;
+          homeSeats[poor] = poorSeat;
+        }
+        if (moved) break;
+      }
+      if (!moved) break;
+    }
   }
 
   return {
