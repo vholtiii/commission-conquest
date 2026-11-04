@@ -43,7 +43,7 @@ import { applySuccession } from "./succession";
 import { territoryHops } from "./territoryHops";
 import { isDefunct, scatterFamily, settleRivalChair } from "./defection";
 import { startInterregnum } from "./interregnum";
-import { declareMourning, handsDown, tableHit } from "./mourning";
+import { declareFuneral, declareMourning, handsDown, isMadeMan, tableHit, commissionHeld } from "./mourning";
 import { pullForJob, releaseCrewHome } from "./jobReturn";
 import { noteErrandCasing, payCommissionKill } from "./commissionErrand";
 import { applyHitPractice } from "./practice";
@@ -1368,6 +1368,23 @@ export function resolveHit(
         turnLog: [...newState.turnLog, ...quiet.logs].slice(-200),
       };
     }
+  } else {
+    const madeDied =
+      (targetDead && isMadeMan(target?.role)) ||
+      casualtyDetail.some((d) => {
+        if (d.fate !== "dead") return false;
+        return isMadeMan(crew.find((c) => c.id === d.crewId)?.role);
+      });
+    if (madeDied) {
+      const quiet = declareFuneral(newState, false);
+      newState = quiet.state;
+      if (quiet.logs.length) {
+        newState = {
+          ...newState,
+          turnLog: [...newState.turnLog, ...quiet.logs].slice(-200),
+        };
+      }
+    }
   }
 
   if (state.playerFamily && op.targetFamily === state.playerFamily && op.family !== state.playerFamily) {
@@ -1749,7 +1766,7 @@ export function resolvePendingOperations(
       (!opts.skipFamily || o.family !== opts.skipFamily),
   );
   for (const op of pendingHits) {
-    if (handsDown(current) && !tableHit(op)) continue;
+    if (handsDown(current) && !(tableHit(op) && !commissionHeld(current))) continue;
     if (isDefunct(current, op.targetFamily)) {
       const stopped = scatterFamily(current, op.targetFamily, rng);
       current = stopped.state;

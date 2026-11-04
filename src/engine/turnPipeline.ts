@@ -68,7 +68,7 @@ import { walkIns } from "./recruiting";
 import { noteDrivingArrival, noteHitmanPride, tickJobPractice } from "./practice";
 import { expireFreeAgents, settleRivalChair } from "./defection";
 import { playerLeaderless, startInterregnum, tickInterregnum } from "./interregnum";
-import { handsDown, tableHit } from "./mourning";
+import { commissionHeld, handsDown, tableHit } from "./mourning";
 import { applyWeeklyStreet } from "./standing";
 import { expireDinner } from "./dinner";
 import { tickCommissionErrand } from "./commissionErrand";
@@ -105,7 +105,7 @@ export function resolvePlayerHits(
     (o) => !o.resolved && o.kind === "hit" && o.family === player && o.pendingTurns <= 1,
   );
   for (const planned of ready) {
-    if (handsDown(current) && !tableHit(planned)) continue;
+    if (handsDown(current) && !(tableHit(planned) && !commissionHeld(current))) continue;
     let op = planned;
     if (op.pendingTurns > 0 && !op.tippedOff && rng.chance(tipOffChance(current, op))) {
       op = { ...op, tippedOff: true };

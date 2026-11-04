@@ -3,9 +3,14 @@ import { createRacket } from "@/engine/economy";
 import {
   applyWarehouseShrinkage,
   depositTracked,
+  feedsOwnSpeakeasies,
   idleStorageCost,
   makeManagerLookup,
   markWarehouseProof,
+  planFeedSpeakeasy,
+  pourLocalCook,
+  produceAndStore,
+  productionOutput,
   pullFrom,
 } from "@/engine/liquor";
 import { buildInitialState, startGame } from "@/engine/initialState";
@@ -82,5 +87,40 @@ describe("warehouse stock", () => {
     expect(idleStorageCost(full, state.turn)).toBe(0);
     const empty: Territory = { ...home, rackets: [racket("warehouse", 0)] };
     expect(idleStorageCost(empty, state.turn)).toBe(6);
+  });
+});
+
+describe("same-block still", () => {
+  it("refuses a warehouse truck when a still is on the block", () => {
+    const state = started();
+    const home = state.territories.find((t) => t.owner === "Moretti")!;
+    const block: Territory = {
+      ...home,
+      rackets: [racket("still", 0, { id: "cook" }), racket("speakeasy", 0, { id: "bar" })],
+    };
+    expect(feedsOwnSpeakeasies(block, state.turn)).toBe(true);
+    const plan = planFeedSpeakeasy(
+      { ...state, territories: state.territories.map((t) => (t.id === home.id ? block : t)) },
+      home.id,
+    );
+    expect(plan.ok).toBe(false);
+    if (!plan.ok) expect(plan.reason).toBe("The still on this block pours when the week closes");
+  });
+
+  it("pours this week's cook into a dry bar on the same block", () => {
+    const state = started();
+    const home = state.territories.find((t) => t.owner === "Moretti")!;
+    const still = racket("still", 0, { id: "cook" });
+    const block: Territory = {
+      ...home,
+      rackets: [still, racket("speakeasy", 0, { id: "bar" })],
+    };
+    const cooked = produceAndStore(block, state.turn);
+    const poured = pourLocalCook(cooked.territory);
+    const cook = poured.rackets.find((r) => r.id === "cook")!;
+    const bar = poured.rackets.find((r) => r.id === "bar")!;
+    expect(cooked.produced).toBe(productionOutput(still));
+    expect(bar.stock).toBe(cooked.produced);
+    expect(cook.stock).toBe(0);
   });
 });

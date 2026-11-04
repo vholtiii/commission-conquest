@@ -471,7 +471,7 @@ function RoutesTab() {
             {shownCount} of {drawableIds.length} on the map
             <span
               className="ml-1 inline-block h-[3px] w-5 align-middle"
-              style={{ borderTop: `2px dotted ${MAP_STATUS.supplyRoute}` }}
+              style={{ borderTop: `2px dashed ${MAP_STATUS.supplyRoute}` }}
             />
           </span>
           <button
@@ -524,7 +524,7 @@ function RoutesTab() {
               >
                 <span
                   className="inline-block h-[3px] w-4 shrink-0"
-                  style={{ borderTop: `2px dotted ${shown.has(r.id) ? MAP_STATUS.supplyRoute : MAP_STATUS.supplyOption}` }}
+                  style={{ borderTop: `2px dashed ${shown.has(r.id) ? MAP_STATUS.supplyRoute : MAP_STATUS.supplyOption}` }}
                 />
                 <span className="truncate">
                   {nameOf(r.sourceTerritoryId)} → {nameOf(r.destTerritoryId)}

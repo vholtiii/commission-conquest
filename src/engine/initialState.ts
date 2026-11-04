@@ -358,6 +358,7 @@ export function buildInitialState(
     mattresses: null,
     mattressReadyUntil: 0,
     mourningUntil: 0,
+    mourningForBoss: false,
     ratAffair: null,
     making: null,
     consigliereNote: null,

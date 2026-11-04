@@ -29,6 +29,7 @@ import SitdownResultModal from "./panels/SitdownResultModal";
 import CommissionRulingModal from "./panels/CommissionRulingModal";
 import DealSettlementModal from "./panels/DealSettlementModal";
 import PanelShell from "./panels/PanelShell";
+import FuneralQuietNote from "./FuneralQuietNote";
 import HitCaptions from "./HitCaptions";
 import SitdownTable from "./SitdownTable";
 import MapLegend from "./MapLegend";
@@ -122,6 +123,7 @@ function OperationsOverviewPanel() {
 
   return (
     <PanelShell title="Operations" subtitle={`${ops.length} pending`}>
+      <FuneralQuietNote />
       <div className="space-y-1.5">
         {ops.length === 0 && (
           <p className="text-xs text-muted-foreground">

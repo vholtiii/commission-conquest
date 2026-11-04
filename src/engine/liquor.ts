@@ -243,6 +243,15 @@ function localSupplyStock(t: Territory, turn: number): number {
   return n;
 }
 
+/** A still, brewery, or open warehouse on this block feeds the bar when the week closes. Stock can be empty. */
+export function feedsOwnSpeakeasies(t: Territory, turn = 0): boolean {
+  return t.rackets.some((r) => {
+    if (r.type === "still" || r.type === "brewery") return true;
+    if (r.type === "warehouse") return !frozen(r, turn);
+    return false;
+  });
+}
+
 /**
  * Pick arguments for an existing delivery that restocks a dry speakeasy.
  * Does not move crates — callers pass the result to startDelivery.
@@ -266,6 +275,9 @@ export function planFeedSpeakeasy(
 
   if (localSupplyStock(dest, state.turn) > 0) {
     return { ok: false, reason: "Local stock will refill it next turn" };
+  }
+  if (dest.rackets.some((r) => r.type === "still" || r.type === "brewery")) {
+    return { ok: false, reason: "The still on this block pours when the week closes" };
   }
   if (!hasWarehouse(dest, state.turn)) {
     return { ok: false, reason: "Build a warehouse here to receive crates" };
@@ -699,6 +711,39 @@ export function supplySpeakeasies(
     territory = { ...territory, rackets };
   }
   void lookup;
+  return territory;
+}
+
+/** After the cook: pour stills and breweries into bars on this block. Leaves the warehouse alone. */
+export function pourLocalCook(t: Territory): Territory {
+  const speaks = t.rackets.filter((r) => r.type === "speakeasy");
+  if (speaks.length === 0) return t;
+
+  let territory = t;
+  for (const speak of speaks) {
+    const need = Math.max(0, stockCap(speak) - speak.stock);
+    if (need <= 0) continue;
+    const rackets = territory.rackets.map((r) => ({ ...r }));
+    let remaining = need;
+    let proofed = 0;
+    for (const type of ["still", "brewery"] as RacketType[]) {
+      if (remaining <= 0) break;
+      for (const r of rackets) {
+        if (r.type !== type || r.stock <= 0) continue;
+        const got = pullFrom(r, remaining);
+        remaining -= got.take;
+        proofed += got.proofed;
+      }
+    }
+    const got = need - remaining;
+    if (got <= 0) continue;
+    for (const r of rackets) {
+      if (r.id !== speak.id) continue;
+      r.stock += got;
+      r.proofed = proofCount(r) + proofed;
+    }
+    territory = { ...territory, rackets };
+  }
   return territory;
 }
 

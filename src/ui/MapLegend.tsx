@@ -204,10 +204,10 @@ export default function MapLegend() {
             </div>
             <div className="flex items-center gap-2">
               <span
-                className="inline-block h-0.5 w-3.5 border-t-2 border-dotted"
+                className="inline-block h-0.5 w-3.5 border-t-2 border-dashed"
                 style={{ borderColor: MAP_STATUS.supplyRoute }}
               />{" "}
-              Supply route — ring at the start, arrow at the stop
+              Supply route — dashed square on the warehouse, circle on the speakeasy, arrow at the stop
             </div>
           </div>
         </div>

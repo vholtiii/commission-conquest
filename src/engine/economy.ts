@@ -36,6 +36,7 @@ import {
   mergeLedger,
   produceAndStore,
   productionOutput,
+  pourLocalCook,
   sellSpeakeasies,
   stashHeat,
   stockCap,
@@ -1528,7 +1529,7 @@ export function processEconomyTurn(
       updated = supplySpeakeasies(updated, state.turn, lookup);
 
       const prod = produceAndStore(updated, state.turn, lookup, bossHere);
-      updated = prod.territory;
+      updated = pourLocalCook(prod.territory);
       ledger = mergeLedger(ledger, {
         produced: prod.produced,
         dumped: prod.dumped,

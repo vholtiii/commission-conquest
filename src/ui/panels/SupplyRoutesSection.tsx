@@ -24,7 +24,7 @@ import {
   threatFamily,
 } from "@/engine/supplyRoutes";
 import { activeDeal, termsText } from "@/engine/passage";
-import { districtStorage, makeManagerLookup } from "@/engine/liquor";
+import { districtStorage, feedsOwnSpeakeasies, makeManagerLookup } from "@/engine/liquor";
 import { seizureCover } from "@/engine/safehouse";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -311,10 +311,10 @@ export default function SupplyRoutesSection() {
               onGoTo={() => selectTerritory(r.destTerritoryId, { toastLabel: "Supply route" })}
             />
           ))}
-          <Tip content="Click a standing route to trace it on the map in dotted purple.">
+          <Tip content="Click a standing route to trace it on the map in purple along the streets.">
             <p className="text-[9px] text-muted-foreground">
               Click a route to trace it. The ring is the start, the arrow the stop
-              <span className="ml-1 inline-block h-[3px] w-5 align-middle" style={{ borderTop: `2px dotted ${MAP_STATUS.supplyRoute}` }} />
+              <span className="ml-1 inline-block h-[3px] w-5 align-middle" style={{ borderTop: `2px dashed ${MAP_STATUS.supplyRoute}` }} />
             </p>
           </Tip>
         </div>
@@ -377,7 +377,7 @@ export default function SupplyRoutesSection() {
                     </select>
                   </label>
                 </Tip>
-                <Tip content="Warehouse or speakeasy that receives crates. Dry speakeasies need a route.">
+                <Tip content="Warehouse or speakeasy that receives crates. Dry speakeasies in another district need a route. A still on the same block pours when the week closes.">
                   <label className="block text-[10px] text-muted-foreground">
                     To
                     <select
@@ -386,7 +386,9 @@ export default function SupplyRoutesSection() {
                     className="mt-0.5 w-full rounded-md border border-panel-border bg-panel/60 px-2 py-1 text-xs text-foreground"
                   >
                     {destChoices.map((t) => {
-                      const dry = t.rackets.some((r) => r.type === "speakeasy" && r.stock === 0);
+                      const dry =
+                        !feedsOwnSpeakeasies(t, turn) &&
+                        t.rackets.some((r) => r.type === "speakeasy" && r.stock === 0);
                       return (
                         <option key={t.id} value={t.id}>
                           {t.name}
@@ -407,7 +409,7 @@ export default function SupplyRoutesSection() {
                   {options.length > 1 && (
                     <Tip content="The chosen road is the purple line on the map. Hover another chip to swap it.">
                       <span className="flex items-center gap-1 text-[9px] text-muted-foreground">
-                        <span className="inline-block h-[3px] w-4" style={{ borderTop: `2px dotted ${MAP_STATUS.supplyRoute}` }} />
+                        <span className="inline-block h-[3px] w-4" style={{ borderTop: `2px dashed ${MAP_STATUS.supplyRoute}` }} />
                         chosen road
                       </span>
                     </Tip>
@@ -667,7 +669,7 @@ function StrategyChips({
               <span
                 className="inline-block h-[3px] w-3 shrink-0"
                 style={{
-                  borderTop: `2px dotted ${!option ? "transparent" : active ? MAP_STATUS.supplyRoute : MAP_STATUS.supplyOption}`,
+                  borderTop: `2px dashed ${!option ? "transparent" : active ? MAP_STATUS.supplyRoute : MAP_STATUS.supplyOption}`,
                 }}
               />
               {label}
@@ -791,7 +793,7 @@ export function RouteRow({
   onToggle: () => void;
   onHot: (v: boolean) => void;
   onTalk: () => void;
-  /** Toggle the dotted road on the map. */
+  /** Toggle the purple road on the map. */
   onFocus: () => void;
   /** Tooltip while the road is hidden, then while it is shown. */
   focusTips?: [string, string];
@@ -829,7 +831,7 @@ export function RouteRow({
           >
             <span
               className="inline-block h-[3px] w-4 shrink-0"
-              style={{ borderTop: `2px dotted ${focused ? MAP_STATUS.supplyRoute : MAP_STATUS.supplyOption}` }}
+              style={{ borderTop: `2px dashed ${focused ? MAP_STATUS.supplyRoute : MAP_STATUS.supplyOption}` }}
             />
             <span className="truncate">
               {nameOf(route.sourceTerritoryId)} → {nameOf(route.destTerritoryId)}

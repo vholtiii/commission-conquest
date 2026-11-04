@@ -7,7 +7,7 @@ import {
   hotHighRanks,
 } from "@/engine/commissionErrand";
 import { WARRANT } from "@/engine/heat";
-import { handsDown } from "@/engine/mourning";
+import { commissionHeld, handsDown } from "@/engine/mourning";
 import { Button } from "@/components/ui/button";
 
 const SELECT = "w-full rounded-md border border-panel-border bg-panel/60 px-2 py-1.5 text-xs";
@@ -21,6 +21,7 @@ export default function CommissionErrandCard() {
   const playerFamily = useGameStore((s) => s.playerFamily);
   const heat = useGameStore((s) => s.heat.level);
   const funeral = useGameStore((s) => handsDown(s));
+  const tableHeld = useGameStore((s) => commissionHeld(s));
   const accept = useGameStore((s) => s.acceptCommissionErrand);
   const decline = useGameStore((s) => s.declineCommissionErrand);
   const caseLead = useGameStore((s) => s.caseCommissionErrand);
@@ -119,7 +120,7 @@ export default function CommissionErrandCard() {
               </option>
             ))}
           </select>
-          <Button size="sm" className="h-7 text-xs" disabled={!lookout || left <= 0} onClick={() => caseLead(lookout)}>
+          <Button size="sm" className="h-7 text-xs" disabled={!lookout || left <= 0 || tableHeld} onClick={() => caseLead(lookout)}>
             Case {lead}
           </Button>
           {left <= 0 && (
@@ -185,10 +186,10 @@ export default function CommissionErrandCard() {
               {WARRANT.wantedFloor}. This heat can put them on a warrant.
             </p>
           )}
-          <Button size="sm" className="h-7 text-xs" onClick={send}>
+          <Button size="sm" className="h-7 text-xs" disabled={tableHeld} onClick={send}>
             Hit him in {hideout}
           </Button>
-          {funeral && (
+          {funeral && !tableHeld && (
             <p className="text-[11px] text-muted-foreground">
               A funeral holds the city. The table's order still goes out.
             </p>

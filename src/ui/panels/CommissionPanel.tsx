@@ -53,6 +53,7 @@ import {
 } from "@/engine/commission";
 import PortraitAvatar from "@/ui/PortraitAvatar";
 import CommissionErrandCard from "./CommissionErrandCard";
+import FuneralQuietNote from "@/ui/FuneralQuietNote";
 
 const DIPLOMACY_ACTIONS: { id: DiplomacyAction; label: string; war?: boolean }[] = [
   { id: "sitdown", label: "Sit-down" },
@@ -104,6 +105,7 @@ export default function CommissionPanel() {
 
   return (
     <PanelShell title="The Commission" subtitle="Standing among the families">
+      <FuneralQuietNote />
       <CommissionErrandCard />
       <Standings />
       <CommissionHealthBlock />

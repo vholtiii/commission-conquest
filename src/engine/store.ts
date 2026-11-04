@@ -155,7 +155,7 @@ import {
   type TableAnswer,
 } from "./sitdowns";
 import { breakDeal, fulfilLiquorDeal, inTruce } from "./deals";
-import { handsDown } from "./mourning";
+import { commissionHeld, funeralWeeksLeft, handsDown, hydrateMourningForBoss } from "./mourning";
 import { answerRuling as settleRuling, lobbySeat as buySeat, openCommissionCall, openWarCall } from "./commission";
 import {
   answerCoverRequest,
@@ -1597,7 +1597,7 @@ export const useGameStore = create<GameStore>()(
           return;
         }
         if (handsDown(s)) {
-          const left = (s.mourningUntil ?? 0) - s.turn;
+          const left = funeralWeeksLeft(s);
           toast.error("The city is quiet", {
             description: `A funeral holds the families for ${left} more week${left === 1 ? "" : "s"}. Nobody gets shot.`,
           });
@@ -2342,8 +2342,8 @@ export const useGameStore = create<GameStore>()(
           toast.error("Too late to case", { description: "A report would come back after the seven weeks." });
           return;
         }
-        if (handsDown(s)) {
-          toast.error("The city is quiet", { description: "A funeral holds the families. Nobody goes out." });
+        if (commissionHeld(s)) {
+          toast.error("The city is quiet", { description: "A boss is in the ground. The table stands down too." });
           return;
         }
         if (dinnerActive(s)) {
@@ -2438,7 +2438,11 @@ export const useGameStore = create<GameStore>()(
           toast.error("The hit is already out.");
           return;
         }
-        // A funeral holds every other hit. The table's order still goes out.
+        // A street funeral holds every other hit. A boss funeral holds the table too.
+        if (commissionHeld(s)) {
+          toast.error("The city is quiet", { description: "A boss is in the ground. The table stands down too." });
+          return;
+        }
         const duringFuneral = handsDown(s);
         if (dinnerActive(s)) {
           toast.error("The family is at the table");
@@ -3060,6 +3064,7 @@ export const useGameStore = create<GameStore>()(
             mattresses: loaded.mattresses ?? null,
             mattressReadyUntil: loaded.mattressReadyUntil ?? 0,
             mourningUntil: loaded.mourningUntil ?? 0,
+            mourningForBoss: hydrateMourningForBoss(loaded),
             ratAffair: loaded.ratAffair ?? null,
             activePanel: "none",
           });
@@ -3270,6 +3275,7 @@ export const useGameStore = create<GameStore>()(
           mattresses: p.mattresses ?? null,
           mattressReadyUntil: p.mattressReadyUntil ?? 0,
           mourningUntil: p.mourningUntil ?? 0,
+          mourningForBoss: hydrateMourningForBoss(p),
           supplyRoutes: repairRoutePaths(
             territories,
             p.supplyRoutes ?? current.supplyRoutes ?? [],

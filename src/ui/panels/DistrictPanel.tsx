@@ -4,7 +4,7 @@ import { useGameStore } from "@/engine/store";
 import { getFamilyDef } from "@/data/families";
 import { FAMILY_HEX, RACKET_LABELS, type RacketType } from "@/types/game";
 import { racketIncome, racketCrewBonusPct, racketPayment, isLegitBusiness, isRacketFrozen, launderCap, launderSiteStatus, fundingLabel, racketFunding, hijackRisk, needsManager, canManageRacket, legitCoverWantedDrop } from "@/engine/economy";
-import { isProducerType, isStorageType, planFeedSpeakeasy, stockCap, warehouseManagerEffectText } from "@/engine/liquor";
+import { feedsOwnSpeakeasies, isProducerType, isStorageType, planFeedSpeakeasy, stockCap, warehouseManagerEffectText } from "@/engine/liquor";
 import { activeCrewIds, isUnguarded, maxRacketsFor, lotTier, lotTierHint, lotTierLabel, allowedRacketTypes } from "@/engine/territoryValue";
 import { RACKET_VISUALS } from "@/data/racketVisuals";
 import { emptyIntel, hiddenCountIn, hasFreshCasing, spottedThisTurn, visibleCrewIn } from "@/engine/intel";
@@ -953,6 +953,7 @@ export default function DistrictPanel() {
 
         <div className="flex flex-col gap-2 pt-2">
           {isOwned &&
+            !feedsOwnSpeakeasies(territory, turn) &&
             territory.rackets.some(
               (r) => r.type === "speakeasy" && r.stock === 0 && !isRacketFrozen(r, turn),
             ) && (

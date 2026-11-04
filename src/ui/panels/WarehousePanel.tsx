@@ -18,6 +18,7 @@ import {
 } from "@/engine/economy";
 import {
   districtStorage,
+  feedsOwnSpeakeasies,
   hasManagedWarehouse,
   hasWarehouse,
   idleStorageCost,
@@ -135,8 +136,10 @@ export default function WarehousePanel() {
   const crates = playerFamily ? totalCrates(liquorState, playerFamily) : 0;
   const cap = playerFamily ? totalCapacity(liquorState, playerFamily) : 0;
 
-  const drySpeakeasies = owned.some((t) =>
-    t.rackets.some((r) => r.type === "speakeasy" && r.stock === 0),
+  const drySpeakeasies = owned.some(
+    (t) =>
+      !feedsOwnSpeakeasies(t, turn) &&
+      t.rackets.some((r) => r.type === "speakeasy" && r.stock === 0),
   );
   const totalIdleCost = owned.reduce(
     (sum, t) => sum + idleStorageCost(t, turn, lookup),

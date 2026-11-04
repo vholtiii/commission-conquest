@@ -18,6 +18,7 @@ import { attributeCinematic, attributionLabel } from "@/engine/attribution";
 import { coverFire, getawayCover, isLaidLow, laidLowHouse, safehouseHitPenalty } from "@/engine/safehouse";
 import { dinnerActive } from "@/engine/dinner";
 import { handsDown } from "@/engine/mourning";
+import FuneralQuietNote from "@/ui/FuneralQuietNote";
 import { freeCrewOf } from "@/engine/crews";
 import { canJoinHit } from "@/engine/jobReturn";
 import {
@@ -246,7 +247,6 @@ export default function HitPlanner() {
   const message = sendMessage && messageEligible;
   const atTable = dinnerActive(state);
   const quiet = handsDown(state);
-  const quietWeeks = Math.max(0, (state.mourningUntil ?? 0) - state.turn);
   const canOrder =
     !quiet &&
     !atTable &&
@@ -676,11 +676,10 @@ export default function HitPlanner() {
           </div>
         </div>
 
-        {!canOrder && (
+        {quiet && <FuneralQuietNote />}
+        {!canOrder && !quiet && (
           <p className="text-[11px] text-heat">
-            {quiet
-              ? `The city is quiet for a funeral. ${quietWeeks} week${quietWeeks === 1 ? "" : "s"} left.`
-              : atTable
+            {atTable
               ? "The family is at the table"
               : missing.length > 0
               ? `Still need: ${missing.join(", ")}`

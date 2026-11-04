@@ -1663,8 +1663,10 @@ export interface GameState {
   mattresses?: { startTurn: number; reason: "war" | "hit" } | null;
   /** Exclusive turn the boss can still call the mattresses after a hit on the family. */
   mattressReadyUntil?: number;
-  /** Exclusive turn the city may order hits again. A boss's death sets this three weeks out. */
+  /** Exclusive turn the city may order hits again. A funeral sets this weeks out. */
   mourningUntil?: number;
+  /** True when the quiet is for a boss. The table stands down only then. */
+  mourningForBoss?: boolean;
   /**
    * The chair is empty. The family has until `deadline` to crown an underboss
    * or the game (or, for a rival, the family) ends.
@@ -1894,9 +1896,9 @@ export const MAP_STATUS = {
   vendetta: "#3FE0D0",
   /** Unclaimed / neutral. */
   neutral: "#7a7f87",
-  /** Supply route the player clicked, or the road chosen for a new one (dotted). */
+  /** Supply route the player clicked, or the road chosen for a new one. */
   supplyRoute: "#B266FF",
-  /** Other roads on offer for a new supply route (dotted). */
+  /** Other roads on offer for a new supply route. */
   supplyOption: "#8a8f98",
 } as const;
 
