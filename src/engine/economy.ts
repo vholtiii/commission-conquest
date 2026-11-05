@@ -605,6 +605,22 @@ export function racketIncome(
   return Math.floor(base * (1 + incomeBonus) * managerMult * placementMult);
 }
 
+/** Why this manager's take is better (or worse) than an empty chair. */
+export function incomeManagerEffectText(manager?: CrewMember | null): string {
+  if (!manager || manager.status !== "active") return "Unmanaged −30% take";
+  const parts: string[] = [];
+  if (manager.traits.includes("bookkeeper")) parts.push("bookkeeper +8%");
+  if (manager.traits.includes("smooth_talker")) parts.push("smooth talker +5%");
+  return parts.length > 0 ? parts.join(" · ") : "Full take";
+}
+
+export function incomeManagerPickHint(member: CrewMember): string {
+  const parts: string[] = [];
+  if (member.traits.includes("bookkeeper")) parts.push("bookkeeper +8%");
+  if (member.traits.includes("smooth_talker")) parts.push("smooth talker +5%");
+  return parts.join(" · ");
+}
+
 /** The crew's share of a managed racket's income, for the breakdown line. */
 export function racketCrewBonusPct(manager: CrewMember | null | undefined, crew: CrewMember[]): number {
   return Math.round((crewIncomeMult(manager, crew) - 1) * 100);
@@ -1466,7 +1482,12 @@ export function processEconomyTurn(
     let pool = 0;
     territories = territories.map((t) => {
       if (t.owner !== family) return t;
-      const { territory: produced } = produceAndStore(t, state.turn, undefined, t.id === bossBlock);
+      const { territory: produced } = produceAndStore(
+        t,
+        state.turn,
+        makeManagerLookup(state.crew, family),
+        t.id === bossBlock,
+      );
       let sum = 0;
       const cleared = produced.rackets.map((r) => {
         if (!["still", "brewery", "warehouse", "speakeasy"].includes(r.type)) {
@@ -1534,11 +1555,11 @@ export function processEconomyTurn(
         produced: prod.produced,
         dumped: prod.dumped,
         cashIn: prod.dumpCash,
-        heat: prod.dumpHeat,
+        heat: prod.dumpHeat + prod.cookHeat,
       });
       dirtyDelta += prod.dumpCash;
       dumpedCash += prod.dumpCash;
-      heatDelta += prod.dumpHeat;
+      heatDelta += prod.dumpHeat + prod.cookHeat;
       if (prod.backedUp) {
         logs.push({
           id: `log_dump_${state.turn}_${t.id}`,

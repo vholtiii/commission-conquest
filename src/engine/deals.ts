@@ -24,8 +24,10 @@ import type { Rng } from "./rng";
 import { setRelationDelta } from "./relations";
 import { hasPact } from "./diplomacy";
 import { rivalPactBetween } from "./ai/rivalPacts";
-import { withdrawCrates, withdrawFamilyWarehouses, depositTracked, PROOF_PREMIUM, makeManagerLookup } from "./liquor";
+import { withdrawCrates, withdrawWarehouse, depositTracked, PROOF_PREMIUM, makeManagerLookup } from "./liquor";
 import { CRATE_STREET_VALUE } from "./passage";
+import { familyHq } from "./crewLocation";
+import { dropDealRoutes, isDealRoute } from "./supplyRoutes";
 import { racketIncome } from "./economy";
 import { HONOR_RESPECT } from "./standing";
 import { handsDown } from "./mourning";
@@ -273,22 +275,34 @@ function settleCash(state: GameState, other: FamilyName, cash: number): GameStat
  * When the player owed the job, negative cash comes to him; when the rival
  * owed it, the player pays the positive cash he promised.
  */
-export function honorDeal(state: GameState, dealId: string): { state: GameState; log?: TurnLogEntry } {
+export function honorDeal(
+  state: GameState,
+  dealId: string,
+  opts?: { skipCash?: boolean; text?: string },
+): { state: GameState; log?: TurnLogEntry } {
   const deal = (state.deals ?? []).find((d) => d.id === dealId);
   const player = state.playerFamily;
   if (!deal || !isLive(deal, state.turn) || !player) return { state };
   const other = dealPartner(state, deal);
   const theyOwed = !!deal.obligor && deal.obligor !== player;
-  const cash = deal.terms.calledIn ? 0 : theyOwed ? Math.max(0, deal.terms.cash) : Math.min(0, deal.terms.cash);
+  const cash = opts?.skipCash
+    ? 0
+    : deal.terms.calledIn
+      ? 0
+      : theyOwed
+        ? Math.max(0, deal.terms.cash)
+        : Math.min(0, deal.terms.cash);
   const next = settleCash(state, other, cash);
   const amount = Math.abs(cash);
   let text: string;
-  if (deal.terms.calledIn) {
+  if (opts?.text) {
+    text = opts.text;
+  } else if (deal.terms.calledIn) {
     text = `The favor is paid. ${other} calls it square.`;
   } else if (theyOwed) {
     text = `${other} did the job on ${deal.terms.targetFamily}. You pay the $${amount} you promised.`;
   } else if (deal.kind === "liquor") {
-    text = `The crates reached ${other}'s speakeasy. $${amount} for your trouble.`;
+    text = `The crates reached ${other}'s house. $${amount} for your trouble.`;
   } else {
     text = `${other} pays $${amount}: the job they asked for is done.`;
   }
@@ -411,8 +425,8 @@ export function contractedTargets(state: DealState, family: FamilyName): FamilyN
 }
 
 /**
- * A standing liquor sale: crates leave your barns for their bar, and they
- * pay for what actually arrives. A short week is only a line in the log.
+ * A liquor order on an opened deal-route: crates leave the chosen barn for
+ * their HQ. A send that lands is paid; a send that fails breaks the deal.
  */
 export function shipStandingLiquor(state: GameState): { state: GameState; logs: TurnLogEntry[] } {
   const logs: TurnLogEntry[] = [];
@@ -423,13 +437,14 @@ export function shipStandingLiquor(state: GameState): { state: GameState; logs: 
   const price = Math.round(CRATE_STREET_VALUE * 1.5);
 
   for (const deal of state.deals ?? []) {
-    if (deal.status !== "active" || deal.kind !== "liquor" || !deal.terms.weekly) continue;
+    if (deal.status !== "active" || deal.kind !== "liquor") continue;
     if (!isLive(deal, next.turn)) continue;
     const other = dealPartner(next, deal);
-    const dest = next.territories.find((t) => t.id === deal.terms.destTerritoryId);
-    const bar = dest?.rackets.some((r) => r.type === "speakeasy");
-    if (!dest || dest.owner !== other || !bar) {
-      const text = `${other} lost the bar. The standing order ends.`;
+    const hqId = familyHq(next, other);
+    const dest = hqId ? next.territories.find((t) => t.id === hqId) : undefined;
+    if (!dest || dest.owner !== other) {
+      const text = `${other} lost the house. The standing order ends.`;
+      next = dropDealRoutes(next, deal.id);
       next = {
         ...next,
         deals: next.deals.map((d) =>
@@ -447,29 +462,43 @@ export function shipStandingLiquor(state: GameState): { state: GameState; logs: 
       continue;
     }
 
-    const want = deal.terms.crates ?? 4;
-    const drawn = withdrawFamilyWarehouses(next.territories, player, want, next.turn, lookup);
-    let territories = drawn.territories;
-    const landed = depositTracked(dest, drawn.moved, drawn.proofed, "speakeasy", next.turn);
-    territories = territories.map((t) => (t.id === dest.id ? landed.territory : t));
-    let backN = landed.overflow;
-    let backProof = Math.max(0, drawn.proofed - landed.proofedLanded);
-    for (const t of territories) {
-      if (backN <= 0) break;
-      if (t.owner !== player) continue;
-      const back = depositTracked(t, backN, Math.min(backProof, backN), "warehouseOnly", next.turn, lookup);
-      territories = territories.map((x) => (x.id === t.id ? back.territory : x));
-      const returned = backN - back.overflow;
-      backProof = Math.max(0, backProof - Math.min(backProof, returned));
-      backN = back.overflow;
+    const route = (next.supplyRoutes ?? []).find(
+      (r) => isDealRoute(r) && r.dealId === deal.id && r.status === "active",
+    );
+    if (!route) {
+      logs.push({
+        id: `log_liquor_week_${deal.id}_${next.turn}`,
+        turn: next.turn,
+        category: "delivery",
+        text: `Standing order: no truck left the barn for ${other} this week.`,
+        family: player,
+      });
+      continue;
     }
 
-    const moved = landed.moved;
+    const src = next.territories.find((t) => t.id === route.sourceTerritoryId);
+    const want = route.cratesPerTurn || deal.terms.crates || 4;
+    const drawn = src
+      ? withdrawWarehouse(src, want, next.turn, lookup)
+      : { territory: src!, moved: 0, proofed: 0 };
+    if (!src || drawn.moved <= 0) {
+      const broke = breakDeal(next, deal.id, player, `The crates never left the warehouse. ${other} calls the liquor order broken.`);
+      next = dropDealRoutes(broke.state, deal.id);
+      if (broke.log) logs.push(broke.log);
+      continue;
+    }
+
+    let territories = next.territories.map((t) => (t.id === src.id ? drawn.territory : t));
+    const hqNow = territories.find((t) => t.id === dest.id)!;
+    const landed = depositTracked(hqNow, drawn.moved, drawn.proofed, "any", next.turn);
+    territories = territories.map((t) => (t.id === dest.id ? landed.territory : t));
+    const moved = drawn.moved;
     const proofed = Math.min(drawn.proofed, landed.proofedLanded);
-    const per = Math.round(Math.abs(deal.terms.cash) / Math.max(1, want));
-    const bill = moved * (per || price) + proofed * PROOF_PREMIUM;
+    const per = Math.round(Math.abs(deal.terms.cash) / Math.max(1, deal.terms.crates ?? want));
+    const bill = deal.terms.weekly ? moved * (per || price) + proofed * PROOF_PREMIUM : 0;
     const have = Math.max(0, next.rivalTreasury?.[other] ?? 0);
     const paid = Math.min(have, bill);
+    const shipText = `Standing order: ${moved} crate${moved === 1 ? "" : "s"} to ${dest.name}. ${other} paid $${paid.toLocaleString()}.`;
     next = {
       ...next,
       territories,
@@ -478,19 +507,24 @@ export function shipStandingLiquor(state: GameState): { state: GameState; logs: 
       deals: next.deals.map((d) =>
         d.id === deal.id ? { ...d, delivered: (d.delivered ?? 0) + moved } : d,
       ),
+      supplyRoutes: (next.supplyRoutes ?? []).map((r) =>
+        r.id === route.id
+          ? { ...r, last: { turn: next.turn, outcome: "delivered" as const, text: shipText } }
+          : r,
+      ),
     };
-    const where = dest.name;
-    const text =
-      moved > 0
-        ? `Standing order: ${moved} crate${moved === 1 ? "" : "s"} to ${where}. ${other} paid $${paid.toLocaleString()}.`
-        : `Standing order: the barns were short. Nothing reached ${where} this week.`;
     logs.push({
       id: `log_liquor_week_${deal.id}_${next.turn}`,
       turn: next.turn,
       category: "delivery",
-      text,
+      text: shipText,
       family: player,
     });
+    if (!deal.terms.weekly) {
+      const kept = honorDeal(next, deal.id);
+      next = dropDealRoutes(kept.state, deal.id);
+      if (kept.log) logs.push(kept.log);
+    }
   }
   return { state: next, logs };
 }
@@ -529,21 +563,34 @@ export function tickDeals(
     const due = deal.untilTurn !== null && deal.untilTurn <= next.turn;
 
     if (due) {
-      if (deal.kind === "liquor" && deal.terms.weekly && (deal.delivered ?? 0) > 0) {
-        const text = `The standing order with ${other} ran its course.`;
-        next = {
+      if (deal.kind === "liquor" && (deal.delivered ?? 0) > 0) {
+        const held = {
           ...next,
-          deals: next.deals.map((d) => (d.id === deal.id ? { ...d, status: "expired" as const } : d)),
+          deals: next.deals.map((d) => (d.id === deal.id ? { ...d, untilTurn: next.turn + 1 } : d)),
         };
-        next = queueSettlement(next, deal, { outcome: "expired", cash: 0, relation: 0, standing: 0, text });
+        const kept = honorDeal(held, deal.id, {
+          skipCash: true,
+          text: `The standing order with ${other} was kept.`,
+        });
+        next = dropDealRoutes(kept.state, deal.id);
+        if (kept.log) logs.push(kept.log);
+      } else if (deal.kind === "liquor") {
+        const text = `The crates never reached ${other}. They call it what it is.`;
+        const broke = breakDeal(
+          { ...next, deals: next.deals.map((d) => (d.id === deal.id ? { ...d, untilTurn: next.turn + 1 } : d)) },
+          deal.id,
+          deal.obligor ?? player,
+          text,
+        );
+        next = dropDealRoutes(broke.state, deal.id);
         logs.push({
-          id: `log_deal_liquor_done_${deal.id}`,
+          id: `log_deal_missed_${deal.id}`,
           turn: next.turn,
           category: "diplomacy",
           text,
           family: player,
         });
-      } else if (deal.obligor && (deal.kind === "liquor" || deal.kind === "alliance")) {
+      } else if (deal.obligor && deal.kind === "alliance") {
         // A job owed and not done is a breach by whoever owed it.
         const text =
           deal.obligor === player

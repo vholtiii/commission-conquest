@@ -103,6 +103,80 @@ export function warehouseManagerMods(manager?: CrewMember | null): {
   };
 }
 
+const UNMANAGED_COOK = 0.85;
+const BOOKKEEPER_COOK = 0.08;
+const COOK_PCT_CAP = 0.2;
+const COOK_EXTRA_CAP = 2;
+
+/** How a still or brewery manager changes the week's cook. */
+export function producerManagerMods(manager?: CrewMember | null): {
+  managed: boolean;
+  cookMult: number;
+  extraCrates: number;
+  heat: number;
+  notes: string[];
+} {
+  if (!manager || manager.status !== "active") {
+    return { managed: false, cookMult: UNMANAGED_COOK, extraCrates: 0, heat: 0, notes: [] };
+  }
+  const bookkeeper = manager.traits.includes("bookkeeper");
+  const rough = manager.traits.includes("hothead") || manager.traits.includes("enforcer");
+  const ghost = manager.traits.includes("ghost");
+  const extra = Math.min(
+    COOK_EXTRA_CAP,
+    Math.floor(manager.skills.smarts / 40) + (rough ? 1 : 0),
+  );
+  const cookMult = 1 + Math.min(COOK_PCT_CAP, bookkeeper ? BOOKKEEPER_COOK : 0);
+  const notes: string[] = [];
+  if (bookkeeper) notes.push("bookkeeper");
+  if (manager.traits.includes("hothead")) notes.push("hothead");
+  else if (manager.traits.includes("enforcer")) notes.push("enforcer");
+  if (ghost) notes.push("ghost");
+  return {
+    managed: true,
+    cookMult,
+    extraCrates: extra,
+    heat: (rough ? 1 : 0) + (ghost ? -1 : 0),
+    notes,
+  };
+}
+
+/** Cook before a manager leans on it. */
+export function producerBaseOutput(racket: Racket, bossHere = false): number {
+  const extra = bossHere ? BOSS_PRESENCE.productionPerLevel * racket.level : 0;
+  if (racket.type === "still") return 5 + racket.level * 3 + extra;
+  if (racket.type === "brewery") return 8 + racket.level * 4 + extra;
+  return 0;
+}
+
+export function producerManagerEffectText(
+  manager: CrewMember | null | undefined,
+  racket: Racket,
+  bossHere = false,
+): string {
+  const base = producerBaseOutput(racket, bossHere);
+  if (base <= 0) return "";
+  const cooked = productionOutput(racket, bossHere, manager);
+  const mods = producerManagerMods(manager);
+  if (!mods.managed) return "Unmanaged −15% cook";
+  const trait = mods.notes[0];
+  const heat =
+    mods.heat > 0 ? " · +1 heat" : mods.heat < 0 ? " · −1 heat" : "";
+  if (cooked === base) return `Cook ${cooked}${trait ? ` · ${trait}` : ""}${heat}`;
+  return `Cook ${base} → ${cooked}${trait ? ` · ${trait}` : ""}${heat}`;
+}
+
+/** Short compare line for a still/brewery manager picker. */
+export function producerManagerPickHint(member: CrewMember): string {
+  const mods = producerManagerMods(member);
+  const bits: string[] = [...mods.notes];
+  if (mods.extraCrates > 0) bits.push(`+${mods.extraCrates} cook`);
+  else if (mods.cookMult > 1) bits.push(`+${Math.round((mods.cookMult - 1) * 100)}% cook`);
+  if (mods.heat > 0) bits.push("+1 heat");
+  if (mods.heat < 0) bits.push("−1 heat");
+  return bits.slice(0, 3).join(" · ");
+}
+
 /** Human-readable manager effect for UI. */
 export function warehouseManagerEffectText(
   manager: CrewMember | null | undefined,
@@ -595,11 +669,15 @@ export function applyWarehouseShrinkage(
 }
 
 /** Crates a still or brewery turns out a week; more with the boss on the block. */
-export function productionOutput(racket: Racket, bossHere = false): number {
-  const extra = bossHere ? BOSS_PRESENCE.productionPerLevel * racket.level : 0;
-  if (racket.type === "still") return 5 + racket.level * 3 + extra;
-  if (racket.type === "brewery") return 8 + racket.level * 4 + extra;
-  return 0;
+export function productionOutput(
+  racket: Racket,
+  bossHere = false,
+  manager?: CrewMember | null,
+): number {
+  const base = producerBaseOutput(racket, bossHere);
+  if (base <= 0) return 0;
+  const mods = producerManagerMods(manager);
+  return Math.max(0, Math.floor(base * mods.cookMult) + mods.extraCrates);
 }
 
 /**
@@ -618,17 +696,21 @@ export function produceAndStore(
   dumped: number;
   dumpCash: number;
   dumpHeat: number;
+  cookHeat: number;
   backedUp: boolean;
 } {
   let produced = 0;
+  let cookHeat = 0;
   let territory: Territory = { ...t, rackets: t.rackets.map((r) => ({ ...r })) };
   const intoBarn = !!lookup && hasManagedWarehouse(t, lookup, turn);
   let spill = 0;
 
   for (const r of territory.rackets) {
     if (!isProducerType(r.type)) continue;
+    const mgr = lookup?.(r);
     const cook = t.feature === "industrial" ? 1.25 : 1;
-    const out = Math.floor(productionOutput(r, bossHere) * cook);
+    const out = Math.floor(productionOutput(r, bossHere, mgr) * cook);
+    cookHeat += producerManagerMods(mgr).heat;
     produced += out;
     let left = out;
     if (intoBarn && left > 0) {
@@ -671,6 +753,7 @@ export function produceAndStore(
     dumped,
     dumpCash,
     dumpHeat,
+    cookHeat,
     backedUp: dumped > 0,
   };
 }

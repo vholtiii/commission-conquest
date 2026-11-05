@@ -3,8 +3,8 @@ import { useState } from "react";
 import { useGameStore } from "@/engine/store";
 import { getFamilyDef } from "@/data/families";
 import { FAMILY_HEX, RACKET_LABELS, type RacketType } from "@/types/game";
-import { racketIncome, racketCrewBonusPct, racketPayment, isLegitBusiness, isRacketFrozen, launderCap, launderSiteStatus, fundingLabel, racketFunding, hijackRisk, needsManager, canManageRacket, legitCoverWantedDrop } from "@/engine/economy";
-import { feedsOwnSpeakeasies, isProducerType, isStorageType, planFeedSpeakeasy, stockCap, warehouseManagerEffectText } from "@/engine/liquor";
+import { racketIncome, racketCrewBonusPct, racketPayment, isLegitBusiness, isRacketFrozen, launderCap, launderSiteStatus, fundingLabel, racketFunding, hijackRisk, needsManager, canManageRacket, legitCoverWantedDrop, incomeManagerEffectText, incomeManagerPickHint } from "@/engine/economy";
+import { feedsOwnSpeakeasies, isProducerType, isStorageType, planFeedSpeakeasy, producerManagerEffectText, producerManagerPickHint, stockCap, warehouseManagerEffectText } from "@/engine/liquor";
 import { activeCrewIds, isUnguarded, maxRacketsFor, lotTier, lotTierHint, lotTierLabel, allowedRacketTypes } from "@/engine/territoryValue";
 import { RACKET_VISUALS } from "@/data/racketVisuals";
 import { emptyIntel, hiddenCountIn, hasFreshCasing, spottedThisTurn, visibleCrewIn } from "@/engine/intel";
@@ -21,6 +21,7 @@ import {
   presenceLoyaltyGain,
 } from "@/engine/bossPresence";
 import { currentRumors } from "@/engine/rumors";
+import { streetTalk } from "@/engine/streetTalk";
 import { canLieLow, laidLowIn, SAFEHOUSE, safehouseCapacity, safehouseHitPenalty } from "@/engine/safehouse";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -59,21 +60,39 @@ function upgradeTip(
   return `Upgrade to Lv ${r.level + 1} — about $${nextIncome}/turn after.${liquorNote} Cost ${formatMoney(cost)}${discount}.`;
 }
 
-function managerTip(r: Racket, manager: CrewMember | null | undefined): string {
+function managerTip(r: Racket, manager: CrewMember | null | undefined, bossHere = false): string {
   if (r.type === "warehouse") {
     return manager
       ? `Manager: ${warehouseManagerEffectText(manager, r.stock)}`
       : "Assign a manager — unmanaged warehouses lose 12% of crates each turn.";
   }
+  if (isProducerType(r.type)) {
+    return manager
+      ? `${manager.name}: ${producerManagerEffectText(manager, r, bossHere)}`
+      : "Unmanaged cookers run at −15% crates. A sharp bookkeeper or a hothead changes the batch.";
+  }
   if (isLegitBusiness(r.type)) {
     const drop = legitCoverWantedDrop(r.level);
     return manager
-      ? `${manager.name} runs this front — sheds ${drop} wanted a week (slower than a safehouse).`
+      ? `${manager.name}: ${incomeManagerEffectText(manager)}. Sheds ${drop} wanted a week (slower than a safehouse).`
       : `Unmanaged rackets earn −30% income. A manager also sheds ${drop} wanted a week behind the counter.`;
   }
   return manager
-    ? `${manager.name} runs this racket. Remove or replace from the dropdown.`
+    ? `${manager.name}: ${incomeManagerEffectText(manager)}`
     : "Unmanaged rackets earn −30% income. Assign crew to manage.";
+}
+
+function managerOptionLabel(c: CrewMember, type: RacketType): string {
+  const last = c.name.split(" ").slice(-1)[0];
+  if (type === "still" || type === "brewery") {
+    const hint = producerManagerPickHint(c);
+    return hint ? `${last} (${hint})` : `${last} (${c.role})`;
+  }
+  if (type === "warehouse") {
+    return `${last} (${c.role}${c.traits.includes("bookkeeper") ? ", bookkeeper" : ""})`;
+  }
+  const hint = incomeManagerPickHint(c);
+  return hint ? `${last} (${hint})` : `${last} (${c.role})`;
 }
 
 export default function DistrictPanel() {
@@ -269,9 +288,24 @@ export default function DistrictPanel() {
   const fighters = garrison.filter((c) => c.status === "active").length;
   const unguarded = isOwned && isUnguarded(territory, activeCrewIds(crew));
 
+  const talk = streetTalk(
+    {
+      playerFamily,
+      crew,
+      territories,
+      heat,
+      supplyRoutes,
+      turn,
+      routes,
+      operations,
+    },
+    territory,
+  );
+
   return (
     <PanelShell title={territory.name} subtitle={territory.borough}>
       <div className="space-y-4">
+        {talk && <p className="text-[11px] italic text-muted-foreground">{talk}</p>}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <span
@@ -890,15 +924,17 @@ export default function DistrictPanel() {
                               {manager.name.split(" ").slice(-1)[0]}
                             </button>
                           ) : (
-                            <Tip content={managerTip(r, null)}>
+                            <Tip content={managerTip(r, null, bossBoost)}>
                               <Badge variant="outline" className="text-[9px] text-amber-400">
                                 {r.type === "warehouse"
                                   ? "Unmanaged −12%"
-                                  : "Unmanaged −30%"}
+                                  : isProducerType(r.type)
+                                    ? "Unmanaged −15% cook"
+                                    : "Unmanaged −30%"}
                               </Badge>
                             </Tip>
                           )}
-                          <Tip content={managerTip(r, manager)} wrapDisabled>
+                          <Tip content={managerTip(r, manager, bossBoost)} wrapDisabled>
                             <select
                               value={r.managerId ?? ""}
                               onChange={(e) =>
@@ -914,7 +950,7 @@ export default function DistrictPanel() {
                                 ...managersFor(r.type).filter((c) => c.id !== r.managerId),
                               ].map((c) => (
                                 <option key={c.id} value={c.id}>
-                                  {c.name.split(" ").slice(-1)[0]} ({c.role})
+                                  {managerOptionLabel(c, r.type)}
                                 </option>
                               ))}
                             </select>
@@ -924,6 +960,20 @@ export default function DistrictPanel() {
                       {isOwned && r.type === "warehouse" && (
                         <p className="mt-0.5 text-[10px] text-muted-foreground">
                           {warehouseManagerEffectText(manager, r.stock)}
+                        </p>
+                      )}
+                      {isOwned && isProducerType(r.type) && (
+                        <p className="mt-0.5 text-[10px] text-muted-foreground">
+                          {producerManagerEffectText(manager, r, bossBoost)}
+                        </p>
+                      )}
+                      {isOwned &&
+                        !isProducerType(r.type) &&
+                        r.type !== "warehouse" &&
+                        r.type !== "safehouse" &&
+                        r.type !== "speakeasy" && (
+                        <p className="mt-0.5 text-[10px] text-muted-foreground">
+                          {incomeManagerEffectText(manager)}
                         </p>
                       )}
                     </div>

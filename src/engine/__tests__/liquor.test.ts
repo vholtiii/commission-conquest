@@ -10,11 +10,12 @@ import {
   planFeedSpeakeasy,
   pourLocalCook,
   produceAndStore,
+  producerManagerMods,
   productionOutput,
   pullFrom,
 } from "@/engine/liquor";
 import { buildInitialState, startGame } from "@/engine/initialState";
-import type { Territory } from "@/types/game";
+import type { CrewMember, Territory } from "@/types/game";
 
 function started() {
   return startGame(buildInitialState(1234), "Moretti");
@@ -122,5 +123,56 @@ describe("same-block still", () => {
     expect(cooked.produced).toBe(productionOutput(still));
     expect(bar.stock).toBe(cooked.produced);
     expect(cook.stock).toBe(0);
+  });
+});
+
+function cookMan(state: ReturnType<typeof started>, extra: Partial<CrewMember> = {}): CrewMember {
+  const base = state.crew.find((c) => c.family === "Moretti" && c.status === "active")!;
+  return {
+    ...base,
+    ...extra,
+    skills: { ...base.skills, smarts: extra.skills?.smarts ?? 40 },
+    traits: extra.traits ?? [],
+  };
+}
+
+describe("cooker managers", () => {
+  it("cooks short without a manager", () => {
+    const still = racket("still", 0);
+    expect(productionOutput(still)).toBe(6);
+    expect(producerManagerMods(null).cookMult).toBe(0.85);
+  });
+
+  it("adds bookkeeper percent and a smarts crate", () => {
+    const state = started();
+    const still = racket("still", 0);
+    const mgr = cookMan(state, { traits: ["bookkeeper"], skills: { ...state.crew[0]!.skills, smarts: 40 } });
+    expect(productionOutput(still, false, mgr)).toBe(9);
+  });
+
+  it("a hothead pushes a crate and heat", () => {
+    const state = started();
+    const still = racket("still", 0);
+    const mgr = cookMan(state, { traits: ["hothead"], skills: { ...state.crew[0]!.skills, smarts: 10 } });
+    expect(productionOutput(still, false, mgr)).toBe(9);
+    expect(producerManagerMods(mgr).heat).toBe(1);
+  });
+
+  it("a ghost cools the cooker", () => {
+    const state = started();
+    const mgr = cookMan(state, { traits: ["ghost"] });
+    expect(producerManagerMods(mgr).heat).toBe(-1);
+  });
+
+  it("produceAndStore pulls the assigned cooker's manager", () => {
+    const state = started();
+    const mgr = cookMan(state, { traits: ["bookkeeper"] });
+    const home = state.territories.find((t) => t.owner === "Moretti")!;
+    const still = racket("still", 0, { id: "cook", managerId: mgr.id });
+    const block: Territory = { ...home, rackets: [still] };
+    const lookup = makeManagerLookup([{ ...mgr, id: mgr.id }], "Moretti");
+    const cooked = produceAndStore(block, state.turn, lookup);
+    expect(cooked.produced).toBe(productionOutput(still, false, mgr));
+    expect(cooked.cookHeat).toBe(0);
   });
 });

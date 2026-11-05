@@ -9,11 +9,13 @@ import {
   type RouteOption,
   type RouteRiskLabel,
   type RouteStrategy,
+  type Deal,
   type SupplyRoute,
 } from "@/types/game";
 import { useGameStore } from "@/engine/store";
 import {
   extraHaul,
+  isDealRoute,
   roadCut,
   routeOptions,
   STRATEGY_ORDER,
@@ -24,7 +26,9 @@ import {
   threatFamily,
 } from "@/engine/supplyRoutes";
 import { activeDeal, termsText } from "@/engine/passage";
-import { districtStorage, feedsOwnSpeakeasies, makeManagerLookup } from "@/engine/liquor";
+import { activeDeals, dealPartner } from "@/engine/deals";
+import { familyHq } from "@/engine/crewLocation";
+import { districtStorage, feedsOwnSpeakeasies, hasManagedWarehouse, makeManagerLookup } from "@/engine/liquor";
 import { seizureCover } from "@/engine/safehouse";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -165,8 +169,13 @@ export default function SupplyRoutesSection() {
   const playerFamily = useGameStore((s) => s.playerFamily);
   const turn = useGameStore((s) => s.turn);
   const supplyRoutes = useGameStore((s) => s.supplyRoutes ?? []);
+  const deals = useGameStore((s) => s.deals ?? []);
   const passageDeals = useGameStore((s) => s.passageDeals ?? []);
   const establish = useGameStore((s) => s.establishSupplyRoute);
+  const establishDeal = useGameStore((s) => s.establishDealRoute);
+  const routesTab = useGameStore((s) => s.liquorRoutesTab ?? "home");
+  const setRoutesTab = useGameStore((s) => s.setLiquorRoutesTab);
+  const setShown = useGameStore((s) => s.setShownSupplyRoutes);
   const cancel = useGameStore((s) => s.cancelSupplyRoute);
   const toggle = useGameStore((s) => s.toggleSupplyRoute);
   const setHot = useGameStore((s) => s.setRouteRunHot);
@@ -175,6 +184,7 @@ export default function SupplyRoutesSection() {
   const focusId = useGameStore((s) => s.supplyRouteFocusId);
   const setFocus = useGameStore((s) => s.setSupplyRouteFocus);
   const setPreview = useGameStore((s) => s.setSupplyRoutePreview);
+  const setPanel = useGameStore((s) => s.setPanel);
 
   const [sourceId, setSourceId] = useState("");
   const [destId, setDestId] = useState("");
@@ -183,9 +193,14 @@ export default function SupplyRoutesSection() {
   const [escortId, setEscortId] = useState("");
   const [strategyPick, setStrategyPick] = useState<RouteStrategy>("direct");
   const [hoverId, setHoverId] = useState<string | null>(null);
-  const [setupOpen, setSetupOpen] = useState(false);
   const [runHot, setRunHot] = useState(false);
-  const [open, setOpen] = useState(supplyRoutes.length === 0);
+  const [open, setOpen] = useState(false);
+  const homeRoutes = useMemo(() => supplyRoutes.filter((r) => !isDealRoute(r)), [supplyRoutes]);
+  const dealRoutes = useMemo(() => supplyRoutes.filter(isDealRoute), [supplyRoutes]);
+  const liquorOrders = useMemo(
+    () => activeDeals({ deals, turn, playerFamily }).filter((d) => d.kind === "liquor"),
+    [deals, turn, playerFamily],
+  );
 
   const lookup = useMemo(() => makeManagerLookup(crew, playerFamily), [crew, playerFamily]);
   const owned = useMemo(
@@ -243,8 +258,17 @@ export default function SupplyRoutesSection() {
 
   // One road on the map: the chip under the cursor, otherwise the chosen strategy.
   useEffect(() => {
-    if (!open || options.length === 0) {
-      setPreview(null);
+    if (routesTab === "deals") {
+      setShown(dealRoutes.map((r) => r.id));
+      return;
+    }
+    setShown(null);
+  }, [routesTab, dealRoutes, setShown]);
+  useEffect(() => () => setShown(null), [setShown]);
+
+  useEffect(() => {
+    if (routesTab !== "home" || !open || options.length === 0) {
+      if (routesTab !== "home" || !open) setPreview(null);
       return;
     }
     const shownId = hoverId && options.some((o) => o.id === hoverId) ? hoverId : chosen?.id ?? null;
@@ -264,39 +288,55 @@ export default function SupplyRoutesSection() {
   const sourceStock = effSource
     ? districtStorage(territories.find((t) => t.id === effSource)!, turn, lookup).stored
     : 0;
-  const driver = free.find((c) => c.id === effDriver);
-  const escort = free.find((c) => c.id === effEscort);
-
   if (!playerFamily) return null;
 
   return (
     <div className="mb-4 rounded border border-panel-border bg-panel/40 p-2.5">
-      <div className="mb-2 flex items-center justify-between">
+      <div className="mb-2 flex items-center justify-between gap-2">
         <Tip content="Standing orders: N crates a week from a warehouse or still to a warehouse or speakeasy.">
           <h3 className="flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-muted-foreground">
-            <Truck className="h-3 w-3" /> Supply routes ({supplyRoutes.length})
+            <Truck className="h-3 w-3" />{" "}
+            {routesTab === "deals" ? `Liquor deals (${liquorOrders.length})` : `Supply routes (${homeRoutes.length})`}
           </h3>
         </Tip>
-        <Tip
-          content={
-            open
-              ? "Close the route picker. Map preview lines clear."
-              : "Pick two districts, a strategy, and open a weekly liquor run."
-          }
-        >
+        <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={() => setOpen((v) => !v)}
-            className="text-[10px] text-steel-light underline-offset-2 hover:underline"
+            onClick={() => setRoutesTab(routesTab === "deals" ? "home" : "deals")}
+            className={`text-[10px] underline-offset-2 hover:underline ${
+              routesTab === "deals" ? "text-foreground" : "text-steel-light"
+            }`}
           >
-            {open ? "Hide new route" : "New route"}
+            Liquor deals
           </button>
-        </Tip>
+          {routesTab === "home" && (
+            <button
+              type="button"
+              onClick={() => setOpen((v) => !v)}
+              className="text-[10px] text-steel-light underline-offset-2 hover:underline"
+            >
+              {open ? "Hide new route" : "New route"}
+            </button>
+          )}
+        </div>
       </div>
 
-      {supplyRoutes.length > 0 && (
+      {routesTab === "deals" ? (
+        <DealOrders
+          orders={liquorOrders}
+          routes={dealRoutes}
+          focusedId={focusId}
+          nameOf={nameOf}
+          onFocus={(id) => setFocus(focusId === id ? null : id)}
+          onGoTo={(id) => selectTerritory(id, { toastLabel: "Liquor deal" })}
+          onToggle={toggle}
+          onCancel={cancel}
+          onOpen={establishDeal}
+        />
+      ) : (
+        homeRoutes.length > 0 && (
         <div className="mb-2 space-y-1.5">
-          {supplyRoutes.map((r) => (
+          {homeRoutes.map((r) => (
             <RouteRow
               key={r.id}
               route={r}
@@ -318,9 +358,10 @@ export default function SupplyRoutesSection() {
             </p>
           </Tip>
         </div>
+        )
       )}
 
-      {passageDeals.filter((d) => d.status === "active").length > 0 && (
+      {routesTab === "home" && passageDeals.filter((d) => d.status === "active").length > 0 && (
         <div className="mb-2 space-y-1 border-t border-panel-border pt-2">
           <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Passage deals</p>
           {passageDeals
@@ -348,7 +389,7 @@ export default function SupplyRoutesSection() {
         </div>
       )}
 
-      {open && (
+      {routesTab === "home" && open && (
         <div className="space-y-2 border-t border-panel-border pt-2">
           {sources.length === 0 ? (
             <p className="text-[11px] text-muted-foreground">
@@ -360,11 +401,26 @@ export default function SupplyRoutesSection() {
             </p>
           ) : (
             <>
-              <div className="grid grid-cols-2 gap-2">
-                <Tip content="District with a warehouse, still or brewery that has crates to ship.">
-                  <label className="block text-[10px] text-muted-foreground">
-                    From
-                    <select
+              <div className="grid grid-cols-3 gap-2">
+                <label className="block text-[10px] text-muted-foreground">
+                  Driver
+                  <select
+                    value={effDriver}
+                    onChange={(e) => setDriverId(e.target.value)}
+                    disabled={free.length === 0}
+                    className="mt-0.5 w-full rounded-md border border-panel-border bg-panel/60 px-2 py-1 text-xs text-foreground"
+                  >
+                    {free.length === 0 && <option value="">No free men</option>}
+                    {free.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name} (drive {c.skills.driving})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="block text-[10px] text-muted-foreground">
+                  From
+                  <select
                     value={effSource}
                     onChange={(e) => setSourceId(e.target.value)}
                     className="mt-0.5 w-full rounded-md border border-panel-border bg-panel/60 px-2 py-1 text-xs text-foreground"
@@ -374,13 +430,11 @@ export default function SupplyRoutesSection() {
                         {t.name} ({districtStorage(t, turn, lookup).stored})
                       </option>
                     ))}
-                    </select>
-                  </label>
-                </Tip>
-                <Tip content="Warehouse or speakeasy that receives crates. Dry speakeasies in another district need a route. A still on the same block pours when the week closes.">
-                  <label className="block text-[10px] text-muted-foreground">
-                    To
-                    <select
+                  </select>
+                </label>
+                <label className="block text-[10px] text-muted-foreground">
+                  To
+                  <select
                     value={effDest}
                     onChange={(e) => setDestId(e.target.value)}
                     className="mt-0.5 w-full rounded-md border border-panel-border bg-panel/60 px-2 py-1 text-xs text-foreground"
@@ -396,10 +450,52 @@ export default function SupplyRoutesSection() {
                         </option>
                       );
                     })}
-                    </select>
-                  </label>
-                </Tip>
+                  </select>
+                </label>
               </div>
+              <div className="grid grid-cols-2 gap-2">
+                <label className="block text-[10px] text-muted-foreground">
+                  Escort
+                  <select
+                    value={effEscort}
+                    onChange={(e) => setEscortId(e.target.value)}
+                    className="mt-0.5 w-full rounded-md border border-panel-border bg-panel/60 px-2 py-1 text-xs text-foreground"
+                  >
+                    <option value="">None</option>
+                    {free
+                      .filter((c) => c.id !== effDriver)
+                      .map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.name} (muscle {c.skills.muscle})
+                        </option>
+                      ))}
+                  </select>
+                </label>
+                <label className="block text-[10px] text-muted-foreground">
+                  Crates/week
+                  <input
+                    type="number"
+                    min={1}
+                    max={Math.max(1, sourceStock)}
+                    value={crates}
+                    onChange={(e) => setCrates(Math.max(1, Number(e.target.value) || 1))}
+                    className="mt-0.5 w-full rounded-md border border-panel-border bg-panel/60 px-2 py-1 text-xs text-foreground"
+                  />
+                </label>
+              </div>
+              {free.length === 0 && (
+                <p className="text-[11px] text-muted-foreground">
+                  Every man is managing, on a job, or already on a truck. Pull someone off a racket or
+                  leave him idle.{" "}
+                  <button
+                    type="button"
+                    className="text-steel-light underline-offset-2 hover:underline"
+                    onClick={() => setPanel("crew")}
+                  >
+                    Crew
+                  </button>
+                </p>
+              )}
 
               <div className="space-y-1">
                 <div className="flex items-center justify-between">
@@ -443,99 +539,6 @@ export default function SupplyRoutesSection() {
                   />
                 )}
               </div>
-
-              <div className="flex items-center justify-between gap-2 text-[10px]">
-                <Tip
-                  content={
-                    driver
-                      ? `Driver skill and wheelman trait lower hijack odds.${escort ? " Escort cuts risk ~25% but rides along." : ""} Crates ship every turn from source stock.`
-                      : "Need an idle or garrisoned soldier to drive. The boss can't run routes."
-                  }
-                >
-                  <span className="min-w-0 truncate text-muted-foreground">
-                    {driver ? (
-                      <>
-                        <span className="text-foreground">{driver.name}</span> drives
-                      </>
-                    ) : (
-                      <span className="text-heat">No free men to drive</span>
-                    )}
-                    {" · "}
-                    {escort ? (
-                      <>
-                        <span className="text-foreground">{escort.name}</span> rides escort
-                      </>
-                    ) : (
-                      "no escort"
-                    )}
-                    {" · "}
-                    <span className="text-foreground">{crates}</span> crates/wk
-                  </span>
-                </Tip>
-                <Tip content={setupOpen ? "Collapse driver, escort and crate settings." : "Change driver, escort, or crates per week."}>
-                  <button
-                    type="button"
-                    onClick={() => setSetupOpen((v) => !v)}
-                    className="shrink-0 text-steel-light underline-offset-2 hover:underline"
-                  >
-                    {setupOpen ? "done" : "change"}
-                  </button>
-                </Tip>
-              </div>
-
-              {setupOpen && (
-              <div className="grid grid-cols-3 gap-2">
-                <Tip content={`Crates pulled from source stock each turn (max ${sourceStock} on hand).`}>
-                  <label className="block text-[10px] text-muted-foreground">
-                    Crates/week
-                    <input
-                    type="number"
-                    min={1}
-                    max={Math.max(1, sourceStock)}
-                    value={crates}
-                    onChange={(e) => setCrates(Math.max(1, Number(e.target.value) || 1))}
-                    className="mt-0.5 w-full rounded-md border border-panel-border bg-panel/60 px-2 py-1 text-xs text-foreground"
-                    />
-                  </label>
-                </Tip>
-                <Tip content="Driving skill lowers hijack odds. Wheelman trait helps further. Must be idle or garrisoned.">
-                  <label className="block text-[10px] text-muted-foreground">
-                    Driver
-                    <select
-                    value={effDriver}
-                    onChange={(e) => setDriverId(e.target.value)}
-                    className="mt-0.5 w-full rounded-md border border-panel-border bg-panel/60 px-2 py-1 text-xs text-foreground"
-                  >
-                    {free.length === 0 && <option value="">No free men</option>}
-                    {free.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.name} (drive {c.skills.driving})
-                      </option>
-                    ))}
-                    </select>
-                  </label>
-                </Tip>
-                <Tip content="Optional muscle on the truck. Cuts hijack risk ~25% but they're exposed if it goes bad.">
-                  <label className="block text-[10px] text-muted-foreground">
-                    Escort
-                    <select
-                    value={effEscort}
-                    onChange={(e) => setEscortId(e.target.value)}
-                    className="mt-0.5 w-full rounded-md border border-panel-border bg-panel/60 px-2 py-1 text-xs text-foreground"
-                  >
-                    <option value="">None</option>
-                    {free
-                      .filter((c) => c.id !== effDriver)
-                      .map((c) => (
-                        <option key={c.id} value={c.id}>
-                          {c.name} (muscle {c.skills.muscle})
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                </Tip>
-              </div>
-              )}
 
               {chosen && chosen.needsDeal.length > 0 && (
                 <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-[10px]">
@@ -769,6 +772,177 @@ function ChosenRoad({
   );
 }
 
+function DealOrders({
+  orders,
+  routes,
+  focusedId,
+  nameOf,
+  onFocus,
+  onGoTo,
+  onToggle,
+  onCancel,
+  onOpen,
+}: {
+  orders: Deal[];
+  routes: SupplyRoute[];
+  focusedId: string | null;
+  nameOf: (id: string) => string;
+  onFocus: (id: string) => void;
+  onGoTo: (id: string) => void;
+  onToggle: (id: string) => void;
+  onCancel: (id: string) => void;
+  onOpen: (args: { dealId: string; sourceTerritoryId: string; cratesPerTurn: number }) => void;
+}) {
+  const territories = useGameStore((s) => s.territories);
+  const crew = useGameStore((s) => s.crew);
+  const playerFamily = useGameStore((s) => s.playerFamily);
+  const turn = useGameStore((s) => s.turn);
+  const lookup = useMemo(() => makeManagerLookup(crew, playerFamily), [crew, playerFamily]);
+  const barns = territories.filter(
+    (t) => t.owner === playerFamily && hasManagedWarehouse(t, lookup, turn),
+  );
+
+  if (orders.length === 0) {
+    return <p className="mb-2 text-[11px] text-muted-foreground">No liquor orders at the table.</p>;
+  }
+
+  return (
+    <div className="mb-2 space-y-1.5">
+      {orders.map((deal) => {
+        const other = dealPartner({ playerFamily }, deal);
+        const road = routes.find((r) => r.dealId === deal.id);
+        const color = FAMILY_HEX[other];
+        const hq = familyHq({ territories }, other);
+        return (
+          <DealOrderRow
+            key={deal.id}
+            deal={deal}
+            other={other}
+            color={color}
+            hqName={hq ? nameOf(hq) : "their house"}
+            road={road}
+            focused={!!road && focusedId === road.id}
+            barns={barns}
+            nameOf={nameOf}
+            onOpen={onOpen}
+            onFocus={() => road && onFocus(road.id)}
+            onGoTo={() => onGoTo(road?.destTerritoryId ?? hq ?? "")}
+            onToggle={() => road && onToggle(road.id)}
+            onCancel={() => road && onCancel(road.id)}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+function DealOrderRow({
+  deal,
+  other,
+  color,
+  hqName,
+  road,
+  focused,
+  barns,
+  nameOf,
+  onOpen,
+  onFocus,
+  onGoTo,
+  onToggle,
+  onCancel,
+}: {
+  deal: Deal;
+  other: FamilyName;
+  color: string;
+  hqName: string;
+  road?: SupplyRoute;
+  focused: boolean;
+  barns: { id: string; name: string }[];
+  nameOf: (id: string) => string;
+  onOpen: (args: { dealId: string; sourceTerritoryId: string; cratesPerTurn: number }) => void;
+  onFocus: () => void;
+  onGoTo: () => void;
+  onToggle: () => void;
+  onCancel: () => void;
+}) {
+  const [sourceId, setSourceId] = useState(barns[0]?.id ?? "");
+  const [crates, setCrates] = useState(deal.terms.crates ?? 4);
+  const barn = barns.some((b) => b.id === sourceId) ? sourceId : barns[0]?.id ?? "";
+
+  return (
+    <div
+      className="rounded-md border bg-panel/50 p-2 text-[10px]"
+      style={{ borderColor: focused ? color : undefined }}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <button type="button" onClick={onFocus} className="flex min-w-0 items-center gap-1.5 text-left font-medium">
+          <span className="inline-block h-[3px] w-4 shrink-0" style={{ borderTop: `2px dashed ${color}` }} />
+          <span className="truncate">
+            {other} · {hqName}
+          </span>
+        </button>
+        <button type="button" onClick={onGoTo} className="rounded p-0.5 text-muted-foreground hover:text-steel-light">
+          <MapPin className="h-3 w-3" />
+        </button>
+      </div>
+      <p className="text-muted-foreground">
+        {deal.terms.weekly ? `${deal.terms.crates ?? crates} crates/week` : `${deal.terms.crates ?? crates} crates`}
+        {deal.untilTurn != null ? ` · until T${deal.untilTurn}` : ""}
+        {road ? ` · from ${nameOf(road.sourceTerritoryId)}` : " · pending"}
+      </p>
+      {road?.last && <p className="text-foreground/80">T{road.last.turn}: {road.last.text}</p>}
+      {road ? (
+        <div className="mt-1 flex flex-wrap gap-1">
+          <Button variant="ghost" size="sm" className="h-6 px-1.5 text-[10px]" onClick={onToggle}>
+            {road.status === "suspended" ? "Resume" : "Hold"}
+          </Button>
+          <Button variant="ghost" size="sm" className="h-6 px-1.5 text-[10px]" onClick={onCancel}>
+            Close
+          </Button>
+        </div>
+      ) : (
+        <div className="mt-1.5 grid grid-cols-2 gap-2">
+          <label className="block text-[10px] text-muted-foreground">
+            Warehouse
+            <select
+              value={barn}
+              onChange={(e) => setSourceId(e.target.value)}
+              className="mt-0.5 w-full rounded-md border border-panel-border bg-panel/60 px-2 py-1 text-xs text-foreground"
+            >
+              {barns.length === 0 && <option value="">No managed barn</option>}
+              {barns.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="block text-[10px] text-muted-foreground">
+            Crates
+            <input
+              type="number"
+              min={1}
+              value={crates}
+              onChange={(e) => setCrates(Math.max(1, Number(e.target.value) || 1))}
+              className="mt-0.5 w-full rounded-md border border-panel-border bg-panel/60 px-2 py-1 text-xs text-foreground"
+            />
+          </label>
+          <div className="col-span-2">
+            <Button
+              size="sm"
+              className="h-7 text-[11px]"
+              disabled={!barn || crates < 1}
+              onClick={() => onOpen({ dealId: deal.id, sourceTerritoryId: barn, cratesPerTurn: crates })}
+            >
+              Open
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function RouteRow({
   route,
   focused,
@@ -860,7 +1034,7 @@ export function RouteRow({
       )}
       <p className="text-muted-foreground">
         {route.cratesPerTurn}
-        {haul > 0 ? `+${haul}` : ""} crates/week · {crewName(route.driverId)}
+        {haul > 0 ? `+${haul}` : ""} crates/week · {crewName(route.driverId ?? "")}
         {route.coverDriverId ? ` · ${crewName(route.coverDriverId)} covering` : ""}
         {route.escortId ? ` + ${crewName(route.escortId)}` : ""} · {route.path.length - 1} hops
       </p>

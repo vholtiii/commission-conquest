@@ -9,7 +9,9 @@ import {
 import { BLOCK_SIZE, racketBlockFor, type CityLayout } from "@/engine/cityLayout";
 import { streetRoute } from "@/engine/streetRoute";
 import { useGameStore } from "@/engine/store";
-import { MAP_STATUS, type Racket, type Territory } from "@/types/game";
+import { FAMILY_HEX, MAP_STATUS, type Racket, type Territory } from "@/types/game";
+import { dealPartner } from "@/engine/deals";
+import { isDealRoute } from "@/engine/supplyRoutes";
 
 type Props = { layout: CityLayout };
 type Pt = [number, number, number];
@@ -311,6 +313,8 @@ export default function SupplyRouteOverlay({ layout }: Props) {
   const shownIds = useGameStore((s) => s.shownSupplyRouteIds);
   const preview = useGameStore((s) => s.supplyRoutePreview);
   const supplyRoutes = useGameStore((s) => s.supplyRoutes ?? []);
+  const deals = useGameStore((s) => s.deals ?? []);
+  const playerFamily = useGameStore((s) => s.playerFamily);
   const routes = useGameStore((s) => s.routes);
   const territories = useGameStore((s) => s.territories);
   const turn = useGameStore((s) => s.turn);
@@ -318,38 +322,47 @@ export default function SupplyRouteOverlay({ layout }: Props) {
   const sitdownPhase = useGameStore((s) => s.sitdownPhase);
 
   const districtPaths = useMemo(() => {
+    const paint = (routeId?: string) => {
+      const route = routeId ? supplyRoutes.find((r) => r.id === routeId) : undefined;
+      if (route && isDealRoute(route) && route.dealId && playerFamily) {
+        const deal = deals.find((d) => d.id === route.dealId);
+        if (deal) return FAMILY_HEX[dealPartner({ playerFamily }, deal)];
+      }
+      return MAP_STATUS.supplyRoute;
+    };
     const previewRoad = preview
       ? (preview.options.find((o) => o.id === preview.chosenId) ?? preview.options[0])
       : undefined;
-    const paths: string[][] = [];
+    const paths: { path: string[]; color: string }[] = [];
     if (previewRoad) {
-      paths.push(previewRoad.path);
+      paths.push({ path: previewRoad.path, color: MAP_STATUS.supplyRoute });
     } else if (shownIds) {
       const byId = new Map<string, string[]>();
       for (const route of supplyRoutes) byId.set(route.id, route.path);
       for (const route of routes) byId.set(route.id, route.path);
       for (const id of shownIds) {
         const path = byId.get(id);
-        if (path) paths.push(path);
+        if (path) paths.push({ path, color: paint(id) });
       }
     } else if (focusId) {
       const path = supplyRoutes.find((r) => r.id === focusId)?.path;
-      if (path) paths.push(path);
+      if (path) paths.push({ path, color: paint(focusId) });
     }
     return paths;
-  }, [preview, shownIds, supplyRoutes, routes, focusId]);
+  }, [preview, shownIds, supplyRoutes, routes, focusId, deals, playerFamily]);
 
   const roads = useMemo(
     () =>
       districtPaths
-        .map((path, i) => {
-          const street = streetRoute(layout, path);
+        .map((road, i) => {
+          const street = streetRoute(layout, road.path);
           const points = street.map((p) => [p.x, Y + i * 0.05, p.z] as Pt);
-          const src = territories.find((t) => t.id === path[0]);
-          const dest = territories.find((t) => t.id === path[path.length - 1]);
+          const src = territories.find((t) => t.id === road.path[0]);
+          const dest = territories.find((t) => t.id === road.path[road.path.length - 1]);
           return {
             points,
-            key: path.join(">") + i,
+            key: road.path.join(">") + i,
+            color: road.color,
             start: racketWorld(layout, src, pickSource(src, turn)),
             stop: racketWorld(layout, dest, pickDest(dest)),
           };
@@ -367,7 +380,7 @@ export default function SupplyRouteOverlay({ layout }: Props) {
         <DirectedRoad
           key={road.key}
           points={road.points}
-          color={MAP_STATUS.supplyRoute}
+          color={road.color}
           start={road.start}
           stop={road.stop}
         />

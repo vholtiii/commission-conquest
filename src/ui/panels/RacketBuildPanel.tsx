@@ -37,8 +37,8 @@ const LEGIT_ORDER: RacketType[] = [
 ];
 
 const RACKET_BLURB: Record<RacketType, string> = {
-  still: "Cheap moonshine — produces 5+3L crates/turn. A speakeasy on the same block drinks from it when the week closes; no truck.",
-  brewery: "Bigger batches — produces 8+4L crates/turn.",
+  still: "Cheap moonshine — produces 5+3L crates/turn. Unmanaged cookers run short; a bookkeeper or hothead changes the batch. A speakeasy on the same block drinks from it when the week closes; no truck.",
+  brewery: "Bigger batches — produces 8+4L crates/turn. The man on it changes how hard it cooks.",
   warehouse: "Liquor hub. Needs a manager (smarts) or crates walk out the back.",
   speakeasy: "Sells crates — needs supply.",
   gambling: "High dirty income, moderate heat.",

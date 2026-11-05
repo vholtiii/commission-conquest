@@ -30,7 +30,7 @@ import type {
 import { ALL_FAMILY_NAMES } from "@/data/families";
 import type { Rng } from "./rng";
 import { assignCrew, bumpLoyalty, grantXpToCrew, tiedToFamily } from "./crew";
-import { crewPresentIn } from "./crewLocation";
+import { crewPresentIn, familyHq } from "./crewLocation";
 import { hasActiveIntel } from "./intel";
 import {
   depositTracked,
@@ -628,6 +628,76 @@ function freeRouteCrew(state: GameState, route: SupplyRoute): GameState {
   return { ...state, crew };
 }
 
+export function isDealRoute(route: SupplyRoute): boolean {
+  return route.kind === "liquor_deal" || !!route.dealId;
+}
+
+export function dropDealRoutes(state: GameState, dealId: string): GameState {
+  const doomed = (state.supplyRoutes ?? []).filter((r) => r.dealId === dealId);
+  let next = state;
+  for (const r of doomed) next = cancelSupplyRoute(next, r.id);
+  return next;
+}
+
+/**
+ * Open a liquor-deal road: chosen barn to their HQ. No driver, no passage.
+ */
+export function establishDealRoute(
+  state: GameState,
+  args: { dealId: string; sourceTerritoryId: string; cratesPerTurn: number },
+  rng: Rng,
+): EstablishResult {
+  const player = state.playerFamily;
+  const fail = (error: string): EstablishResult => ({ state, logs: [], error });
+  if (!player) return fail("No family.");
+  const deal = (state.deals ?? []).find((d) => d.id === args.dealId);
+  if (!deal || deal.kind !== "liquor" || deal.status !== "active") return fail("That order is closed.");
+  if ((state.supplyRoutes ?? []).some((r) => r.dealId === deal.id)) {
+    return fail("That order already has a road.");
+  }
+  const other = deal.a === player ? deal.b : deal.a;
+  const hqId = familyHq(state, other);
+  const dest = hqId ? state.territories.find((t) => t.id === hqId) : undefined;
+  if (!dest || dest.owner !== other) return fail(`${other} has no house to collect at.`);
+  const src = state.territories.find((t) => t.id === args.sourceTerritoryId);
+  if (!src || src.owner !== player) return fail("Source must be your district.");
+  const lookup = makeManagerLookup(state.crew, player);
+  if (!hasManagedWarehouse(src, lookup, state.turn)) {
+    return fail("Source needs a managed warehouse.");
+  }
+  if (args.cratesPerTurn < 1) return fail("Need at least one crate a week.");
+  const path = cheapestRoad(state.territories, src.id, dest.id, () => 1);
+  if (!path || path.length < 2) return fail("No road to their house.");
+
+  const route: SupplyRoute = {
+    id: `supply_deal_${state.turn}_${rng.int(1000, 9999)}`,
+    family: player,
+    sourceTerritoryId: src.id,
+    destTerritoryId: dest.id,
+    path,
+    cratesPerTurn: Math.floor(args.cratesPerTurn),
+    kind: "liquor_deal",
+    dealId: deal.id,
+    status: "active",
+    sinceTurn: state.turn,
+    awaitingFamilies: [],
+    runHot: false,
+  };
+  return {
+    state: { ...state, supplyRoutes: [...(state.supplyRoutes ?? []), route] },
+    route,
+    logs: [
+      {
+        id: `log_supply_open_${route.id}`,
+        turn: state.turn,
+        category: "delivery",
+        text: `Liquor deal road opened: ${route.cratesPerTurn} crates a week, ${src.name} → ${dest.name}.`,
+        family: player,
+      },
+    ],
+  };
+}
+
 export function cancelSupplyRoute(state: GameState, id: string): GameState {
   const route = (state.supplyRoutes ?? []).find((r) => r.id === id);
   if (!route) return state;
@@ -1182,6 +1252,7 @@ export function processSupplyRoutes(state: GameState, rng: Rng): SupplyRunResult
   for (const planned of [...(state.supplyRoutes ?? [])]) {
     let route = planned;
     if (route.family !== player) continue;
+    if (isDealRoute(route)) continue;
     const src = next.territories.find((t) => t.id === route.sourceTerritoryId);
     const dest = next.territories.find((t) => t.id === route.destTerritoryId);
     const srcName = src?.name ?? "the source";

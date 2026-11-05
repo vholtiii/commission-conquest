@@ -18,6 +18,7 @@ import PendingOpsOverlay from "./PendingOpsOverlay";
 import MapPulse from "./MapPulse";
 import SitdownOverlay from "./SitdownOverlay";
 import SupplyRouteOverlay from "./SupplyRouteOverlay";
+import RouteTrucks from "./RouteTrucks";
 import HitCinematic from "./hits/HitCinematic";
 import SitdownCinematic from "./SitdownCinematic";
 import StrategicOverlay from "./StrategicOverlay";
@@ -140,6 +141,7 @@ export default function CityScene() {
         <PendingOpsOverlay layout={layout} />
         <SitdownOverlay layout={layout} />
         <SupplyRouteOverlay layout={layout} />
+        <RouteTrucks layout={layout} />
         <HitFx layout={layout} />
         <BuildFx layout={layout} />
         <MapPulse layout={layout} />

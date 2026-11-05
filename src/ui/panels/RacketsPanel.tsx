@@ -18,6 +18,7 @@ import { Button } from "@/components/ui/button";
 import { formatDelta } from "../formatters";
 import PanelShell from "./PanelShell";
 import { RouteRow } from "./SupplyRoutesSection";
+import { isDealRoute } from "@/engine/supplyRoutes";
 
 type Tab = "district" | "routes";
 
@@ -417,7 +418,7 @@ function RoutesTab() {
   const crew = useGameStore((s) => s.crew);
   const turn = useGameStore((s) => s.turn);
   const deals = useGameStore((s) => s.deals);
-  const supplyRoutes = useGameStore((s) => s.supplyRoutes ?? []);
+  const supplyRoutes = useGameStore((s) => (s.supplyRoutes ?? []).filter((r) => !isDealRoute(r)));
   const routes = useGameStore((s) => s.routes);
   const pendingShipments = useGameStore((s) => s.pendingShipments ?? []);
   const cancel = useGameStore((s) => s.cancelSupplyRoute);

@@ -154,13 +154,14 @@ import {
   type SitdownParty,
   type TableAnswer,
 } from "./sitdowns";
-import { breakDeal, fulfilLiquorDeal, inTruce } from "./deals";
+import { breakDeal, inTruce } from "./deals";
 import { commissionHeld, funeralWeeksLeft, handsDown, hydrateMourningForBoss } from "./mourning";
 import { answerRuling as settleRuling, lobbySeat as buySeat, openCommissionCall, openWarCall } from "./commission";
 import {
   answerCoverRequest,
   cancelSupplyRoute,
   establishSupplyRoute,
+  establishDealRoute,
   reopenPassageTalks,
   repairRoutePaths,
   setRouteRunHot,
@@ -368,6 +369,7 @@ interface GameStore extends GameState {
     escortId?: string;
     runHot: boolean;
   }) => void;
+  establishDealRoute: (args: { dealId: string; sourceTerritoryId: string; cratesPerTurn: number }) => void;
   cancelSupplyRoute: (id: string) => void;
   toggleSupplyRoute: (id: string) => void;
   setRouteRunHot: (id: string, runHot: boolean) => void;
@@ -463,8 +465,12 @@ interface GameStore extends GameState {
   /** Liquor panel: stock and buying, or the standing routes. */
   liquorView: "stock" | "routes";
   setLiquorView: (view: "stock" | "routes") => void;
+  liquorRoutesTab: "home" | "deals";
+  setLiquorRoutesTab: (tab: "home" | "deals") => void;
   /** Open Liquor on the routes list, optionally tracing one road. */
   showLiquorRoutes: (routeId?: string | null) => void;
+  /** Open Liquor on the liquor-deals list. */
+  showLiquorDeals: () => void;
 }
 
 const defaultSettings: GameSettings = {
@@ -490,6 +496,7 @@ export const useGameStore = create<GameStore>()(
     (set, get) => ({
       ...buildInitialState(defaultSettings.seed, defaultSettings),
       liquorView: "stock",
+      liquorRoutesTab: "home",
 
       newGame: (settings) => {
         const merged = {
@@ -518,12 +525,22 @@ export const useGameStore = create<GameStore>()(
         })),
 
       setLiquorView: (view) => set({ liquorView: view }),
+      setLiquorRoutesTab: (tab) => set({ liquorRoutesTab: tab }),
 
       showLiquorRoutes: (routeId) =>
         set({
           activePanel: "warehouse",
           liquorView: "routes",
+          liquorRoutesTab: "home",
           supplyRouteFocusId: routeId ?? null,
+          supplyRoutePreview: null,
+        }),
+
+      showLiquorDeals: () =>
+        set({
+          activePanel: "warehouse",
+          liquorView: "routes",
+          liquorRoutesTab: "deals",
           supplyRoutePreview: null,
         }),
 
@@ -1815,6 +1832,27 @@ export const useGameStore = create<GameStore>()(
         }
       },
 
+      establishDealRoute: (args) => {
+        const s = get();
+        if (!s.playerFamily) return;
+        const rng = createRng(hashString(`${s.seed}:deal-route:${s.turn}:${args.dealId}:${args.sourceTerritoryId}`));
+        const result = establishDealRoute(s, args, rng);
+        if (result.error || !result.route) {
+          toast.error(result.error ?? "Couldn't open that road");
+          return;
+        }
+        set({
+          ...result.state,
+          turnLog: [...result.state.turnLog, ...result.logs].slice(-200),
+          liquorRoutesTab: "deals",
+          supplyRouteFocusId: result.route.id,
+          supplyRoutePreview: null,
+        });
+        toast.success("Liquor deal road open", {
+          description: `${args.cratesPerTurn} crates a week to their house.`,
+        });
+      },
+
       cancelSupplyRoute: (id) => {
         const s = get();
         set({
@@ -2558,17 +2596,9 @@ export const useGameStore = create<GameStore>()(
         });
       },
 
-      fulfilLiquorDeal: (dealId) => {
-        const s = get();
-        const result = fulfilLiquorDeal(s, dealId);
-        if (result.error) {
-          toast.error(result.error);
-          return;
-        }
-        set({
-          ...result.state,
-          turnLog: result.log ? [...result.state.turnLog, result.log].slice(-200) : result.state.turnLog,
-        });
+      fulfilLiquorDeal: (_dealId) => {
+        get().showLiquorDeals();
+        toast.message("Open the road from Liquor deals.");
       },
 
       dismissDealSettlement: () =>
@@ -2969,6 +2999,7 @@ export const useGameStore = create<GameStore>()(
             lawyerReadyTurn: loaded.lawyerReadyTurn ?? 0,
             lawyerRetainer: migrateRetainer(loaded, loaded.turn ?? 1),
             aiMinds: migrateMinds(loaded.aiMinds),
+            overheardKeys: loaded.overheardKeys ?? [],
             aiTrace: null,
             lawyerRate: loaded.lawyerRate ?? 1,
             lawyerName: lawyerName(loaded),
@@ -3125,6 +3156,7 @@ export const useGameStore = create<GameStore>()(
           "pauseLaunderSite",
           "planPlayerHit",
           "establishSupplyRoute",
+          "establishDealRoute",
           "cancelSupplyRoute",
           "toggleSupplyRoute",
           "setRouteRunHot",
@@ -3133,7 +3165,9 @@ export const useGameStore = create<GameStore>()(
           "setShownSupplyRoutes",
           "setSupplyRoutePreview",
           "setLiquorView",
+          "setLiquorRoutesTab",
           "showLiquorRoutes",
+          "showLiquorDeals",
           "answerPassage",
           "caseDistrict",
           "dismissHitResult",
@@ -3218,6 +3252,7 @@ export const useGameStore = create<GameStore>()(
           lawyerReadyTurn: p.lawyerReadyTurn ?? 0,
           lawyerRetainer: migrateRetainer(p, p.turn ?? current.turn ?? 1),
           aiMinds: migrateMinds(p.aiMinds),
+          overheardKeys: p.overheardKeys ?? current.overheardKeys ?? [],
           aiTrace: null,
           lawyerRate: p.lawyerRate ?? 1,
           lawyerName: lawyerName({ lawyerName: p.lawyerName, seed }),
@@ -3240,6 +3275,8 @@ export const useGameStore = create<GameStore>()(
           supplyRouteFocusId: null,
           shownSupplyRouteIds: null,
           supplyRoutePreview: null,
+          liquorRoutesTab:
+            (p as Partial<GameStore>).liquorRoutesTab ?? current.liquorRoutesTab ?? "home",
           focusReason: p.focusReason ?? null,
           intel: mergedIntel,
           grudges: p.grudges ?? current.grudges ?? [],

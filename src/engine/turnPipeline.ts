@@ -45,6 +45,7 @@ import { pruneManagers, tickAssignmentXp, grantXpToCrew, bumpLoyalty } from "./c
 import { emptyIntel, pruneIntel, recordPresence } from "./intel";
 import { recordMemories } from "./ai/aiMemory";
 import { brainOn } from "./ai/minds";
+import { speakOverheard } from "./overheard";
 import { pruneGrudges, releaseHeldCrew } from "./casing";
 import { generateCrewRequests, tickCrewMentoring } from "./crews";
 import { tickBossPresence } from "./bossPresence";
@@ -808,7 +809,12 @@ export function endTurn(state: GameState, rng?: Rng): GameState {
     ),
   };
   logs.push(...newFlagLogs(state, current));
-  if (brainOn(current)) current = recordMemories(state, current, logs);
+  if (brainOn(current)) {
+    current = recordMemories(state, current, logs);
+    const heard = speakOverheard(current);
+    current = heard.state;
+    if (heard.log) logs.push(heard.log);
+  }
   const families = {} as NonNullable<typeof current.history>[number]["families"];
   for (const name of ALL_FAMILY_NAMES) {
     families[name] = {

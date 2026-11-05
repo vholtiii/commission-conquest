@@ -562,7 +562,11 @@ export interface SupplyRoute {
   destTerritoryId: string;
   path: string[];
   cratesPerTurn: number;
-  driverId: string;
+  /** Absent on a liquor-deal road — their man collects. */
+  driverId?: string;
+  /** Sit-down liquor order this road fulfills. */
+  dealId?: string;
+  kind?: "home" | "liquor_deal";
   /** Idle man sent to drive while the named driver is down. */
   coverDriverId?: string;
   /** Last turn someone asked the boss for a cover. */
@@ -1739,6 +1743,8 @@ export interface GameState {
   pendingReports: LookoutReport[];
   /** What each rival family remembers, believes, and is working toward (`engine/ai`). */
   aiMinds?: Partial<Record<FamilyName, FamilyMind>>;
+  /** Memory keys already spoken as an overheard week-log line. Capped. */
+  overheardKeys?: string[];
   /** This week's rival reasoning, for the debug panel. Never saved. */
   aiTrace?: AiTrace | null;
   started: boolean;

@@ -375,6 +375,7 @@ export function buildInitialState(
     rivalHeat: {},
     beltThisWeek: [],
     headlines: [],
+    overheardKeys: [],
     history: [],
     bossStay: {},
     streetSeen: {},
