@@ -233,7 +233,11 @@ function TerritoryMarker({ territory, cx, cz }: { territory: Territory; cx: numb
   const unclaimed = !territory.owner;
 
   const pendingOps = operations.filter((o) => !o.resolved && o.family === playerFamily);
-  const isHitTarget = pendingOps.some((o) => o.targetTerritoryId === territory.id);
+  const isHitTarget = pendingOps.some(
+    (o) =>
+      o.targetTerritoryId === territory.id &&
+      !(o.intent === "commission" || o.errandId),
+  );
   const isHitOrigin = pendingOps.some((o) => o.originTerritoryId === territory.id);
   const rivalTippedThreat = operations.some(
     (o) =>

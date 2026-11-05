@@ -1,13 +1,17 @@
-import { useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { Line } from "@react-three/drei";
 import { useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
 import type { Mesh } from "three";
 import type { CityLayout } from "@/engine/cityLayout";
-import { MAP_STATUS } from "@/types/game";
+import { FAMILY_HEX, MAP_STATUS, type Operation } from "@/types/game";
 import { useGameStore } from "@/engine/store";
 import { resolveCrewTerritoryId } from "@/engine/crewLocation";
 import { districtShapes } from "./districtShapes";
+
+function isCommissionJob(op: Operation): boolean {
+  return op.intent === "commission" || !!op.errandId;
+}
 
 interface Props {
   layout: CityLayout;
@@ -109,9 +113,73 @@ function PulsingHitReticle({
   );
 }
 
+const COMMISSION_GREY = "#8a9098";
+
+/** Grey ring plus the family that took the table's job. */
+function PulsingCommissionMark({
+  cx,
+  cz,
+  familyColor,
+}: {
+  cx: number;
+  cz: number;
+  familyColor: string;
+}) {
+  const greyRef = useRef<Mesh>(null);
+  const familyRef = useRef<Mesh>(null);
+  const invalidate = useThree((s) => s.invalidate);
+  const greyGeo = useMemo(() => new THREE.RingGeometry(3.55, 4.2, 48), []);
+  const familyGeo = useMemo(() => new THREE.RingGeometry(2.5, 3.25, 48), []);
+  useEffect(() => {
+    return () => {
+      greyGeo.dispose();
+      familyGeo.dispose();
+    };
+  }, [greyGeo, familyGeo]);
+
+  useFrame(({ clock }) => {
+    const t = clock.getElapsedTime();
+    const pulse = 1 + Math.sin(t * 3.4) * 0.1;
+    const fade = 0.38 + Math.abs(Math.sin(t * 3.4)) * 0.5;
+    if (greyRef.current) {
+      greyRef.current.scale.setScalar(pulse);
+      (greyRef.current.material as THREE.MeshBasicMaterial).opacity = fade * 0.9;
+    }
+    if (familyRef.current) {
+      familyRef.current.scale.setScalar(pulse);
+      (familyRef.current.material as THREE.MeshBasicMaterial).opacity = fade;
+    }
+    invalidate();
+  });
+
+  return (
+    <group position={[cx, 0.07, cz]}>
+      <mesh ref={greyRef} geometry={greyGeo} rotation={[-Math.PI / 2, 0, 0]}>
+        <meshBasicMaterial
+          color={COMMISSION_GREY}
+          transparent
+          opacity={0.7}
+          depthWrite={false}
+          side={THREE.DoubleSide}
+        />
+      </mesh>
+      <mesh ref={familyRef} geometry={familyGeo} rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.004, 0]}>
+        <meshBasicMaterial
+          color={familyColor}
+          transparent
+          opacity={0.85}
+          depthWrite={false}
+          side={THREE.DoubleSide}
+        />
+      </mesh>
+    </group>
+  );
+}
+
 export default function PendingOpsOverlay({ layout }: Props) {
   const operations = useGameStore((s) => s.operations);
   const playerFamily = useGameStore((s) => s.playerFamily);
+  const commissionErrand = useGameStore((s) => s.commissionErrand);
   const cinematicQueue = useGameStore((s) => s.cinematicQueue);
   const hitTargetPreviewId = useGameStore((s) => s.hitTargetPreviewId);
   const crew = useGameStore((s) => s.crew);
@@ -134,9 +202,18 @@ export default function PendingOpsOverlay({ layout }: Props) {
   if (cinematicQueue.length > 0) return null;
 
   const pending = operations.filter(
-    (o) => !o.resolved && o.family === playerFamily && o.kind === "hit",
+    (o) => !o.resolved && o.family === playerFamily && o.kind === "hit" && !isCommissionJob(o),
   );
   const pendingTargetIds = new Set(pending.map((o) => o.targetTerritoryId));
+  const commissionJobs = operations.filter(
+    (o) =>
+      !o.resolved &&
+      o.family === playerFamily &&
+      (o.kind === "hit" || o.kind === "surveillance") &&
+      isCommissionJob(o),
+  );
+  const commissionMarks = [...new Map(commissionJobs.map((o) => [o.targetTerritoryId, o])).values()];
+  const acceptor = commissionErrand?.carrier ?? playerFamily;
 
   // Planner preview: aim ring on the district of the selected mark (if not already a pending hit)
   let previewTerritoryId: string | null = null;
@@ -153,6 +230,18 @@ export default function PendingOpsOverlay({ layout }: Props) {
 
   return (
     <group>
+      {commissionMarks.map((op) => {
+        const at = spot(op.targetTerritoryId);
+        if (!at || !acceptor) return null;
+        return (
+          <PulsingCommissionMark
+            key={`commission_${op.id}`}
+            cx={at.x}
+            cz={at.z}
+            familyColor={FAMILY_HEX[acceptor]}
+          />
+        );
+      })}
       {pending.map((op) => {
         const originId = op.originTerritoryId;
         const target = spot(op.targetTerritoryId);
