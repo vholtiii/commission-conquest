@@ -16,6 +16,7 @@ import WarehousePanel from "./panels/WarehousePanel";
 import RacketsPanel from "./panels/RacketsPanel";
 import HitPlanner, { HitResultModal } from "./panels/HitPlanner";
 import LookoutReportModal from "./panels/LookoutReportModal";
+import BribeDiceOverlay from "./panels/BribeDiceOverlay";
 import CrewPanel from "./panels/CrewPanel";
 import CrewSheet from "./panels/CrewSheet";
 import CorruptionPanel from "./panels/CorruptionPanel";
@@ -316,6 +317,7 @@ export default function GameShell() {
             <CommissionRulingModal />
             <DealSettlementModal />
             <LookoutReportModal />
+            <BribeDiceOverlay />
             <VictoryOverlay />
           </PanelErrorBoundary>
         </div>

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { HandCoins } from "lucide-react";
 import { useGameStore } from "@/engine/store";
-import { BRIBE_FAIL_FEE, bribeSuccessRate } from "@/engine/bribes";
+import { BRIBE_FAIL_FEE, bribeBreakdown } from "@/engine/bribes";
 import { ALL_FAMILY_NAMES } from "@/data/families";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -14,24 +14,25 @@ const BRIBE_INFO: Record<BribeKey, { label: string; blurb: string; cost: number 
   cops: {
     label: "Beat Cops",
     blurb:
-      "3 weeks. Heat −5 now, cools 2 more a week, new heat −25%. They name every face in one rival district.",
+      "3 weeks. Heat −5 now, cools 2 more a week, new heat −25%. They name every face in one rival district. Local: courier charm, a fresh casing, a cop who'd take it. District heat hurts.",
     cost: 500,
   },
   captains: {
     label: "Precinct Captains",
-    blurb: "5 weeks. Heat −2 now, cools 1 more a week, new heat −10%.",
+    blurb:
+      "5 weeks. Heat −2 now, cools 1 more a week, new heat −10%. One borough: fear helps, a hothead-only inner circle hurts, watched precincts hurt.",
     cost: 2000,
   },
   chiefs: {
     label: "Police Chiefs",
     blurb:
-      "7 weeks. Opens the books on one family. Liquor raids and seizures ×0.6, laundering audits ×0.7. Heat −2 now. Rivals learn where your mattresses are.",
+      "7 weeks. Opens the books on one family. Liquor raids and seizures ×0.6, laundering audits ×0.7. Heat −2 now. Politics: commission sway, a case, a bookkeeper, a retainer. Funeral and a rat talking hurt. Rivals learn where your mattresses are.",
     cost: 8000,
   },
   mayor: {
     label: "City Hall",
     blurb:
-      "10 weeks. Heat −8 now, cools 3 more a week, new heat −15%. Liquor raids and seizures ×0.4, audits ×0.5, and the judge is far likelier to deal. Rivals learn where your mattresses are.",
+      "10 weeks. Heat −8 now, cools 3 more a week, new heat −15%. Liquor raids and seizures ×0.4, audits ×0.5, and the judge is far likelier to deal. Reputation and clean cash. Heat is fame. Rivals learn where your mattresses are.",
     cost: 25000,
   },
 };
@@ -42,47 +43,65 @@ export default function CorruptionPanel() {
   const money = useGameStore((s) => s.money);
   const bribes = useGameStore((s) => s.bribes);
   const tryBribe = useGameStore((s) => s.tryBribe);
+  const rolling = useGameStore((s) => s.bribeRoll != null);
   const territories = useGameStore((s) => s.territories);
   const playerFamily = useGameStore((s) => s.playerFamily);
   const selectedTerritoryId = useGameStore((s) => s.selectedTerritoryId);
-  const reputation = useGameStore((s) => s.reputation);
-  const heat = useGameStore((s) => s.heat);
+  const game = useGameStore();
 
   const rivalDistricts = territories.filter(
     (t) => t.owner && t.owner !== playerFamily && t.discovered,
   );
   const rivalFamilies = ALL_FAMILY_NAMES.filter((f) => f !== playerFamily);
+  const boroughs = [...new Set(rivalDistricts.map((t) => t.borough).filter(Boolean))];
 
   const defaultDistrict =
     rivalDistricts.find((t) => t.id === selectedTerritoryId)?.id ??
     rivalDistricts[0]?.id ??
     "";
+  const defaultBorough =
+    rivalDistricts.find((t) => t.id === selectedTerritoryId)?.borough ?? boroughs[0] ?? "";
   const [districtId, setDistrictId] = useState(defaultDistrict);
+  const [boroughId, setBoroughId] = useState(defaultBorough);
   const [familyId, setFamilyId] = useState(rivalFamilies[0] ?? "");
 
   return (
     <PanelShell title="Corruption" subtitle="Grease the right palms">
       <div className="space-y-2.5">
         <p className="text-[11px] text-muted-foreground">
-          Paid in clean cash. Respect and fear raise the odds and heat lowers them. A bribe that
-          falls through still costs {Math.round(BRIBE_FAIL_FEE * 100)}% of the price and +5 heat.
+          Paid in clean cash. Each office rolls its own question. A man from the inner circle
+          carries the envelope to the cops and captains. A bribe that falls through still costs{" "}
+          {Math.round(BRIBE_FAIL_FEE * 100)}% of the price and +5 heat.
         </p>
         {ORDER.map((key) => {
           const info = BRIBE_INFO[key];
           const status = bribes[key];
           const canAfford = money >= info.cost;
           const needsDistrict = key === "cops";
+          const needsBorough = key === "captains";
           const needsFamily = key === "chiefs";
           const ready =
             canAfford &&
             !status.isActive &&
+            !rolling &&
             (!needsDistrict || !!districtId) &&
+            (!needsBorough || !!boroughId) &&
             (!needsFamily || !!familyId);
+
+          const breakdown = bribeBreakdown(game, key, {
+            territoryId: needsDistrict ? districtId : undefined,
+            borough: needsBorough ? boroughId : undefined,
+            family: needsFamily ? (familyId as (typeof rivalFamilies)[0]) : undefined,
+          });
+          const why = [...breakdown.helps, ...breakdown.hurts].join(" · ");
 
           let activeExtra = "";
           if (status.isActive && status.targetTerritory) {
             const n = territories.find((t) => t.id === status.targetTerritory)?.name;
             if (n) activeExtra = ` — ${n}`;
+          }
+          if (status.isActive && status.targetBorough) {
+            activeExtra = ` — ${status.targetBorough}`;
           }
           if (status.isActive && status.targetFamily) {
             activeExtra = ` — ${status.targetFamily}`;
@@ -118,6 +137,20 @@ export default function CorruptionPanel() {
                   ))}
                 </select>
               )}
+              {needsBorough && !status.isActive && (
+                <select
+                  value={boroughId}
+                  onChange={(e) => setBoroughId(e.target.value)}
+                  className="mt-2 w-full rounded-md border border-panel-border bg-panel/60 px-2 py-1 text-xs"
+                >
+                  <option value="">Select borough…</option>
+                  {boroughs.map((b) => (
+                    <option key={b} value={b}>
+                      {b}
+                    </option>
+                  ))}
+                </select>
+              )}
               {needsFamily && !status.isActive && (
                 <select
                   value={familyId}
@@ -132,12 +165,12 @@ export default function CorruptionPanel() {
                   ))}
                 </select>
               )}
-              <div className="mt-2 flex items-center justify-between">
+              <div className="mt-2 flex items-center justify-between gap-2">
                 <span className="text-xs text-money">
                   {formatMoney(info.cost)}
                   {!status.isActive && (
                     <span className="ml-2 text-muted-foreground">
-                      {Math.round(bribeSuccessRate({ reputation, heat }, key) * 100)}% to land
+                      {Math.round(breakdown.rate * 100)}% to land
                     </span>
                   )}
                 </span>
@@ -148,8 +181,9 @@ export default function CorruptionPanel() {
                   onClick={() =>
                     tryBribe(
                       key,
-                      needsFamily ? (familyId as typeof rivalFamilies[0]) : undefined,
+                      needsFamily ? (familyId as (typeof rivalFamilies)[0]) : undefined,
                       needsDistrict ? districtId : undefined,
+                      needsBorough ? boroughId : undefined,
                     )
                   }
                   className="h-7 px-3 text-[11px]"
@@ -157,6 +191,14 @@ export default function CorruptionPanel() {
                   Bribe
                 </Button>
               </div>
+              {!status.isActive && why && (
+                <p className="mt-1.5 text-[11px] text-muted-foreground">{why}</p>
+              )}
+              {!status.isActive && breakdown.courier && (
+                <p className="mt-0.5 text-[11px] text-foreground/80">
+                  {breakdown.courier.name.split(" ").slice(-1)[0]} carries it
+                </p>
+              )}
             </div>
           );
         })}

@@ -397,6 +397,8 @@ export interface BribeStatus {
   turnsRemaining: number;
   targetFamily?: FamilyName;
   targetTerritory?: string;
+  /** Precinct captains watch this borough. */
+  targetBorough?: string;
   cost: number;
   successRate: number;
 }

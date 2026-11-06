@@ -215,7 +215,7 @@ describe("bribes", () => {
       },
     };
     const after = attemptBribe(state, "captains");
-    expect(after).toBe(state);
-    expect(after.money).toBe(100_000);
+    expect(after.state).toBe(state);
+    expect(after.state.money).toBe(100_000);
   });
 });

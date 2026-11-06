@@ -108,7 +108,7 @@ import {
   withdrawWarehouse,
 } from "./liquor";
 import { ensureTerritorySlots, maxRacketsFor, allowedRacketTypes, lotTier, lotTierHint } from "./territoryValue";
-import { attemptBribe } from "./bribes";
+import { attemptBribe, type BribeReveal } from "./bribes";
 import { aggregateBribeEffects, applyHeat, decayHeat } from "./heat";
 import { applyEventChoice } from "./events";
 import { modifierSum } from "./eventModifiers";
@@ -387,8 +387,11 @@ interface GameStore extends GameState {
   tryBribe: (
     type: "cops" | "captains" | "chiefs" | "mayor" | "judge",
     targetFamily?: FamilyName,
-    targetTerritory?: string
+    targetTerritory?: string,
+    targetBorough?: string,
   ) => void;
+  bribeRoll: BribeReveal | null;
+  dismissBribeRoll: () => void;
   chooseEvent: (choiceId: string) => void;
   /** Order a hit on one of your own men. */
   callInOwn: (crewId: string) => void;
@@ -497,6 +500,7 @@ export const useGameStore = create<GameStore>()(
       ...buildInitialState(defaultSettings.seed, defaultSettings),
       liquorView: "stock",
       liquorRoutesTab: "home",
+      bribeRoll: null,
 
       newGame: (settings) => {
         const merged = {
@@ -504,11 +508,11 @@ export const useGameStore = create<GameStore>()(
           ...settings,
           seed: settings?.seed ?? Date.now() % 1_000_000,
         };
-        set({ ...buildInitialState(merged.seed, merged) });
+        set({ ...buildInitialState(merged.seed, merged), bribeRoll: null });
       },
 
       selectFamily: (family) => {
-        set({ ...startGame(get(), family) });
+        set({ ...startGame(get(), family), bribeRoll: null });
       },
 
       dismissOnboarding: () => set({ onboardingDismissed: true }),
@@ -2034,17 +2038,26 @@ export const useGameStore = create<GameStore>()(
           pendingReports: (s.pendingReports ?? []).slice(1),
         })),
 
-      tryBribe: (type, targetFamily, targetTerritory) => {
+      tryBribe: (type, targetFamily, targetTerritory, targetBorough) => {
         const before = get();
-        const after = attemptBribe(before, type, targetFamily, targetTerritory);
-        if (after === before) return;
-        set(after);
-        const entry = after.turnLog.length > before.turnLog.length ? after.turnLog[after.turnLog.length - 1] : undefined;
-        if (!entry) return;
-        if (entry.id.includes("_ok_")) toast.success("The money landed", { description: entry.text });
-        else if (entry.category === "heat") toast.error("The bribe fell through", { description: entry.text });
-        else toast.warning(entry.text);
+        const after = attemptBribe(before, type, targetFamily, targetTerritory, targetBorough);
+        if (after.state === before) return;
+        if (type === "judge" || !after.reveal) {
+          set({ ...after.state, bribeRoll: null });
+          const entry =
+            after.state.turnLog.length > before.turnLog.length
+              ? after.state.turnLog[after.state.turnLog.length - 1]
+              : undefined;
+          if (!entry) return;
+          if (entry.id.includes("_ok_")) toast.success("The money landed", { description: entry.text });
+          else if (entry.category === "heat") toast.error("The bribe fell through", { description: entry.text });
+          else toast.warning(entry.text);
+          return;
+        }
+        set({ ...after.state, bribeRoll: after.reveal });
       },
+
+      dismissBribeRoll: () => set({ bribeRoll: null }),
 
       callInOwn: (crewId) => {
         const s = get();
@@ -3098,6 +3111,7 @@ export const useGameStore = create<GameStore>()(
             mourningForBoss: hydrateMourningForBoss(loaded),
             ratAffair: loaded.ratAffair ?? null,
             activePanel: "none",
+            bribeRoll: null,
           });
           toast.success(`Loaded slot ${slot}`, {
             description: readSlotInfo(slot)?.name ?? `Week ${loaded.turn ?? 1}`,
@@ -3173,6 +3187,7 @@ export const useGameStore = create<GameStore>()(
           "dismissHitResult",
           "dismissLookoutReport",
           "tryBribe",
+          "dismissBribeRoll",
           "chooseEvent",
           "callInOwn",
           "moveRatOut",
@@ -3197,6 +3212,7 @@ export const useGameStore = create<GameStore>()(
         ];
         for (const m of methods) delete copy[m];
         delete copy.aiTrace;
+        delete copy.bribeRoll;
         const log = copy.turnLog;
         if (Array.isArray(log) && log.length > 200) copy.turnLog = log.slice(-200);
         return copy as GameState;
@@ -3277,6 +3293,7 @@ export const useGameStore = create<GameStore>()(
           supplyRoutePreview: null,
           liquorRoutesTab:
             (p as Partial<GameStore>).liquorRoutesTab ?? current.liquorRoutesTab ?? "home",
+          bribeRoll: null,
           focusReason: p.focusReason ?? null,
           intel: mergedIntel,
           grudges: p.grudges ?? current.grudges ?? [],

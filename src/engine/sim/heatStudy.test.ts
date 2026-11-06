@@ -109,13 +109,13 @@ function buyProtection(state: GameState): GameState {
   let next = state;
   const rival = next.territories.find((t) => t.owner && t.owner !== next.playerFamily);
   if (h >= 30 && !next.bribes.cops.isActive && next.money >= 1500 && rival) {
-    next = attemptBribe(next, "cops", undefined, rival.id);
+    next = attemptBribe(next, "cops", undefined, rival.id).state;
   }
-  if (h >= 45 && !next.bribes.captains.isActive && next.money >= 5000) {
-    next = attemptBribe(next, "captains");
+  if (h >= 45 && !next.bribes.captains.isActive && next.money >= 5000 && rival) {
+    next = attemptBribe(next, "captains", undefined, undefined, rival.borough).state;
   }
   if (h >= 60 && !next.bribes.mayor.isActive && next.money >= 40000) {
-    next = attemptBribe(next, "mayor");
+    next = attemptBribe(next, "mayor").state;
   }
   return next;
 }
