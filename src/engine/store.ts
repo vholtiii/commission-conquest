@@ -53,7 +53,7 @@ import {
   errandWeeksLeft,
 } from "./commissionErrand";
 import { canJoinHit, canSendOnHit, pullForJob } from "./jobReturn";
-import { isDefunct } from "./defection";
+import { isAbandonedTurf, isDefunct } from "./defection";
 import { createRng, hashString } from "./rng";
 import {
   assignCrew,
@@ -98,14 +98,14 @@ import {
   migrateLaunderSites,
 } from "./economy";
 import {
-  districtStorage,
   emptyLiquorLedger,
   hasManagedWarehouse,
   makeManagerLookup,
   shipmentSeizureChance,
   supplierPrice,
   totalCrates,
-  withdrawWarehouse,
+  warehouseRoom,
+  withdrawFamilyCrates,
 } from "./liquor";
 import { ensureTerritorySlots, maxRacketsFor, allowedRacketTypes, lotTier, lotTierHint } from "./territoryValue";
 import { attemptBribe, type BribeReveal } from "./bribes";
@@ -468,6 +468,11 @@ interface GameStore extends GameState {
   /** Liquor panel: stock and buying, or the standing routes. */
   liquorView: "stock" | "routes";
   setLiquorView: (view: "stock" | "routes") => void;
+  /** Warehouse district the Buy form is aimed at. */
+  liquorBuyDestId: string | null;
+  setLiquorBuyDest: (id: string) => void;
+  /** Open Liquor on stock, buying for this barn. */
+  openLiquorBuy: (territoryId: string) => void;
   liquorRoutesTab: "home" | "deals";
   setLiquorRoutesTab: (tab: "home" | "deals") => void;
   /** Open Liquor on the routes list, optionally tracing one road. */
@@ -499,6 +504,7 @@ export const useGameStore = create<GameStore>()(
     (set, get) => ({
       ...buildInitialState(defaultSettings.seed, defaultSettings),
       liquorView: "stock",
+      liquorBuyDestId: null,
       liquorRoutesTab: "home",
       bribeRoll: null,
 
@@ -508,7 +514,13 @@ export const useGameStore = create<GameStore>()(
           ...settings,
           seed: settings?.seed ?? Date.now() % 1_000_000,
         };
-        set({ ...buildInitialState(merged.seed, merged), bribeRoll: null });
+        set({
+          ...buildInitialState(merged.seed, merged),
+          bribeRoll: null,
+          liquorView: "stock",
+          liquorBuyDestId: null,
+          liquorRoutesTab: "home",
+        });
       },
 
       selectFamily: (family) => {
@@ -529,6 +541,13 @@ export const useGameStore = create<GameStore>()(
         })),
 
       setLiquorView: (view) => set({ liquorView: view }),
+      setLiquorBuyDest: (id) => set({ liquorBuyDestId: id }),
+      openLiquorBuy: (territoryId) =>
+        set({
+          liquorBuyDestId: territoryId,
+          activePanel: "warehouse",
+          liquorView: "stock",
+        }),
       setLiquorRoutesTab: (tab) => set({ liquorRoutesTab: tab }),
 
       showLiquorRoutes: (routeId) =>
@@ -1080,9 +1099,15 @@ export const useGameStore = create<GameStore>()(
           toast.error("Destination needs a managed warehouse or a speakeasy");
           return;
         }
-        const wd = withdrawWarehouse(src, cargo, s.turn, lookup);
+        const wd = withdrawFamilyCrates(s.territories, s.playerFamily, cargo, s.turn, lookup, {
+          sourceId,
+        });
         if (wd.moved < cargo) {
-          toast.error(`Only ${wd.moved} crates available in ${src.name}`);
+          toast.error(
+            wd.moved <= 0
+              ? "No crates in the family pile"
+              : `Only ${wd.moved} crates in the family pile`,
+          );
           return;
         }
         const route = {
@@ -1098,9 +1123,7 @@ export const useGameStore = create<GameStore>()(
         };
         const destName = dest.name;
         set({
-          territories: s.territories.map((t) =>
-            t.id === sourceId ? wd.territory : t,
-          ),
+          territories: wd.territories,
           liquorStock: Math.max(0, s.liquorStock - wd.moved),
           routes: [...s.routes, route],
           crew: assignCrew(s.crew, driverId, {
@@ -1128,7 +1151,7 @@ export const useGameStore = create<GameStore>()(
           toast.error("Assign a manager to that warehouse first");
           return;
         }
-        const { free } = districtStorage(dest, s.turn, lookup);
+        const { free } = warehouseRoom(dest, s.turn, lookup);
         if (free < 5) {
           toast.error("No free warehouse space");
           return;
@@ -2915,7 +2938,10 @@ export const useGameStore = create<GameStore>()(
           });
           return;
         }
-        if (familyHeadless(s, s.playerFamily) || playerLeaderless(s)) {
+        const t = s.territories.find((x) => x.id === territoryId);
+        if (!t || t.owner === s.playerFamily) return;
+        const abandoned = isAbandonedTurf(s, t);
+        if (!abandoned && (familyHeadless(s, s.playerFamily) || playerLeaderless(s))) {
           toast.error("Nobody to order the move", {
             description: playerLeaderless(s)
               ? "The chair is empty. Crown an underboss first."
@@ -2923,20 +2949,18 @@ export const useGameStore = create<GameStore>()(
           });
           return;
         }
-        const t = s.territories.find((x) => x.id === territoryId);
-        if (!t || t.owner === s.playerFamily) return;
         const allowance = captureAllowance(s, s.playerFamily, t);
         if (!allowance.ok) {
           toast.error("Not this week", { description: allowance.blocked });
           return;
         }
-        if (t.owner && inTruce(s, s.playerFamily, t.owner)) {
+        if (!abandoned && t.owner && inTruce(s, s.playerFamily, t.owner)) {
           toast.error("You gave your word", {
             description: `A truce holds with ${t.owner}. Break it from the Commission panel first.`,
           });
           return;
         }
-        const brokePact = !!t.owner && hasPact(s, s.playerFamily, t.owner);
+        const brokePact = !abandoned && !!t.owner && hasPact(s, s.playerFamily, t.owner);
         const base = brokePact && t.owner ? breakPact(s, t.owner) : s;
         const rng = createRng(s.seed + s.turn * 44 + territoryId.length);
         const { state: next, success } = resolveCapture(base, territoryId, attackerIds, rng);
@@ -2951,7 +2975,7 @@ export const useGameStore = create<GameStore>()(
           activePanel: "district",
           ...flyTo(next, territoryId),
         });
-        toast.success(`Took ${t.name} by force`);
+        toast.success(abandoned ? `Walked into ${t.name}` : `Took ${t.name} by force`);
         if (brokePact) toast.warning(`You broke your word with ${t.owner}.`);
       },
 
@@ -3093,6 +3117,7 @@ export const useGameStore = create<GameStore>()(
               pacts: loaded.diplomacy?.pacts ?? {},
               cooldowns: loaded.diplomacy?.cooldowns ?? {},
               hostBans: loaded.diplomacy?.hostBans ?? {},
+              burnedTables: loaded.diplomacy?.burnedTables ?? [],
               commissionCooldown: loaded.diplomacy?.commissionCooldown,
               sanctionUntil: loaded.diplomacy?.sanctionUntil,
               refusals: loaded.diplomacy?.refusals ?? 0,
@@ -3179,6 +3204,8 @@ export const useGameStore = create<GameStore>()(
           "setShownSupplyRoutes",
           "setSupplyRoutePreview",
           "setLiquorView",
+          "setLiquorBuyDest",
+          "openLiquorBuy",
           "setLiquorRoutesTab",
           "showLiquorRoutes",
           "showLiquorDeals",
@@ -3313,6 +3340,7 @@ export const useGameStore = create<GameStore>()(
             pacts: p.diplomacy?.pacts ?? current.diplomacy?.pacts ?? {},
             cooldowns: p.diplomacy?.cooldowns ?? current.diplomacy?.cooldowns ?? {},
             hostBans: p.diplomacy?.hostBans ?? current.diplomacy?.hostBans ?? {},
+            burnedTables: p.diplomacy?.burnedTables ?? current.diplomacy?.burnedTables ?? [],
             commissionCooldown: p.diplomacy?.commissionCooldown ?? current.diplomacy?.commissionCooldown,
             sanctionUntil: p.diplomacy?.sanctionUntil ?? current.diplomacy?.sanctionUntil,
             refusals: p.diplomacy?.refusals ?? current.diplomacy?.refusals ?? 0,

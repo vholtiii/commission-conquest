@@ -5,6 +5,7 @@ import {
   calculateHitOddsBreakdown,
   resolvePendingOperations,
 } from "@/engine/hitOps";
+import { detectionChance } from "@/engine/casing";
 import { crewPresentIn } from "@/engine/crewLocation";
 import { emptyIntel } from "@/engine/intel";
 import { buildInitialState, startGame } from "@/engine/initialState";
@@ -200,6 +201,83 @@ describe("casing guards", () => {
       .operations.filter((o) => o.kind === "surveillance" && !o.resolved);
     expect(casings).toHaveLength(1);
     expect(casings[0]!.lookoutId).toBe(first.id);
+  });
+});
+
+function emptyOwnerBlock(
+  state: GameState,
+  territory: Territory,
+): GameState {
+  const owner = territory.owner!;
+  const elsewhere = state.territories.find((t) => t.owner === owner && t.id !== territory.id);
+  if (!elsewhere) throw new Error("owner has nowhere else to stand");
+  const here = new Set(
+    crewPresentIn(state, territory.id)
+      .filter((c) => c.family === owner)
+      .map((c) => c.id),
+  );
+  const crew = state.crew.map((c) =>
+    here.has(c.id)
+      ? {
+          ...c,
+          awayAt: undefined,
+          assignment: { type: "garrison" as const, territoryId: elsewhere.id },
+        }
+      : c,
+  );
+  const territories = state.territories.map((t) => {
+    if (t.id === territory.id) {
+      return { ...t, garrisonIds: t.garrisonIds.filter((id) => !here.has(id)) };
+    }
+    if (t.id === elsewhere.id) {
+      return { ...t, garrisonIds: [...new Set([...t.garrisonIds, ...here])] };
+    }
+    return t;
+  });
+  return { ...state, crew, territories };
+}
+
+describe("empty-block detection", () => {
+  it("is zero when nobody from the owning family is on the block", () => {
+    const base = game();
+    const { territory } = rivalBlock(base);
+    const emptied = emptyOwnerBlock(base, territory);
+    expect(
+      crewPresentIn(emptied, territory.id).filter((c) => c.family === territory.owner),
+    ).toHaveLength(0);
+    const lookout = playerMen(emptied)[0]!;
+    expect(detectionChance(emptied, lookout, territory.id, territory.owner!)).toBe(0);
+    const occupied = detectionChance(base, lookout, territory.id, territory.owner!);
+    expect(occupied).toBeGreaterThan(0);
+  });
+
+  it("a casing on an empty block never comes back spotted, even on a hot roll", () => {
+    const base = game();
+    const { territory } = rivalBlock(base);
+    const emptied = emptyOwnerBlock(base, territory);
+    const lookout = playerMen(emptied)[0]!;
+    const op: Operation = {
+      id: "op_empty_case",
+      family: emptied.playerFamily!,
+      kind: "surveillance",
+      targetTerritoryId: territory.id,
+      targetFamily: territory.owner!,
+      shooterIds: [],
+      lookoutId: lookout.id,
+      surveilled: false,
+      tippedOff: false,
+      pendingTurns: 1,
+      resolved: false,
+    };
+    const out = resolvePendingOperations(
+      { ...emptied, operations: [op] },
+      { ...createRng(1), chance: () => true },
+      { skipFamily: emptied.playerFamily },
+    );
+    expect(out.reports).toHaveLength(1);
+    expect(out.reports[0]!.outcome).toBe("clean");
+    expect(out.reports[0]!.spottedIds).toHaveLength(0);
+    expect(out.state.intel.alerted?.[territory.id] ?? 0).toBeLessThanOrEqual(emptied.turn);
   });
 });
 

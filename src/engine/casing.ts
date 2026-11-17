@@ -179,9 +179,12 @@ export function detectionChance(
   targetFamily: FamilyName,
 ): number {
   const territory = state.territories.find((t) => t.id === territoryId);
-  if (!territory) return 0.03;
-  const present = crewPresentIn(state, territoryId).filter((c) => c.family === targetFamily);
-  const defenders = rivalGarrisonCount(state, territory, targetFamily);
+  if (!territory) return 0;
+  const present = crewPresentIn(state, territoryId).filter(
+    (c) => c.family === targetFamily && (c.status === "active" || c.status === "wounded"),
+  );
+  // Nobody from that family on the block: nobody to clock him. Cops are a separate roll.
+  if (present.length === 0) return 0;
   const top = pickTopMark(present);
   const def = getFamilyDef(targetFamily);
   const bossHome = present.some((c) => c.role === "boss");
@@ -189,8 +192,8 @@ export function detectionChance(
   let chance =
     0.06 +
     state.heat.level / 400 +
-    defenders * 0.03 +
-    (top?.skills.smarts ?? 30) / 500 -
+    present.length * 0.03 +
+    (top?.skills.smarts ?? 0) / 500 -
     casingSkills(lookout).stealth / 600;
 
   if (isDistrictAlerted(state, territoryId)) chance += 0.1;
@@ -288,6 +291,16 @@ export function rollCasing(
     };
   }
 
+  if (present.length === 0) {
+    return {
+      rung: "clean",
+      reachedTier: profile.tier,
+      reachedBusinessTier: profile.businessTier,
+      markSawHim: false,
+      copTrouble,
+    };
+  }
+
   if (!rng.chance(profile.detectChance)) {
     return {
       rung: "clean",
@@ -301,7 +314,7 @@ export function rollCasing(
   // Detected. Severity: how badly.
   const severity =
     rng.next() +
-    (top?.skills.smarts ?? 30) / 200 -
+    (top?.skills.smarts ?? 0) / 200 -
     lookout.skills.stealth / 200 +
     (def.personality === "volatile" ? 0.1 : 0);
 

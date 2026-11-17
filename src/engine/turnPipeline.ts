@@ -11,6 +11,7 @@ import { ALL_FAMILY_NAMES } from "@/data/families";
 import { createRng, type Rng } from "./rng";
 import {
   buildHitCinematic,
+  isArmedBossCarBomb,
   resolvePendingOperations,
   settleReadyHit,
   tipOffChance,
@@ -89,12 +90,13 @@ export interface PlayerHit {
  * store can play the reel; `endTurn` leaves the player's hits alone.
  *
  * Each gets its final tip-off roll first, the same one `endTurn` gives rival
- * hits. A boss car bomb that hasn't gone off yet stays armed and is retried
- * next week.
+ * hits. A car bomb on a living boss waits until after sit-downs stage this
+ * week, so their trip to the table can spring it.
  */
 export function resolvePlayerHits(
   state: GameState,
   rng: Rng,
+  opts: { onlyBossBombs?: boolean } = {},
 ): { state: GameState; hits: PlayerHit[]; logs: TurnLogEntry[] } {
   const player = state.playerFamily;
   const hits: PlayerHit[] = [];
@@ -102,9 +104,11 @@ export function resolvePlayerHits(
   if (!player) return { state, hits, logs };
   let current = state;
 
-  const ready = current.operations.filter(
-    (o) => !o.resolved && o.kind === "hit" && o.family === player && o.pendingTurns <= 1,
-  );
+  const ready = current.operations.filter((o) => {
+    if (o.resolved || o.kind !== "hit" || o.family !== player || o.pendingTurns > 1) return false;
+    const bossBomb = isArmedBossCarBomb(current, o);
+    return opts.onlyBossBombs ? bossBomb : !bossBomb;
+  });
   for (const planned of ready) {
     if (handsDown(current) && !(tableHit(planned) && !commissionHeld(current))) continue;
     let op = planned;
@@ -284,12 +288,18 @@ export function endTurn(state: GameState, rng?: Rng): GameState {
   logs.push(...lapsedMods.logs);
   current = stageSitdowns(current);
 
-  // The player's own hits already went (resolvePlayerHits, with a reel);
-  // only rival jobs resolve in here.
+  // Street jobs already went before the week turned. A package on a boss's
+  // car waits until now, after he has left for the table.
+  const lateBombs = resolvePlayerHits(current, random, { onlyBossBombs: true });
+  current = lateBombs.state;
+  const reel: HitCinematic[] = lateBombs.hits.map(({ op, result, path }) =>
+    buildHitCinematic(current, op, result, "ours", path),
+  );
+
+  // Only rival jobs resolve in here.
   const rivalsOnly = { skipFamily: current.playerFamily };
   const ops = resolvePendingOperations(current, random, rivalsOnly);
   current = applyLookoutReports(ops.state, ops.reports);
-  const reel: HitCinematic[] = [];
   for (const hit of ops.results) {
     const op = current.operations.find((o) => o.id === hit.operationId);
     if (op) logs.push(hitLogEntry(current, op, hit, `log_hit_${hit.operationId}`));

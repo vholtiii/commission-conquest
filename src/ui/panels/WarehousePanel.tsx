@@ -34,6 +34,8 @@ import {
   totalCrates,
   warehouseManagerEffectText,
   warehouseManagerMods,
+  warehouseRoom,
+  warehouseStock,
 } from "@/engine/liquor";
 import { activeCrewIds, isUnguarded } from "@/engine/territoryValue";
 import { RACKET_VISUALS } from "@/data/racketVisuals";
@@ -84,6 +86,8 @@ export default function WarehousePanel() {
   const setPanel = useGameStore((s) => s.setPanel);
   const liquorView = useGameStore((s) => s.liquorView) ?? "stock";
   const setLiquorView = useGameStore((s) => s.setLiquorView);
+  const liquorBuyDestId = useGameStore((s) => s.liquorBuyDestId);
+  const setLiquorBuyDest = useGameStore((s) => s.setLiquorBuyDest);
   const routeCount = useGameStore((s) => s.supplyRoutes?.length ?? 0);
 
   const lookup = useMemo(
@@ -108,23 +112,33 @@ export default function WarehousePanel() {
 
   const buyDests = useMemo(
     () =>
-      managedDistricts.filter((t) => districtStorage(t, turn, lookup).free >= 5),
+      managedDistricts.filter((t) => warehouseRoom(t, turn, lookup).free >= 5),
     [managedDistricts, turn, lookup],
   );
 
-  const [buyDestId, setBuyDestId] = useState("");
   const [buyQty, setBuyQty] = useState(5);
   const [sendForms, setSendForms] = useState<
     Record<string, { destId: string; crates: number; driverId: string }>
   >({});
 
-  const effectiveBuyDest =
-    buyDestId && buyDests.some((t) => t.id === buyDestId)
-      ? buyDestId
+  const chosenBuyDest = liquorBuyDestId
+    ? owned.find((t) => t.id === liquorBuyDestId)
+    : undefined;
+  const chosenHasRoom = !!(chosenBuyDest && buyDests.some((t) => t.id === chosenBuyDest.id));
+  const chosenBlocked =
+    chosenBuyDest && !chosenHasRoom
+      ? hasManagedWarehouse(chosenBuyDest, lookup, turn)
+        ? "full"
+        : "unmanaged"
+      : null;
+  const effectiveBuyDest = chosenHasRoom
+    ? chosenBuyDest!.id
+    : chosenBuyDest
+      ? ""
       : buyDests[0]?.id ?? "";
 
   const buyDest = owned.find((t) => t.id === effectiveBuyDest);
-  const buyFree = buyDest ? districtStorage(buyDest, turn, lookup).free : 0;
+  const buyFree = buyDest ? warehouseRoom(buyDest, turn, lookup).free : 0;
   const price = supplierPrice(seed, turn, heat.level);
   const prevPrice = turn > 1 ? supplierPrice(seed, turn - 1, heat.level) : price;
   const qty = Math.min(Math.max(5, Math.round(buyQty / 5) * 5), Math.max(5, buyFree));
@@ -304,7 +318,7 @@ export default function WarehousePanel() {
         <h3 className="mb-2 text-[10px] uppercase tracking-wide text-muted-foreground">
           Buy whisky
         </h3>
-        {buyDests.length === 0 ? (
+        {buyDests.length === 0 && !chosenBlocked ? (
           <p className="text-[11px] text-muted-foreground">
             Need a managed warehouse with free space.
           </p>
@@ -315,17 +329,24 @@ export default function WarehousePanel() {
               <select
                 value={effectiveBuyDest}
                 onChange={(e) => {
-                  setBuyDestId(e.target.value);
+                  setLiquorBuyDest(e.target.value);
                   const dest = owned.find((t) => t.id === e.target.value);
                   if (dest) {
-                    const free = districtStorage(dest, turn, lookup).free;
+                    const free = warehouseRoom(dest, turn, lookup).free;
                     setBuyQty(Math.min(buyQty, Math.max(5, free)));
                   }
                 }}
                 className="mt-0.5 w-full rounded-md border border-panel-border bg-panel/60 px-2 py-1 text-xs"
               >
+                {!effectiveBuyDest && (
+                  <option value="">
+                    {chosenBlocked && chosenBuyDest
+                      ? `${chosenBuyDest.name} is ${chosenBlocked}`
+                      : "Pick a barn with space"}
+                  </option>
+                )}
                 {buyDests.map((t) => {
-                  const free = districtStorage(t, turn, lookup).free;
+                  const free = warehouseRoom(t, turn, lookup).free;
                   return (
                     <option key={t.id} value={t.id}>
                       {t.name} ({free} free)
@@ -334,6 +355,12 @@ export default function WarehousePanel() {
                 })}
               </select>
             </label>
+            {chosenBlocked && chosenBuyDest && (
+              <p className="text-[11px] text-heat">
+                {chosenBuyDest.name} is {chosenBlocked === "full" ? "full" : "unmanaged"}. Pick another barn
+                {chosenBlocked === "full" ? " or free space there" : ""}.
+              </p>
+            )}
             <label className="block text-[10px] text-muted-foreground">
               Crates (min 5)
               <input
@@ -358,11 +385,11 @@ export default function WarehousePanel() {
             <Button
               size="sm"
               className="w-full"
-              disabled={!pay || buyFree < 5}
+              disabled={!pay || buyFree < 5 || !effectiveBuyDest}
               onClick={() => buyWhisky(effectiveBuyDest, qty)}
             >
               <Wine className="mr-1.5 h-3.5 w-3.5" />
-              Buy {qty} crates
+              Buy {qty} crates{buyDest ? ` for ${buyDest.name}` : ""}
             </Button>
           </div>
         )}
@@ -410,7 +437,11 @@ export default function WarehousePanel() {
                 form.driverId && driversHere.some((c) => c.id === form.driverId)
                   ? form.driverId
                   : driversHere[0]?.id ?? "";
-              const maxSend = Math.max(1, storage.stored);
+              const here = warehouseStock(t, turn);
+              const incoming = pendingShipments
+                .filter((s) => s.destTerritoryId === t.id)
+                .reduce((sum, s) => sum + s.crates, 0);
+              const maxSend = Math.max(1, crates);
               const sendCrates = Math.min(
                 Math.max(1, form.crates || 1),
                 maxSend,
@@ -431,18 +462,25 @@ export default function WarehousePanel() {
               return (
                 <div
                   key={t.id}
-                  className="rounded border border-panel-border bg-panel/40 p-2.5"
+                  className={`rounded border bg-panel/40 p-2.5 ${
+                    liquorBuyDestId === t.id
+                      ? "border-steel ring-1 ring-steel/40"
+                      : "border-panel-border"
+                  }`}
+                  onClick={() => setLiquorBuyDest(t.id)}
                 >
                   <div className="mb-2 flex items-start justify-between gap-2">
                     <button
                       type="button"
                       className="text-left text-xs font-semibold hover:underline"
-                      onClick={() => {
+                      onClick={(e) => {
+                        e.stopPropagation();
                         selectTerritory(t.id);
                         setPanel("district");
                       }}
                     >
                       {t.name}
+                      {incoming > 0 ? ` · ${incoming} incoming` : ""}
                     </button>
                     <div className="flex flex-wrap justify-end gap-1">
                       {!managed && (
@@ -549,6 +587,9 @@ export default function WarehousePanel() {
                               </span>
                               <span className="ml-auto font-medium">
                                 {r.stock}/{capR}
+                                {r.type === "warehouse" && incoming > 0
+                                  ? ` · ${incoming} incoming`
+                                  : ""}
                               </span>
                               {frozen && (
                                 <Badge className="bg-heat/30 text-[8px] text-heat">
@@ -577,10 +618,13 @@ export default function WarehousePanel() {
                       })}
                   </div>
 
-                  {managed && storage.stored > 0 && otherManaged.length > 0 && (
+                  {managed && crates > 0 && otherManaged.length > 0 && (
                     <div className="space-y-1.5 border-t border-panel-border pt-2">
                       <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
                         Send crates
+                      </p>
+                      <p className="text-[10px] text-muted-foreground">
+                        {t.name} ({here} here · {crates} family)
                       </p>
                       <select
                         value={destId}

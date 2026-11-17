@@ -51,7 +51,9 @@ import {
   SITDOWN_MONEY,
   canDiplomacy,
   hasConsigliere,
+  sitdownInfluenceCost,
   sitdownOdds,
+  tableBurned,
   withCooldown,
 } from "./diplomacy";
 import { getRelation, setRelationDelta, statusFromScore } from "./relations";
@@ -319,7 +321,7 @@ export function proposeSitdown(
   let next: GameState = {
     ...state,
     money: state.money - SITDOWN_MONEY,
-    influence: Math.max(0, state.influence - SITDOWN_INFLUENCE),
+    influence: Math.max(0, state.influence - sitdownInfluenceCost(state)),
   };
 
   const sitdown: Sitdown = {
@@ -419,7 +421,7 @@ export function answerCounter(
 
   const next: GameState = accept
     ? { ...state, sitdowns }
-    : { ...state, sitdowns, influence: state.influence + SITDOWN_INFLUENCE };
+    : { ...state, sitdowns, influence: state.influence + sitdownInfluenceCost(state) };
 
   const where = districtName(state, sitdown.venueTerritoryId);
   return {
@@ -450,6 +452,7 @@ export function aiProposeSitdown(
   if (!player || family === player) return { state };
   if (!getBoss(state.crew, player) || !getBoss(state.crew, family)) return { state };
   if (bossIsJailed(state, family) || bossIsJailed(state, player)) return { state };
+  if (tableBurned(state, family)) return { state };
   const standing = state.rivalInfluence?.[family] ?? 0;
   if (standing < SITDOWN_INFLUENCE) return { state };
   if ((state.sitdowns ?? []).some((s) => s.status === "proposed" && s.proposer === family)) {
@@ -927,6 +930,12 @@ export function proposePassageSitdown(
   if (!getBoss(state.crew, player) || !getBoss(state.crew, family)) {
     return { state, log: log(`${family} has nobody to speak for them on passage.`) };
   }
+  if (tableBurned(state, family)) {
+    return {
+      state,
+      log: log(`${family} will not talk passage after the cafe — even at peace.`),
+    };
+  }
   if (statusFromScore(getRelation(state.relations, player, family)) === "war") {
     return { state, log: log(`${family} won't talk passage while you're at war.`) };
   }
@@ -970,6 +979,7 @@ export function aiDemandPassageSitdown(
   const player = state.playerFamily;
   if (!player || family === player) return { state };
   if (passageTalksPending(state, family)) return { state };
+  if (tableBurned(state, family)) return { state };
   if (!getBoss(state.crew, player) || !getBoss(state.crew, family)) return { state };
   const territoryId = resolveVenue(state, family, "theirs");
   if (!territoryId) return { state };

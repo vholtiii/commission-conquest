@@ -24,7 +24,7 @@ import type { Rng } from "./rng";
 import { setRelationDelta } from "./relations";
 import { hasPact } from "./diplomacy";
 import { rivalPactBetween } from "./ai/rivalPacts";
-import { withdrawCrates, withdrawWarehouse, depositTracked, PROOF_PREMIUM, makeManagerLookup } from "./liquor";
+import { withdrawCrates, withdrawFamilyCrates, depositTracked, PROOF_PREMIUM, makeManagerLookup } from "./liquor";
 import { CRATE_STREET_VALUE } from "./passage";
 import { familyHq } from "./crewLocation";
 import { dropDealRoutes, isDealRoute } from "./supplyRoutes";
@@ -479,8 +479,8 @@ export function shipStandingLiquor(state: GameState): { state: GameState; logs: 
     const src = next.territories.find((t) => t.id === route.sourceTerritoryId);
     const want = route.cratesPerTurn || deal.terms.crates || 4;
     const drawn = src
-      ? withdrawWarehouse(src, want, next.turn, lookup)
-      : { territory: src!, moved: 0, proofed: 0 };
+      ? withdrawFamilyCrates(next.territories, player, want, next.turn, lookup, { sourceId: src.id })
+      : { territories: next.territories, moved: 0, proofed: 0, fromSource: 0 };
     if (!src || drawn.moved <= 0) {
       const broke = breakDeal(next, deal.id, player, `The crates never left the warehouse. ${other} calls the liquor order broken.`);
       next = dropDealRoutes(broke.state, deal.id);
@@ -488,7 +488,7 @@ export function shipStandingLiquor(state: GameState): { state: GameState; logs: 
       continue;
     }
 
-    let territories = next.territories.map((t) => (t.id === src.id ? drawn.territory : t));
+    let territories = drawn.territories;
     const hqNow = territories.find((t) => t.id === dest.id)!;
     const landed = depositTracked(hqNow, drawn.moved, drawn.proofed, "any", next.turn);
     territories = territories.map((t) => (t.id === dest.id ? landed.territory : t));

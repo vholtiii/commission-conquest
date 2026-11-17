@@ -19,6 +19,10 @@ import { bossIsJailed } from "./jail";
 
 /** Tunable costs. Influence income is only a few points per turn. */
 export const SITDOWN_INFLUENCE = 15;
+/** Extra standing after the first cafe that ended with a living witness. */
+export const BETRAYAL_SURCHARGE_FIRST = 10;
+/** Extra standing for each additional burned family after the first. */
+export const BETRAYAL_SURCHARGE_EACH = 5;
 export const SITDOWN_MONEY = 500;
 export const SITDOWN_COOLDOWN = 2;
 
@@ -71,7 +75,30 @@ export interface DiplomacyCheck {
 }
 
 export function emptyDiplomacy(): DiplomacyState {
-  return { pacts: {}, cooldowns: {} };
+  return { pacts: {}, cooldowns: {}, burnedTables: [] };
+}
+
+export function tableBurned(state: GameState, family: FamilyName): boolean {
+  return (state.diplomacy?.burnedTables ?? []).includes(family);
+}
+
+export function burnTable(state: GameState, family: FamilyName): GameState {
+  if (tableBurned(state, family)) return state;
+  const diplo = diplomacyOf(state);
+  return {
+    ...state,
+    diplomacy: {
+      ...diplo,
+      burnedTables: [...(diplo.burnedTables ?? []), family],
+    },
+  };
+}
+
+/** Player standing cost to call a real table. Rises after a betrayal escape. */
+export function sitdownInfluenceCost(state: GameState): number {
+  const n = (state.diplomacy?.burnedTables ?? []).length;
+  if (n <= 0) return SITDOWN_INFLUENCE;
+  return SITDOWN_INFLUENCE + BETRAYAL_SURCHARGE_FIRST + BETRAYAL_SURCHARGE_EACH * (n - 1);
 }
 
 export function diplomacyOf(state: GameState): DiplomacyState {
@@ -79,6 +106,7 @@ export function diplomacyOf(state: GameState): DiplomacyState {
     ...state.diplomacy,
     pacts: state.diplomacy?.pacts ?? {},
     cooldowns: state.diplomacy?.cooldowns ?? {},
+    burnedTables: state.diplomacy?.burnedTables ?? [],
   };
 }
 
@@ -221,7 +249,10 @@ export function canDiplomacy(
   }
 
   if (action === "sitdown") {
-    const blocked = resourceReason(state, SITDOWN_MONEY, SITDOWN_INFLUENCE);
+    if (tableBurned(state, target)) {
+      return { ok: false, reason: "They will not sit with you" };
+    }
+    const blocked = resourceReason(state, SITDOWN_MONEY, sitdownInfluenceCost(state));
     if (blocked) return { ok: false, reason: blocked };
     return { ok: true, odds: sitdownOdds(state, target) };
   }
@@ -249,7 +280,7 @@ export function diplomacyHint(
   if (!check.ok) return check.reason ?? "Unavailable";
   const cost =
     action === "sitdown"
-      ? `−${SITDOWN_INFLUENCE} standing · $${SITDOWN_MONEY}`
+      ? `−${sitdownInfluenceCost(state)} standing · $${SITDOWN_MONEY}`
       : action === "tribute"
         ? `$${TRIBUTE_MONEY} for standing`
         : action === "demand"
@@ -367,7 +398,7 @@ export function resolveDiplomacy(
     let next: GameState = {
       ...state,
       money: state.money - SITDOWN_MONEY,
-      influence: Math.max(0, state.influence - SITDOWN_INFLUENCE),
+      influence: Math.max(0, state.influence - sitdownInfluenceCost(state)),
       relations: setRelationDelta(
         state.relations,
         player,

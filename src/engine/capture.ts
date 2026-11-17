@@ -9,6 +9,7 @@ import { familyHq, type LocationState } from "./crewLocation";
 import { safehouseCaptureDefence } from "./safehouse";
 import { mattressDistrict, mattressSoldierBonus, MATTRESS_DEFENCE } from "./mattresses";
 import { bribedHeat } from "./heat";
+import { isAbandonedTurf } from "./defection";
 
 /* ------------------------------------------------------------------ */
 /* Per-turn capture limit                                              */
@@ -46,7 +47,8 @@ export interface CaptureAllowance {
  * Never more than CAPTURE_LIMIT_MAX.
  */
 export function captureAllowance(
-  state: Pick<GameState, "turn" | "captureTally" | "vendettas">,
+  state: Pick<GameState, "turn" | "captureTally" | "vendettas"> &
+    Partial<Pick<GameState, "defunctFamilies">>,
   family: FamilyName,
   target?: Pick<Territory, "owner" | "leadershipVacuum">,
 ): CaptureAllowance {
@@ -62,7 +64,7 @@ export function captureAllowance(
       !!target.owner &&
       state.vendettas.includes(family) &&
       state.vendettas.includes(target.owner);
-    if (target.leadershipVacuum > 0) {
+    if (target.leadershipVacuum > 0 || isAbandonedTurf(state, target)) {
       limit = CAPTURE_LIMIT_MAX;
       bonusReason = "vacuum";
     } else if (vendetta) {
@@ -148,12 +150,27 @@ export function presenceCaptureMods(
 export function captureStrength(
   state: Pick<GameState, "crew" | "territories" | "playerFamily"> &
     Partial<LocationState> &
-    Partial<Pick<GameState, "mattresses" | "turn" | "bribes">>,
+    Partial<Pick<GameState, "mattresses" | "turn" | "bribes" | "defunctFamilies">>,
   territoryId: string,
   attackerIds: string[],
 ): { atk: number; def: number; defenders: CrewMember[]; notes: string[] } {
   const t = state.territories.find((x) => x.id === territoryId);
   if (!t || !state.playerFamily) return { atk: 0, def: 40, defenders: [], notes: [] };
+  if (isAbandonedTurf(state, t)) {
+    const idSet = new Set(attackerIds);
+    const attackers = state.crew.filter((c) => idSet.has(c.id) && c.status === "active");
+    const muscle = (c: CrewMember) =>
+      (c.skills.muscle + mattressSoldierBonus(state, c)) * (isUnmade(c) ? 0.75 : 1);
+    const atk =
+      attackers.reduce((n, c) => n + muscle(c), 0) *
+      (1 + (getFamilyDef(state.playerFamily).bonuses.combatBonus || 0));
+    return {
+      atk,
+      def: 0,
+      defenders: [],
+      notes: [`The ${t.owner} family is finished — no one holds this block`],
+    };
+  }
 
   const idSet = new Set(attackerIds);
   const attackers = state.crew.filter((c) => idSet.has(c.id) && c.status === "active");
@@ -274,6 +291,57 @@ export function resolveCapture(
     const c = state.crew.find((m) => m.id === id);
     return !!c && c.family === state.playerFamily && c.status === "active";
   });
+  if (validIds.length === 0) return { state, success: false };
+
+  const party = new Set(validIds);
+  const occupy = (
+    crew: CrewMember[],
+    logText: string,
+    extras: Partial<GameState> = {},
+    wipeManagers = false,
+  ) => {
+    let taken = crew;
+    for (const id of validIds) {
+      taken = assignCrew(taken, id, { type: "garrison", territoryId });
+    }
+    return {
+      state: recordCapture({
+        ...state,
+        ...extras,
+        territories: state.territories.map((x) => ({
+          ...x,
+          garrisonIds:
+            x.id === territoryId
+              ? validIds
+              : x.garrisonIds.filter((id) => !party.has(id)),
+          rackets: x.rackets.map((r) => {
+            if (x.id === territoryId && wipeManagers) return { ...r, managerId: null };
+            if (r.managerId && party.has(r.managerId)) return { ...r, managerId: null };
+            return r;
+          }),
+          ...(x.id === territoryId
+            ? { owner: state.playerFamily, leadershipVacuum: 0, discovered: true }
+            : {}),
+        })),
+        crew: taken,
+        turnLog: [
+          ...state.turnLog,
+          {
+            id: `log_atk_${Date.now()}`,
+            turn: state.turn,
+            category: "combat" as const,
+            text: logText,
+            family: state.playerFamily,
+          },
+        ],
+      }, state.playerFamily),
+      success: true as const,
+    };
+  };
+
+  if (isAbandonedTurf(state, t)) {
+    return occupy(state.crew, `Walked into ${t.name}. The ${t.owner} are finished.`, {}, true);
+  }
 
   const { atk, def } = captureStrength(state, territoryId, validIds);
   const success = atk * (0.8 + rng.next() * 0.4) > def * (0.8 + rng.next() * 0.4);
@@ -301,54 +369,22 @@ export function resolveCapture(
     };
   }
 
-  const party = new Set(validIds);
   let taken = state.crew.map((c) =>
     t.garrisonIds.includes(c.id) && !party.has(c.id)
       ? { ...c, status: "wounded" as const, assignment: { type: "idle" as const } }
       : c,
   );
-  for (const id of validIds) {
-    taken = assignCrew(taken, id, { type: "garrison", territoryId });
-  }
   const hardened = hardenFromCapture(taken, validIds);
   const paid = bumpLoyalty(hardened.crew, validIds, 3);
   const muscleLine =
     hardened.gained.length > 0 ? ` Muscle +${CAPTURE_MUSCLE} for ${hardened.gained.join(", ")}.` : "";
   const loyalLine = paid.gained.length > 0 ? ` Loyalty +3 for ${paid.gained.join(", ")}.` : "";
-  return {
-    state: recordCapture({
-      ...state,
-      territories: state.territories.map((x) => ({
-        ...x,
-        garrisonIds:
-          x.id === territoryId
-            ? validIds
-            : x.garrisonIds.filter((id) => !party.has(id)),
-        rackets: x.rackets.map((r) =>
-          r.managerId && party.has(r.managerId) ? { ...r, managerId: null } : r,
-        ),
-        ...(x.id === territoryId
-          ? { owner: state.playerFamily, leadershipVacuum: 0, discovered: true }
-          : {}),
-      })),
-      crew: markParty(paid.crew, validIds),
-      heat: bribedHeat(state, 8, `capture:${territoryId}`),
-      reputation: {
-        ...state.reputation,
-        fear: Math.min(100, state.reputation.fear + 3),
-        streetInfluence: Math.min(100, state.reputation.streetInfluence + 2),
-      },
-      turnLog: [
-        ...state.turnLog,
-        {
-          id: `log_atk_${Date.now()}`,
-          turn: state.turn,
-          category: "combat",
-          text: `Took ${t.name} by force.${muscleLine}${loyalLine}`,
-          family: state.playerFamily,
-        },
-      ],
-    }, state.playerFamily),
-    success: true,
-  };
+  return occupy(markParty(paid.crew, validIds), `Took ${t.name} by force.${muscleLine}${loyalLine}`, {
+    heat: bribedHeat(state, 8, `capture:${territoryId}`),
+    reputation: {
+      ...state.reputation,
+      fear: Math.min(100, state.reputation.fear + 3),
+      streetInfluence: Math.min(100, state.reputation.streetInfluence + 2),
+    },
+  });
 }

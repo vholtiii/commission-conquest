@@ -11,6 +11,11 @@ import {
   hitLead,
   territoryHops,
 } from "@/engine/hitOps";
+import {
+  escortLine,
+  likelyBetrayalEscort,
+  sitdownInviteChance,
+} from "@/engine/sitdownBetrayal";
 import { resolveCrewTerritoryId } from "@/engine/crewLocation";
 import { emptyIntel, hasFreshCasing, namedHitTargets, presenceOnBlock } from "@/engine/intel";
 import { isMessageTargetRole, routeDisputeWith } from "@/engine/passage";
@@ -228,7 +233,13 @@ export default function HitPlanner() {
 
   const oddsBreakdown = draftOp ? calculateHitOddsBreakdown(state, draftOp) : null;
   const cased = territory ? hasFreshCasing(state, territory.id) : false;
-  const defenders = draftOp ? defendersFor(state, draftOp) : 0;
+  const skipBetrayalGarrison =
+    approach === "sitdown_betrayal" &&
+    !blind &&
+    !!targetCrewId &&
+    !!draftOp &&
+    resolveCrewTerritoryId(state, targetCrewId) !== draftOp.targetTerritoryId;
+  const defenders = draftOp ? defendersFor(state, draftOp, { skipGarrison: skipBetrayalGarrison }) : 0;
   const exposedIds = draftOp ? exposedCrewIds(draftOp) : [];
   const atRisk = exposedIds.length;
   const associatesOnTeam = exposedIds.some((id) => state.crew.find((c) => c.id === id)?.role === "associate");
@@ -253,6 +264,9 @@ export default function HitPlanner() {
     missing.length === 0 &&
     (blind || (!!targetCrewId && rivalTargets.length > 0));
   const spec = approachSpec(approach);
+  const namedBetrayal = approach === "sitdown_betrayal" && !blind && !!targetCrewId;
+  const sitChance = namedBetrayal && draftOp ? sitdownInviteChance(state, draftOp) : 0;
+  const likelyEscort = namedBetrayal && draftOp ? likelyBetrayalEscort(state, draftOp) : null;
   const lead = draftOp ? hitLead(draftOp, crew, state) : undefined;
   const leadAbort = lead ? abortChance(lead.skills.smarts) : 0;
 
@@ -463,6 +477,14 @@ export default function HitPlanner() {
               him to travel — a sit-down will do it. Every week it sits is a chance it&apos;s found.
             </p>
           )}
+          {approach === "sitdown_betrayal" && (
+            <p className="mt-1.5 text-[10px] text-muted-foreground">
+              This is a street invite, not a Commission table. War means they bring muscle; hidden
+              backup has to be smarter than those guns. If he sits and walks, that family is done
+              talking, the Commission docks you, and every other table gets dearer. A clean kill
+              only costs a little respect.
+            </p>
+          )}
         </div>
 
         <div className="space-y-3">
@@ -603,12 +625,20 @@ export default function HitPlanner() {
         )}
 
         <div className="rounded-md border border-panel-border bg-panel/50 p-3 space-y-1.5">
-          <div className="flex items-center justify-between text-xs text-muted-foreground">
-            <span>Estimated Success</span>
-            <Badge className="bg-steel/30 text-steel-light">
-              {oddsBreakdown ? `${Math.round(oddsBreakdown.total * 100)}%` : "—"}
-            </Badge>
+          <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+            <span>{namedBetrayal ? "Invite · escort · handshake" : "Estimated Success"}</span>
+            {!namedBetrayal && (
+              <Badge className="bg-steel/30 text-steel-light">
+                {oddsBreakdown ? `${Math.round(oddsBreakdown.total * 100)}%` : "—"}
+              </Badge>
+            )}
           </div>
+          {namedBetrayal && oddsBreakdown && likelyEscort && (
+            <p className="text-[11px] leading-snug text-steel-light">
+              {Math.round(sitChance * 100)}% he sits · {escortLine(likelyEscort)} ·{" "}
+              {Math.round(oddsBreakdown.total * 100)}% if he sits
+            </p>
+          )}
           {oddsBreakdown && (
             <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-[10px] text-muted-foreground">
               <span>Base {pct(oddsBreakdown.base)}</span>

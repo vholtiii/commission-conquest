@@ -33,7 +33,7 @@ import { familyHq, isBossUnderground, resolveCrewTerritoryId } from "./crewLocat
 import { isLaidLow, SAFEHOUSE, safehouseCaptureDefence } from "./safehouse";
 import { BOSS_PRESENCE, bossPresentIn, hqIsSoft } from "./bossPresence";
 import { actingUnderboss, bossIsJailed } from "./jail";
-import { isDefunct, settleRivalChair } from "./defection";
+import { isAbandonedTurf, isDefunct, settleRivalChair } from "./defection";
 import { startInterregnum } from "./interregnum";
 import { familiesPressingSuddenDeath } from "./victory";
 import { tempoFor } from "./tempo";
@@ -178,7 +178,7 @@ export function expandGarrisonCount(state: GameState, territory: Territory): num
   if (dinnerActive(state) && territory.owner === state.playerFamily) return 0;
   return territory.garrisonIds.length;
 }
-function tryExpand(
+export function tryExpand(
   state: GameState,
   family: FamilyName,
   rng: Rng,
@@ -189,7 +189,7 @@ function tryExpand(
   // special-case grabs (leadership vacuum, vendetta target) stay on the table.
   let targets = adjacentNeutralOrEnemy(state, family).filter(
     (t) =>
-      (!t.owner || !atPeace(state, family, t.owner)) &&
+      (!t.owner || isAbandonedTurf(state, t) || !atPeace(state, family, t.owner)) &&
       captureAllowance(state, family, t).ok,
   );
   if (opts?.territoryId) targets = targets.filter((t) => t.id === opts.territoryId);
@@ -216,9 +216,11 @@ function tryExpand(
   const openStreet = (t: Territory) => dinnerActive(state) && t.owner === state.playerFamily;
   const scored = targets
     .map((t) => {
+      const abandoned = isAbandonedTurf(state, t);
       const garrison = seenGarrison(t);
-      const softness =
-        (t.owner ? 2 : 0) + t.defenseBonus + fortification(t) + garrison + bossWeight(t) * 10;
+      const softness = abandoned
+        ? 0
+        : (t.owner ? 2 : 0) + t.defenseBonus + fortification(t) + garrison + bossWeight(t) * 10;
       const pressing = t.owner && familiesPressingSuddenDeath(state).includes(t.owner) ? 1.6 : 1;
       const heard = openStreet(t) && state.familyDinner?.knownBy.includes(family) ? 1.6 : 1;
       const score = (valueScore(t) / (1 + Math.max(0, softness))) * pressing * heard;
@@ -226,9 +228,11 @@ function tryExpand(
     })
     .sort((a, b) => b.score - a.score);
   const target = scored[0]!.t;
+  const abandoned = isAbandonedTurf(state, target);
   const garrison = expandGarrisonCount(state, target);
-  const softness =
-    (target.owner ? 2 : 0) + target.defenseBonus + fortification(target) + garrison;
+  const softness = abandoned
+    ? 0
+    : (target.owner ? 2 : 0) + target.defenseBonus + fortification(target) + garrison;
 
   // A capo (or the consigliere, or the boss) brings his free crew. Their muscle softens the door.
   const rank = (c: CrewMember) => (c.role === "capo" ? 0 : c.role === "consigliere" ? 1 : 2);
@@ -239,9 +243,12 @@ function tryExpand(
     .sort((a, b) => rank(a.leader) - rank(b.leader) || b.men.length - a.men.length)[0];
   const crewBoost = grab ? 0.04 * grab.men.length : 0;
 
+  if (abandoned && !grab) return { state };
+
   const roll = rng.next();
   const success =
     !target.owner ||
+    abandoned ||
     roll >
       Math.max(
         0.05,
@@ -275,12 +282,13 @@ function tryExpand(
           owner: family,
           leadershipVacuum: 0,
           garrisonIds: [],
+          rackets: abandoned ? t.rackets.map((r) => ({ ...r, managerId: null })) : t.rackets,
         }
       : t,
   );
 
   let relations = state.relations;
-  if (prevOwner) {
+  if (prevOwner && !abandoned) {
     relations = setRelationDelta(relations, family, prevOwner, -20);
   }
 
@@ -299,13 +307,16 @@ function tryExpand(
   }
 
   const withCrew = grab ? ` ${grab.leader.name} brings ${grab.men.length} of his crew.` : "";
+  const taken = recordCapture({ ...state, crew, territories, relations }, family);
   return {
-    state: bumpRivalHeat(recordCapture({ ...state, crew, territories, relations }, family), family, 4),
+    state: abandoned ? taken : bumpRivalHeat(taken, family, 4),
     log: {
       id: `ai_expand_${family}_${state.turn}_${target.id}`,
       turn: state.turn,
       category: "ai",
-      text: `${family} seized ${target.name}${prevOwner ? ` from ${prevOwner}` : ""}${softness < 1 ? " (lightly held)" : ""}.${withCrew}`,
+      text: abandoned
+        ? `${family} walked into ${target.name}. The ${prevOwner} are finished.${withCrew}`
+        : `${family} seized ${target.name}${prevOwner ? ` from ${prevOwner}` : ""}${softness < 1 ? " (lightly held)" : ""}.${withCrew}`,
       family,
     },
   };

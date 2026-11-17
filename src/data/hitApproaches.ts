@@ -145,9 +145,10 @@ export const HIT_APPROACH_SPECS: Record<HitApproach, HitApproachSpec> = {
   sitdown_betrayal: {
     approach: "sitdown_betrayal",
     label: "Sit-down Betrayal",
-    description: "Invite them to talk. Leave them under the table.",
+    description:
+      "Street invite, not a Commission table. War means muscle; backup must out-smart their guns. If he sits and walks, that family is done talking.",
     heatHint: 6,
-    skillsHint: "Charm · Muscle",
+    skillsHint: "Charm · Smarts",
     garrisonExposure: 0.35,
     roles: [
       {
@@ -163,8 +164,8 @@ export const HIT_APPROACH_SPECS: Record<HitApproach, HitApproachSpec> = {
       {
         role: "backup",
         label: "Hidden Backup",
-        hint: "Optional shooters waiting outside. Extra bodies add heat.",
-        skill: "muscle",
+        hint: "Optional. Smarts vs their muscle — extra guns only help if they think faster.",
+        skill: "smarts",
         multi: true,
         required: false,
         exposed: true,

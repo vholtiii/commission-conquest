@@ -1065,6 +1065,11 @@ export interface DiplomacyState {
    * Key `${host}|${guest}`, value exclusive expiry turn.
    */
   hostBans?: Record<string, number>;
+  /**
+   * Families that sat for a betrayal and walked out. They will not sit again
+   * (peace and passage included). No expiry.
+   */
+  burnedTables?: FamilyName[];
   /** First turn the player may call the Commission again. */
   commissionCooldown?: number;
   /** The player defied a ruling. Seats won't sit with him until this turn. */

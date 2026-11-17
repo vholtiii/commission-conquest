@@ -28,7 +28,7 @@ import {
 import { activeDeal, termsText } from "@/engine/passage";
 import { activeDeals, dealPartner } from "@/engine/deals";
 import { familyHq } from "@/engine/crewLocation";
-import { districtStorage, feedsOwnSpeakeasies, hasManagedWarehouse, makeManagerLookup } from "@/engine/liquor";
+import { feedsOwnSpeakeasies, hasManagedWarehouse, makeManagerLookup, totalCrates, warehouseStock } from "@/engine/liquor";
 import { seizureCover } from "@/engine/safehouse";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -208,13 +208,8 @@ export default function SupplyRoutesSection() {
     [territories, playerFamily],
   );
   const sources = useMemo(
-    () =>
-      owned.filter((t) =>
-        t.rackets.some(
-          (r) => (r.type === "warehouse" || r.type === "still" || r.type === "brewery") && r.stock > 0,
-        ),
-      ),
-    [owned],
+    () => owned.filter((t) => hasManagedWarehouse(t, lookup, turn)),
+    [owned, lookup, turn],
   );
   const dests = useMemo(
     () => owned.filter((t) => t.rackets.some((r) => r.type === "warehouse" || r.type === "speakeasy")),
@@ -285,9 +280,8 @@ export default function SupplyRoutesSection() {
   useEffect(() => () => setPreview(null), [setPreview]);
 
   const nameOf = (id: string) => territories.find((t) => t.id === id)?.name ?? id;
-  const sourceStock = effSource
-    ? districtStorage(territories.find((t) => t.id === effSource)!, turn, lookup).stored
-    : 0;
+  const familyCrates = playerFamily ? totalCrates(state, playerFamily) : 0;
+  const sourceStock = familyCrates;
   if (!playerFamily) return null;
 
   return (
@@ -393,7 +387,7 @@ export default function SupplyRoutesSection() {
         <div className="space-y-2 border-t border-panel-border pt-2">
           {sources.length === 0 ? (
             <p className="text-[11px] text-muted-foreground">
-              Nothing to ship. A warehouse, still or brewery with crates is the start of a route.
+              Nothing to ship. Assign a manager to a warehouse. Empty barns can still start a route — the truck loads when crates are there.
             </p>
           ) : destChoices.length === 0 ? (
             <p className="text-[11px] text-muted-foreground">
@@ -427,7 +421,7 @@ export default function SupplyRoutesSection() {
                   >
                     {sources.map((t) => (
                       <option key={t.id} value={t.id}>
-                        {t.name} ({districtStorage(t, turn, lookup).stored})
+                        {t.name} ({warehouseStock(t, turn)} here · {familyCrates} family)
                       </option>
                     ))}
                   </select>

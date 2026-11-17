@@ -42,6 +42,14 @@ export function isDefunct(state: Pick<GameState, "defunctFamilies">, family: Fam
   return (state.defunctFamilies ?? []).includes(family);
 }
 
+/** Finished family's leftover blocks — still named theirs, nobody holding them. */
+export function isAbandonedTurf(
+  state: Pick<GameState, "defunctFamilies">,
+  territory: Pick<Territory, "owner">,
+): boolean {
+  return !!territory.owner && isDefunct(state, territory.owner);
+}
+
 /** Families still at the table that could take a man in. */
 function openFamilies(state: GameState, exclude: FamilyName): FamilyName[] {
   return ALL_FAMILY_NAMES.filter(
@@ -230,6 +238,9 @@ export function scatterFamily(
   let current: GameState = {
     ...state,
     defunctFamilies: [...(state.defunctFamilies ?? []), family],
+    territories: state.territories.map((t) =>
+      t.owner === family ? { ...t, garrisonIds: [] } : t,
+    ),
   };
   logs.push({
     id: `log_defunct_${family}_${state.turn}`,

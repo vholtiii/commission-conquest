@@ -365,6 +365,11 @@ function SitdownButton({
                       ? "Your boss travels — a package on his car goes with him"
                       : "Your boss stays home"}
                   </span>
+                  {travel.rivalTravels && (
+                    <span className="text-[10px] text-muted-foreground">
+                      Their boss travels — a bomb on his car goes with him
+                    </span>
+                  )}
                   {host && (
                     <span className="text-[10px] text-muted-foreground">
                       Hosted by {host} — ${HOST_FEE} each

@@ -38,6 +38,7 @@ import {
   hasManagedWarehouse,
   makeManagerLookup,
   mergeLedger,
+  withdrawFamilyCrates,
   withdrawWarehouse,
 } from "./liquor";
 import { addEvidence, makeEvidence, openIncidentFromHijack } from "./incidents";
@@ -547,7 +548,7 @@ export function establishSupplyRoute(
   if (src.id === dest.id) return fail("Pick two different districts.");
   const lookup = makeManagerLookup(state.crew, player);
   if (!hasManagedWarehouse(src, lookup, state.turn)) {
-    return fail("Source needs a managed warehouse. A still cannot ship on its own.");
+    return fail("Source needs a managed warehouse on that block.");
   }
   if (!dest.rackets.some((r) => r.type === "warehouse" || r.type === "speakeasy")) {
     return fail("Destination needs a warehouse or a speakeasy to take crates.");
@@ -1335,12 +1336,10 @@ export function processSupplyRoutes(state: GameState, rng: Rng): SupplyRunResult
       continue;
     }
 
-    const wd = withdrawWarehouse(
-      src,
-      route.cratesPerTurn + extraHaul(truckingLevel(next, route.family)) + dockHaul(src),
-      state.turn,
-      lookup,
-    );
+    const want = route.cratesPerTurn + extraHaul(truckingLevel(next, route.family)) + dockHaul(src);
+    const wd = withdrawFamilyCrates(next.territories, player, want, state.turn, lookup, {
+      sourceId: src.id,
+    });
     if (wd.moved <= 0) {
       const stockText = `${lead}${srcName} had nothing to load.`;
       next = markLast(next, route.id, {
@@ -1351,7 +1350,7 @@ export function processSupplyRoutes(state: GameState, rng: Rng): SupplyRunResult
       log(route.id, stockText);
       continue;
     }
-    next = { ...next, territories: next.territories.map((t) => (t.id === src.id ? wd.territory : t)) };
+    next = { ...next, territories: wd.territories };
     let cargo = wd.moved;
     let proofedCargo = wd.proofed;
 
@@ -1359,6 +1358,9 @@ export function processSupplyRoutes(state: GameState, rng: Rng): SupplyRunResult
     const option = assessPath(next, route.path, player, driver.id, escortRides ? escort!.id : undefined);
     let stoppedBy: FamilyName | undefined;
     const notes: string[] = [];
+    if (wd.fromSource < wd.moved) {
+      notes.push(`${wd.moved - wd.fromSource} from the family's stock`);
+    }
     for (const fam of option.families) {
       const deal = activeDeal(next, fam);
       if (deal) {

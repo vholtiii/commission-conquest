@@ -14,6 +14,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import PortraitAvatar from "@/ui/PortraitAvatar";
 import PanelShell from "./PanelShell";
 import { dinnerActive } from "@/engine/dinner";
+import { isAbandonedTurf } from "@/engine/defection";
 
 export default function CapturePanel() {
   const selectedTerritoryId = useGameStore((s) => s.selectedTerritoryId);
@@ -46,15 +47,18 @@ export default function CapturePanel() {
 
   const party = captureParty(crew, picked);
   const along = party.filter((id) => !picked.includes(id));
+  const abandoned = isAbandonedTurf(state, territory);
   const strength = captureStrength(state, territory.id, party);
   const odds = captureOdds(strength.atk, strength.def);
-  const oddsPct = Math.round(odds * 100);
+  const oddsPct = abandoned ? 100 : Math.round(odds * 100);
   const allowance = captureAllowance(state, playerFamily, territory);
   const bonusNote =
     allowance.bonusReason === "expansionist"
       ? "Your family moves fast: two districts a week."
       : allowance.bonusReason === "vacuum"
-        ? "No boss on this block — it can be a second grab this week."
+        ? abandoned
+          ? "Finished family — it can be a second grab this week."
+          : "No boss on this block — it can be a second grab this week."
         : allowance.bonusReason === "vendetta"
           ? "Vendetta: their turf can be a second grab this week."
           : null;
@@ -69,7 +73,13 @@ export default function CapturePanel() {
   return (
     <PanelShell
       title={`Capture ${territory.name}`}
-      subtitle={territory.owner ? `${territory.owner} turf` : "Unclaimed"}
+      subtitle={
+        abandoned
+          ? "Finished — walk in"
+          : territory.owner
+            ? `${territory.owner} turf`
+            : "Unclaimed"
+      }
       onClose={() => setPanel("district")}
     >
       <div className="mb-3 space-y-1 rounded border border-panel-border bg-panel/50 px-2 py-2 text-[11px] text-muted-foreground">
@@ -80,7 +90,12 @@ export default function CapturePanel() {
           defense +{Math.round(territory.defenseBonus * 100)}%
           {territory.leadershipVacuum > 0 ? " · leadership vacuum" : ""}
         </div>
-        {territory.owner === null && (
+        {abandoned && (
+          <div className="text-money">
+            The {territory.owner} are finished. Any associate can walk in — no muscle needed.
+          </div>
+        )}
+        {territory.owner === null && !abandoned && (
           <div className="text-money">Empty block — base garrison resistance only.</div>
         )}
         {strength.notes.map((n) => (
@@ -104,7 +119,9 @@ export default function CapturePanel() {
         Squad ({picked.length} selected)
       </h3>
       <p className="mb-2 text-[10px] text-muted-foreground">
-        Idle men and anyone garrisoned can go. First pick leads. A boss, capo, or consigliere brings his free crew, and they garrison the block if you take it.
+        {abandoned
+          ? "Idle men and anyone garrisoned can go — associate through boss. First pick leads and garrisons the block."
+          : "Idle men and anyone garrisoned can go. First pick leads. A boss, capo, or consigliere brings his free crew, and they garrison the block if you take it."}
       </p>
 
       {eligible.length === 0 ? (
@@ -164,7 +181,7 @@ export default function CapturePanel() {
         </div>
       )}
 
-      {along.length > 0 && (
+      {along.length > 0 && !abandoned && (
         <p className="mt-2 text-[10px] text-amber-300">
           Comes along:{" "}
           {along
@@ -206,7 +223,7 @@ export default function CapturePanel() {
           disabled={picked.length < 1 || !allowance.ok || dinnerActive(state)}
           onClick={() => captureTerritory(territory.id, picked)}
         >
-          Attack
+          {abandoned ? "Walk in" : "Attack"}
         </Button>
       </div>
     </PanelShell>

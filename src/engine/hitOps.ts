@@ -32,7 +32,7 @@ import {
 } from "./crew";
 import { unseatedCrew } from "./crews";
 import { jailInCrew } from "./jail";
-import { setRelationDelta } from "./relations";
+import { getRelation, setRelationDelta, statusFromScore } from "./relations";
 import { crewPresentIn, familyHq, resolveCrewTerritoryId } from "./crewLocation";
 import { safehouseCapacity } from "./safehouse";
 import { isLegitBusiness } from "./economy";
@@ -74,9 +74,22 @@ import {
 } from "./casing";
 import { addEvidence, applyRetaliationJudgment, makeEvidence, openIncidentFromHit } from "./incidents";
 import { learnFromCleanCasing } from "./crews";
-import { hasPact, breakPact } from "./diplomacy";
+import { burnTable, hasPact, breakPact } from "./diplomacy";
 import { LEVERAGE_TURNS, clearPassageGrudges } from "./passage";
 import { aiDemandPassageSitdown } from "./sitdowns";
+import {
+  BETRAYAL_ESCAPE_INFLUENCE,
+  BETRAYAL_KILL_RESPECT,
+  BETRAYAL_REFUSE_HEAT,
+  BETRAYAL_REFUSE_RELATION,
+  betrayalEscortGuns,
+  betrayalKillMod,
+  likelyBetrayalEscort,
+  markOnBetrayalVenue,
+  rollBetrayalEscort,
+  sitdownInviteChance,
+  type BetrayalEscort,
+} from "./sitdownBetrayal";
 
 /**
  * A rival's message has been sent (landed or not): the grudges behind it are
@@ -103,6 +116,8 @@ function afterAiMessageHit(
 /** Odds options: `truth` ignores poisoned clues (used when a hit actually resolves). */
 export interface OddsOptions {
   truth?: boolean;
+  skipGarrison?: boolean;
+  escort?: BetrayalEscort;
 }
 
 /** Clue bookkeeping only applies to the player's own operations. */
@@ -230,6 +245,7 @@ function findCrew(state: GameState, id?: string): CrewMember | undefined {
 
 /** Active garrison soldiers of the target family in the hit district (excludes the mark). */
 export function defendersFor(state: GameState, op: Operation, opts?: OddsOptions): number {
+  if (opts?.skipGarrison) return 0;
   const territory = state.territories.find((t) => t.id === op.targetTerritoryId);
   if (!territory) return 0;
   // Only count when the district belongs to the target family
@@ -310,7 +326,14 @@ export function calculateHitOddsBreakdown(
     : undefined;
   const territory = state.territories.find((t) => t.id === op.targetTerritoryId);
   const exposed = exposedCrewIds(op);
-  const defenders = defendersFor(state, op, opts);
+  const skipGarrison =
+    opts?.skipGarrison ??
+    (approach === "sitdown_betrayal" &&
+      !!op.targetCrewId &&
+      !op.blind &&
+      !markOnBetrayalVenue(state, op));
+  const oddsOpts: OddsOptions = { ...opts, skipGarrison };
+  const defenders = defendersFor(state, op, oddsOpts);
   const clues = usesClues(state, op);
 
   const base = 0.35;
@@ -370,6 +393,8 @@ export function calculateHitOddsBreakdown(
     // Feared families get the mark to the table
     fear = Math.min(0.1, state.reputation.fear / 500);
     other += fear;
+    const escort = opts?.escort ?? likelyBetrayalEscort(state, op);
+    other += betrayalKillMod(state, op, escort);
   }
 
   if (op.surveilled) other += 0.12;
@@ -382,7 +407,7 @@ export function calculateHitOddsBreakdown(
     const routine = op.targetCrewId
       ? findClue(state, op.targetTerritoryId, "routine", op.targetCrewId)
       : cluesFor(state, op.targetTerritoryId).find((c) => c.kind === "routine");
-    if (clueHolds(routine, opts?.truth)) {
+    if (clueHolds(routine, oddsOpts.truth)) {
       intel += routine.approach === approach ? 0.08 : 0.02;
     }
   }
@@ -390,7 +415,7 @@ export function calculateHitOddsBreakdown(
     // A weak link comes to the table.
     if (approach === "sitdown_betrayal" && op.targetCrewId) {
       const weak = findClue(state, op.targetTerritoryId, "weak_link", op.targetCrewId);
-      if (clueHolds(weak, opts?.truth)) other += 0.1;
+      if (clueHolds(weak, oddsOpts.truth)) other += 0.1;
     }
     // They know a face on your crew.
     const burned = hitCrewIds(op).some((id) => isLookoutBurned(state, id, op.targetFamily));
@@ -496,7 +521,11 @@ export function calculateHitOdds(state: GameState, op: Operation, opts?: OddsOpt
 export function estimateFirefightRisk(state: GameState, op: Operation): number {
   const approach = op.approach ?? "ambush";
   const exposure = approachSpec(approach).garrisonExposure;
-  const guns = firefightStrength(state, op).total;
+  const namedBetrayal = approach === "sitdown_betrayal" && !!op.targetCrewId && !op.blind;
+  const skipGarrison = namedBetrayal && !markOnBetrayalVenue(state, op);
+  const escort = namedBetrayal ? likelyBetrayalEscort(state, op) : undefined;
+  const blockGuns = skipGarrison ? 0 : firefightStrength(state, op, { skipGarrison }).total;
+  const guns = blockGuns + (escort ? betrayalEscortGuns(state, op, escort) : 0);
   const exposed = exposedCrewIds(op);
   if (guns <= 0 || exposure <= 0 || exposed.length === 0) return 0;
   const raw = exposure * 0.06 * guns / Math.sqrt(exposed.length);
@@ -549,6 +578,14 @@ export function tipOffChance(state: GameState, op: Operation): number {
     (lookout?.skills.stealth ?? 0) / 600;
 
   if (approach === "car_bomb" || approach === "sitdown_betrayal") chance *= 0.7;
+  if (
+    approach === "sitdown_betrayal" &&
+    op.targetCrewId &&
+    markOnBetrayalVenue(state, op) &&
+    statusFromScore(getRelation(state.relations, op.family, op.targetFamily)) === "war"
+  ) {
+    chance += 0.06;
+  }
   if (op.blind) chance *= 0.6;
   if (freshOnMark(state, op)) chance -= FRESH_CASING_TIP;
   // A meeting this turn: extra eyes (entourage) and a cased venue both smell a setup.
@@ -800,6 +837,41 @@ export interface ResolveHitResult {
   waiting?: { discovered: boolean; reason: "found" | "stale" };
 }
 
+function refuseSitdownBetrayal(
+  state: GameState,
+  op: Operation,
+  mark: CrewMember,
+): ResolveHitResult {
+  const relations = setRelationDelta(state.relations, op.family, op.targetFamily, BETRAYAL_REFUSE_RELATION);
+  const operations = state.operations.map((o) =>
+    o.id === op.id ? { ...o, resolved: true, pendingTurns: 0, resolvedTurn: state.turn } : o,
+  );
+  const heatGain = BETRAYAL_REFUSE_HEAT;
+  const result: HitResult = {
+    ...emptyResult(op),
+    outcome: "target_escaped",
+    heatGain,
+    headline: `${mark.name} smelled the setup. The chair stayed empty.`,
+    markAbsent: true,
+    beats: [
+      { phase: "setup", text: "Word of a sit-down goes out. No Commission table — just a street invite." },
+      { phase: "complication", text: `${mark.name} never sits.` },
+      { phase: "execution", text: "The chair stays empty." },
+    ],
+    complication: "mark_absent",
+  };
+  const playerShot = op.family === state.playerFamily;
+  const newState: GameState = {
+    ...state,
+    relations,
+    operations,
+    heat: playerShot ? bribedHeat(state, heatGain, `hit:${op.id}`) : state.heat,
+    pendingHitResult: playerShot ? result : state.pendingHitResult,
+    hitFxTerritoryId: op.targetTerritoryId,
+  };
+  return { state: newState, result };
+}
+
 /** Placeholder result for an op that did not actually resolve this turn. */
 function emptyResult(op: Operation): HitResult {
   return {
@@ -820,6 +892,13 @@ function emptyResult(op: Operation): HitResult {
     respectDelta: 0,
     influenceDelta: 0,
   };
+}
+
+/** A package on a living boss's car. It waits for him to travel; settle it after sit-downs stage. */
+export function isArmedBossCarBomb(state: GameState, op: Operation): boolean {
+  if (op.resolved || op.kind !== "hit" || op.approach !== "car_bomb" || op.blind) return false;
+  const mark = op.targetCrewId ? state.crew.find((c) => c.id === op.targetCrewId) : undefined;
+  return mark?.role === "boss" && mark.status === "active";
 }
 
 /** Chance per waiting turn that a planted car bomb is found before it goes off. */
@@ -865,7 +944,14 @@ export function resolveHit(
   const bossBomb = approach === "car_bomb" && plannedTarget?.role === "boss" && !blind;
   if (bossBomb && plannedTarget && plannedTarget.status === "active") {
     const now = resolveCrewTerritoryId(state, plannedTarget.id);
-    const travelled = plannedTarget.lastSiteId !== undefined && now !== plannedTarget.lastSiteId;
+    const onATrip =
+      !!plannedTarget.awayAt &&
+      plannedTarget.awayAt.untilTurn > state.turn &&
+      !!plannedTarget.awayAt.territoryId &&
+      plannedTarget.awayAt.territoryId !== plannedTarget.lastSiteId;
+    const travelled =
+      onATrip ||
+      (!!now && plannedTarget.lastSiteId !== undefined && now !== plannedTarget.lastSiteId);
     if (!travelled) {
       const armed = op.armedTurns ?? 0;
       const stale = armed >= CAR_BOMB_ARMED_MAX_TURNS;
@@ -886,7 +972,44 @@ export function resolveHit(
     if (now) workingOp = { ...workingOp, targetTerritoryId: now };
   }
 
-  const defenders = defendersFor(state, workingOp, TRUTH);
+  let liveState = state;
+  let betrayalSat = false;
+  let betrayalPulled = false;
+  let betrayalEscort: BetrayalEscort | undefined;
+  const namedBetrayal =
+    approach === "sitdown_betrayal" && !blind && !!plannedTarget && plannedTarget.status === "active";
+  if (namedBetrayal && plannedTarget) {
+    if (!rng.chance(sitdownInviteChance(state, workingOp))) {
+      return refuseSitdownBetrayal(state, op, plannedTarget);
+    }
+    betrayalSat = true;
+    if (!markOnBetrayalVenue(state, workingOp)) {
+      betrayalPulled = true;
+      liveState = {
+        ...state,
+        crew: state.crew.map((c) =>
+          c.id === plannedTarget.id
+            ? {
+                ...c,
+                awayAt: {
+                  territoryId: workingOp.targetTerritoryId,
+                  untilTurn: state.turn + 1,
+                  reason: "sitdown" as const,
+                },
+              }
+            : c,
+        ),
+      };
+    }
+    betrayalEscort = rollBetrayalEscort(liveState, workingOp, rng);
+  }
+
+  const betrayalOpts: OddsOptions = {
+    ...TRUTH,
+    skipGarrison: betrayalPulled,
+    escort: betrayalEscort,
+  };
+  const defenders = defendersFor(liveState, workingOp, betrayalOpts);
 
   // Laid low behind a door nobody watched: the crew never finds him.
   const markHidden =
@@ -900,6 +1023,7 @@ export function resolveHit(
     !!plannedTarget &&
     !blind &&
     !bossBomb &&
+    !betrayalSat &&
     (markHidden ||
       plannedTarget.status === "dead" ||
       plannedTarget.status === "jailed" ||
@@ -930,7 +1054,7 @@ export function resolveHit(
   const aborted = crewCall === "aborted";
 
   const copClues = copCluesFor(state, workingOp, TRUTH);
-  const successChance = calculateHitOdds(state, workingOp, TRUTH);
+  const successChance = calculateHitOdds(liveState, workingOp, betrayalOpts);
   const outcome: HitOutcome =
     emptyBlock || markAbsent
       ? "target_escaped"
@@ -955,7 +1079,7 @@ export function resolveHit(
 
   const casualties: string[] = [];
   const casualtyDetail: HitCasualtyDetail[] = [];
-  let crew = [...state.crew];
+  let crew = [...liveState.crew];
   let heatGain = mods.heat + exposureHeat(state.crew, exposed) + copClues.extraHeat;
   let fearGain = 5;
   let targetDead = false;
@@ -1042,8 +1166,11 @@ export function resolveHit(
 
   // Garrison return fire, plus whoever comes out of a nearby safehouse shooting.
   const firefightNames: string[] = [];
-  const cover = coverFire(state, workingOp.targetFamily, workingOp.targetTerritoryId);
-  const guns = defenders + cover.weight;
+  const cover = betrayalPulled
+    ? { men: 0, weight: 0, from: [] as ReturnType<typeof coverFire>["from"] }
+    : coverFire(liveState, workingOp.targetFamily, workingOp.targetTerritoryId);
+  const escortWeight = betrayalEscort ? betrayalEscortGuns(liveState, workingOp, betrayalEscort) : 0;
+  const guns = defenders + cover.weight + escortWeight;
   if (!emptyBlock && !aborted && guns > 0 && spec.garrisonExposure > 0 && exposed.length > 0) {
     let mult = 1;
     if (outcome === "clean_kill") mult *= 0.5;
@@ -1163,6 +1290,12 @@ export function resolveHit(
   let respectDelta = targetDead ? 8 : aborted ? 0 : -3;
   let influenceDelta = 0;
   let streetDelta = 0;
+  if (betrayalSat && targetDead) {
+    respectDelta = BETRAYAL_KILL_RESPECT;
+  }
+  if (betrayalSat && !targetDead && !aborted) {
+    influenceDelta -= BETRAYAL_ESCAPE_INFLUENCE;
+  }
   if (isMessage && !aborted) {
     // Nobody admires a message; the street just learns you'll send one.
     respectDelta = targetDead ? 3 : -2;
@@ -1239,7 +1372,7 @@ export function resolveHit(
         Math.min(100, state.reputation.streetInfluence + ownStreet),
       ),
     },
-    heat: ownHeat > 0 ? bribedHeat(state, ownHeat, `hit:${op.id}`) : state.heat,
+    heat: ownHeat > 0 ? bribedHeat(liveState, ownHeat, `hit:${op.id}`) : liveState.heat,
     vendettas:
       isMessage || commissionHit || state.vendettas.includes(op.targetFamily)
         ? state.vendettas
@@ -1250,6 +1383,10 @@ export function resolveHit(
   };
 
   newState = recordIntel(newState, revealedIds, op.targetTerritoryId, "hit");
+
+  if (betrayalSat && !targetDead && !aborted && playerShot) {
+    newState = burnTable(newState, op.targetFamily);
+  }
 
   let finalResult = result;
 
@@ -1736,6 +1873,14 @@ export function resolvePendingOperations(
     operations: current.operations.map((o) => {
       if (o.resolved || o.pendingTurns <= 0 || o.tippedOff) return o;
       if (o.kind !== "hit" && o.kind !== "surveillance") return o;
+      if (
+        o.kind === "surveillance" &&
+        !crewPresentIn(current, o.targetTerritoryId).some(
+          (c) => c.family === o.targetFamily && (c.status === "active" || c.status === "wounded"),
+        )
+      ) {
+        return o;
+      }
       const chance = tipOffChance(current, o);
       if (!rng.chance(chance)) return o;
 
@@ -2000,9 +2145,10 @@ function applyCasingFallout(
     };
   }
 
-  // A legacy tip-off on the op counts as at least "noticed".
+  // A legacy tip-off on the op counts as at least "noticed" — but only if
+  // somebody from that family was actually on the block to clock him.
   let rung = casing.roll.rung;
-  if (op.tippedOff && rung === "clean") rung = "noticed";
+  if (op.tippedOff && rung === "clean" && casing.present.length > 0) rung = "noticed";
 
   if (rung === "turned" && lookout) {
     // He came back smiling. He's theirs now.

@@ -265,6 +265,31 @@ export function districtStorage(
   return { stored, cap, free: Math.max(0, cap - stored) };
 }
 
+/** Unfrozen warehouse crates on this block (the barn's own pile). */
+export function warehouseStock(t: Territory, turn = 0): number {
+  return t.rackets.reduce((sum, r) => {
+    if (r.type !== "warehouse" || frozen(r, turn)) return sum;
+    return sum + r.stock;
+  }, 0);
+}
+
+/** Free slots in unfrozen warehouses on this block. */
+export function warehouseRoom(
+  t: Territory,
+  turn = 0,
+  lookup?: ManagerLookup,
+): { stored: number; cap: number; free: number } {
+  let stored = 0;
+  let cap = 0;
+  for (const r of t.rackets) {
+    if (r.type !== "warehouse" || frozen(r, turn)) continue;
+    const c = capOf(r, lookup, t.feature);
+    cap += c;
+    stored += Math.min(r.stock, c);
+  }
+  return { stored, cap, free: Math.max(0, cap - stored) };
+}
+
 export function totalCrates(state: GameState, family: FamilyName | null): number {
   if (!family) return 0;
   const lookup = makeManagerLookup(state.crew, family);
@@ -609,6 +634,104 @@ export function withdrawFamilyWarehouses(
     need -= wd.moved;
   }
   return { territories: next, moved, proofed };
+}
+
+function typeStock(t: Territory, types: RacketType[]): number {
+  return t.rackets.reduce((sum, r) => (types.includes(r.type) ? sum + r.stock : sum), 0);
+}
+
+function withdrawTypes(
+  t: Territory,
+  n: number,
+  types: RacketType[],
+): { territory: Territory; moved: number; proofed: number } {
+  if (n <= 0) return { territory: t, moved: 0, proofed: 0 };
+  let remaining = n;
+  let proofed = 0;
+  const rackets = t.rackets.map((r) => ({ ...r }));
+  for (const type of types) {
+    if (remaining <= 0) break;
+    for (const r of rackets) {
+      if (remaining <= 0) break;
+      if (r.type !== type || r.stock <= 0) continue;
+      const got = pullFrom(r, remaining);
+      remaining -= got.take;
+      proofed += got.proofed;
+    }
+  }
+  return { territory: { ...t, rackets }, moved: n - remaining, proofed };
+}
+
+/**
+ * Load a truck from the family's pile. Managed warehouses first (fullest
+ * first), then stills and breweries, then speakeasies. The From barn does
+ * not have to hold the crates.
+ */
+export function withdrawFamilyCrates(
+  territories: Territory[],
+  owner: FamilyName,
+  n: number,
+  turn: number,
+  lookup: ManagerLookup,
+  opts?: { sourceId?: string },
+): { territories: Territory[]; moved: number; proofed: number; fromSource: number } {
+  if (n <= 0) return { territories, moved: 0, proofed: 0, fromSource: 0 };
+
+  let next = territories;
+  let moved = 0;
+  let proofed = 0;
+  let fromSource = 0;
+  let need = n;
+
+  const pullRanked = (
+    ranked: { id: string }[],
+    draw: (t: Territory, want: number) => { territory: Territory; moved: number; proofed: number },
+  ) => {
+    for (const src of ranked) {
+      if (need <= 0) break;
+      const current = next.find((t) => t.id === src.id);
+      if (!current) continue;
+      const wd = draw(current, need);
+      if (wd.moved <= 0) continue;
+      next = next.map((t) => (t.id === src.id ? wd.territory : t));
+      moved += wd.moved;
+      proofed += wd.proofed;
+      need -= wd.moved;
+      if (opts?.sourceId === src.id) fromSource += wd.moved;
+    }
+  };
+
+  const owned = territories.filter((t) => t.owner === owner);
+  pullRanked(
+    owned
+      .map((t) => ({
+        id: t.id,
+        stock: t.rackets.reduce((sum, r) => {
+          if (r.type !== "warehouse" || frozen(r, turn)) return sum;
+          if (!warehouseManagerMods(lookup(r)).managed) return sum;
+          return sum + r.stock;
+        }, 0),
+      }))
+      .filter((x) => x.stock > 0)
+      .sort((a, b) => b.stock - a.stock),
+    (t, want) => withdrawWarehouse(t, want, turn, lookup),
+  );
+  pullRanked(
+    owned
+      .map((t) => ({ id: t.id, stock: typeStock(t, ["still", "brewery"]) }))
+      .filter((x) => x.stock > 0)
+      .sort((a, b) => b.stock - a.stock),
+    (t, want) => withdrawTypes(t, want, ["still", "brewery"]),
+  );
+  pullRanked(
+    owned
+      .map((t) => ({ id: t.id, stock: typeStock(t, ["speakeasy"]) }))
+      .filter((x) => x.stock > 0)
+      .sort((a, b) => b.stock - a.stock),
+    (t, want) => withdrawTypes(t, want, ["speakeasy"]),
+  );
+
+  return { territories: next, moved, proofed, fromSource };
 }
 
 /** Leftover stock in a managed, unfrozen warehouse has sat the week. It is proofed. */

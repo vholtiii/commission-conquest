@@ -10,6 +10,7 @@ import { RACKET_VISUALS } from "@/data/racketVisuals";
 import { emptyIntel, hiddenCountIn, hasFreshCasing, spottedThisTurn, visibleCrewIn } from "@/engine/intel";
 import { businessFor, businessSummary, isBusinessStale } from "@/engine/casing";
 import { canSendOnHit } from "@/engine/jobReturn";
+import { isAbandonedTurf } from "@/engine/defection";
 import { LOCATION_REASON_LABEL, familyHq, isBossUnderground, resolveCrewLocation, resolveCrewTerritoryId } from "@/engine/crewLocation";
 import {
   BOSS_PRESENCE,
@@ -107,6 +108,7 @@ export default function DistrictPanel() {
   const intel = useGameStore((s) => s.intel);
   const turn = useGameStore((s) => s.turn);
   const setPanel = useGameStore((s) => s.setPanel);
+  const openLiquorBuy = useGameStore((s) => s.openLiquorBuy);
   const selectCrew = useGameStore((s) => s.selectCrew);
   const assignMember = useGameStore((s) => s.assignMember);
   const lieLow = useGameStore((s) => s.lieLow);
@@ -121,6 +123,7 @@ export default function DistrictPanel() {
   const bossStay = useGameStore((s) => s.bossStay);
   const heat = useGameStore((s) => s.heat);
   const rivalHeat = useGameStore((s) => s.rivalHeat);
+  const defunctFamilies = useGameStore((s) => s.defunctFamilies ?? []);
   const bribes = useGameStore((s) => s.bribes);
   const lawyerRetainer = useGameStore((s) => s.lawyerRetainer);
   const [caseLookoutId, setCaseLookoutId] = useState("");
@@ -145,7 +148,8 @@ export default function DistrictPanel() {
 
   const owner = territory.owner ? getFamilyDef(territory.owner) : null;
   const isOwned = territory.owner === playerFamily;
-  const isRival = !!territory.owner && territory.owner !== playerFamily;
+  const abandoned = isAbandonedTurf({ defunctFamilies }, territory);
+  const isRival = !!territory.owner && territory.owner !== playerFamily && !abandoned;
   const visible = visibleCrewIn(locState, territory.id);
   const spotted = isRival ? spottedThisTurn(locState, territory.id) : [];
   const garrison = isOwned
@@ -762,7 +766,17 @@ export default function DistrictPanel() {
                     </div>
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-1.5 truncate text-xs font-medium">
-                        {RACKET_LABELS[r.type]}
+                        {isOwned && r.type === "warehouse" ? (
+                          <button
+                            type="button"
+                            className="hover:underline"
+                            onClick={() => openLiquorBuy(territory.id)}
+                          >
+                            {RACKET_LABELS[r.type]}
+                          </button>
+                        ) : (
+                          RACKET_LABELS[r.type]
+                        )}
                         {frozen && (
                           <Badge className="bg-heat/30 text-[9px] text-heat">
                             FROZEN ({(r.frozenUntil ?? turn) - turn})
@@ -1021,7 +1035,7 @@ export default function DistrictPanel() {
               <Button
                 variant="secondary"
                 className="justify-start gap-2"
-                onClick={() => setPanel("warehouse")}
+                onClick={() => openLiquorBuy(territory.id)}
               >
                 <Wine className="h-4 w-4 text-steel-light" /> Liquor
               </Button>
@@ -1066,13 +1080,20 @@ export default function DistrictPanel() {
             <p className="text-[10px] text-muted-foreground">District full — {racketSlots}/{racketSlots} rackets.</p>
           )}
           {!isOwned && (
-            <Tip content="Move crew in to take this district.">
+            <Tip
+              content={
+                abandoned
+                  ? "The family is finished. Any idle man — even an associate — can walk in. No fight."
+                  : "Move crew in to take this district."
+              }
+            >
               <Button
                 variant="secondary"
                 className="justify-start gap-2"
                 onClick={() => setPanel("capture")}
               >
-                <ShieldPlus className="h-4 w-4 text-emerald-400" /> Capture Territory
+                <ShieldPlus className="h-4 w-4 text-emerald-400" />{" "}
+                {abandoned ? "Walk In" : "Capture Territory"}
               </Button>
             </Tip>
           )}
