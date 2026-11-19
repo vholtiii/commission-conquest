@@ -1,6 +1,7 @@
 import { useMemo, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
+import { readReel, useInReel } from "../reelClock";
 
 interface Props {
   active: boolean;
@@ -17,6 +18,7 @@ export default function Blood({ active, at, facing = 0 }: Props) {
   const drops = useRef<THREE.InstancedMesh>(null);
   const start = useRef<number | null>(null);
   const dummy = useMemo(() => new THREE.Object3D(), []);
+  const inReel = useInReel();
   const seeds = useMemo(
     () =>
       Array.from({ length: SPRAY }, (_, i) => ({
@@ -27,14 +29,15 @@ export default function Blood({ active, at, facing = 0 }: Props) {
   );
 
   useFrame(({ clock }) => {
+    const now = inReel ? (readReel()?.time ?? clock.elapsedTime) : clock.elapsedTime;
     if (!active) {
       start.current = null;
       if (pool.current) pool.current.visible = false;
       if (drops.current) drops.current.visible = false;
       return;
     }
-    if (start.current === null) start.current = clock.elapsedTime;
-    const elapsed = clock.elapsedTime - start.current;
+    if (start.current === null) start.current = now;
+    const elapsed = now - start.current;
     const t = Math.min(1, elapsed / 1.2);
     // The chest is on the ground half a second after the shot. The pool waits for it.
     const poolT = Math.min(1, Math.max(0, (elapsed - 0.5) / 0.7));

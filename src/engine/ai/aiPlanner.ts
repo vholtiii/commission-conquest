@@ -15,7 +15,9 @@ import { atPeace } from "../deals";
 import { captureAllowance } from "../capture";
 import { isDefunct } from "../defection";
 import { handsDown } from "../mourning";
-import { familiesPressingSuddenDeath } from "../victory";
+import { familyInfluence, runaways, summitThreats, trackStanding, type WinTrack } from "../victory";
+import { boroughSeats } from "../boroughSeats";
+import { canPetition, petitionMargin } from "../commission";
 import { maxRacketsFor, valueScore, allowedRacketTypes } from "../territoryValue";
 import { safehouseCaptureDefence } from "../safehouse";
 import { mattressDistrict, MATTRESS_DEFENCE } from "../mattresses";
@@ -25,7 +27,6 @@ import {
   believedCrewSite,
   believedGarrison,
   believedStrength,
-  believedWealth,
   garrisonConfidence,
   liveGarrison,
   SCOUT_COST,
@@ -42,6 +43,8 @@ export type AiActionKind =
   | "build"
   | "hijack"
   | "delivery"
+  | "court"
+  | "petition"
   | "seek_peace";
 
 export interface AiAction {
@@ -67,31 +70,31 @@ interface Style {
 
 export const STYLES: Record<AiPersonality, Style> = {
   economic: {
-    act: { build: 1, expand: 0.45, shakedown: 0.45, hit: 0.45, hijack: 0.35, delivery: 0.35 },
+    act: { build: 1, expand: 0.45, shakedown: 0.45, hit: 0.45, hijack: 0.35, delivery: 0.35, court: 1.3, petition: 1.2 },
     goal: { expand: 0.8, consolidate: 1, enrich: 1.3, retaliate: 0.7, contain_leader: 1.1, recover: 1.2, seek_peace: 1.2 },
     patience: 0.35,
     risk: 0.8,
   },
   expansionist: {
-    act: { build: 0.4, expand: 0.7, shakedown: 0.45, hit: 0.7, hijack: 0.3, delivery: 0.25 },
+    act: { build: 0.4, expand: 0.7, shakedown: 0.45, hit: 0.7, hijack: 0.3, delivery: 0.25, court: 0.4, petition: 0.45 },
     goal: { expand: 1.4, consolidate: 0.8, enrich: 0.7, retaliate: 0.9, contain_leader: 1, recover: 1, seek_peace: 0.6 },
     patience: 0.25,
     risk: 1.1,
   },
   covert: {
-    act: { build: 0.65, expand: 0.3, shakedown: 0.4, hit: 1, hijack: 0.9, delivery: 0.3 },
+    act: { build: 0.65, expand: 0.3, shakedown: 0.4, hit: 1, hijack: 0.9, delivery: 0.3, court: 1.1, petition: 1.3 },
     goal: { expand: 0.7, consolidate: 1, enrich: 1, retaliate: 1.1, contain_leader: 1.2, recover: 1, seek_peace: 0.9 },
     patience: 0.5,
     risk: 0.9,
   },
   smuggler: {
-    act: { build: 0.65, expand: 0.3, shakedown: 0.4, hit: 0.45, hijack: 0.9, delivery: 1.1 },
+    act: { build: 0.65, expand: 0.3, shakedown: 0.4, hit: 0.45, hijack: 0.9, delivery: 1.1, court: 0.5, petition: 0.55 },
     goal: { expand: 0.7, consolidate: 0.9, enrich: 1.3, retaliate: 0.9, contain_leader: 0.9, recover: 1, seek_peace: 1 },
     patience: 0.3,
     risk: 0.9,
   },
   volatile: {
-    act: { build: 0.35, expand: 0.26, shakedown: 0.45, hit: 1.4, hijack: 0.3, delivery: 0.2 },
+    act: { build: 0.35, expand: 0.26, shakedown: 0.45, hit: 1.4, hijack: 0.3, delivery: 0.2, court: 0.3, petition: 0.35 },
     goal: { expand: 0.5, consolidate: 0.7, enrich: 0.6, retaliate: 1.25, contain_leader: 0.9, recover: 0.9, seek_peace: 0.4 },
     patience: 0.1,
     risk: 1.15,
@@ -123,6 +126,8 @@ const APPEASE_LEADER = 0.35;
 const CONTAIN_BLOWBACK = 0.4;
 /** How hard a leader's lead weighs against a family's own plans. */
 const CONTAIN_URGENCY = 1;
+/** Once a streak is half run, stopping it outweighs a private feud. */
+const CRITICAL_URGENCY = 1.5;
 /** Sampling temperature: low keeps families sensible, above zero keeps them readable but not scripted. */
 const TEMPERATURE = 0.45;
 
@@ -194,27 +199,50 @@ export function believedCaptureChance(ctx: Ctx, t: Territory): number {
   return Math.max(0, Math.min(1, 1 - threshold));
 }
 
-/** Who is running away with the city, as anyone at the table can see it. */
-export function cityLeader(state: GameState, family: FamilyName): { leader: FamilyName; pressure: number; why: string } | undefined {
+/** Who is running away with the city, and on which track, as anyone at the table can see it. */
+export function cityLeader(
+  state: GameState,
+  family: FamilyName,
+): { leader: FamilyName; pressure: number; why: string; track: WinTrack; live: boolean; critical: boolean } | undefined {
   const total = state.territories.length || 1;
-  const pressing = familiesPressingSuddenDeath(state);
-  let best: { leader: FamilyName; pressure: number; why: string } | undefined;
-  const wealth = ALL_FAMILY_NAMES.filter((f) => !isDefunct(state, f)).map((f) => ({ f, w: believedWealth(state, f) }));
-  const sorted = [...wealth].sort((a, b) => b.w - a.w);
+  const noticed = runaways(state);
+  let best: { leader: FamilyName; pressure: number; why: string; track: WinTrack; live: boolean; critical: boolean } | undefined;
   for (const f of ALL_FAMILY_NAMES) {
     if (f === family || isDefunct(state, f)) continue;
     const share = state.territories.filter((t) => t.owner === f).length / total;
-    let pressure = Math.max(0, share - LEADER_SHARE) * 6;
-    let why = `${Math.round(share * 100)}% of the city`;
-    if (pressing.includes(f)) {
-      pressure += 1.5;
-      why = `pressing the Commission, ${why}`;
+    const turfPressure = Math.max(0, share - LEADER_SHARE) * 6;
+    const row = noticed.find((r) => r.family === f);
+    const detector = row?.pressure ?? 0;
+    const pressure = Math.max(turfPressure, detector);
+    if (pressure <= 0) continue;
+    const track: WinTrack = detector >= turfPressure && row ? row.track : "turf";
+    const chosen = noticed.find((r) => r.family === f && r.track === track);
+    const live = chosen?.level === "pressing" || chosen?.level === "critical";
+    const why =
+      track === "influence"
+        ? "running away on standing"
+        : track === "wealth"
+          ? "running away on wealth"
+          : chosen
+            ? "running away on turf"
+            : `${Math.round(share * 100)}% of the city`;
+    if (!best || pressure > best.pressure) best = { leader: f, pressure, why, track, live, critical: chosen?.level === "critical" };
+  }
+  // The summit is coming and the table can see who it would name. Families split across his claims.
+  const claims = summitThreats(state);
+  const player = state.playerFamily;
+  if (claims.length > 0 && player && player !== family && !isDefunct(state, player)) {
+    const claim = claims[ALL_FAMILY_NAMES.indexOf(family) % claims.length]!;
+    if (!best || claim.pressure > best.pressure) {
+      best = {
+        leader: player,
+        pressure: claim.pressure,
+        why: `${claim.leading ? "the summit would name them" : "close enough to be named at the summit"} on ${claim.track === "influence" ? "standing" : "wealth"}, ${claim.weeksLeft} week${claim.weeksLeft === 1 ? "" : "s"} out`,
+        track: claim.track,
+        live: claim.leading,
+        critical: claim.leading && claim.weeksLeft * 2 <= claim.window,
+      };
     }
-    if (sorted[0]?.f === f && sorted[1] && sorted[0].w > sorted[1].w * 1.8) {
-      pressure += 0.8;
-      why = `the richest books by far, ${why}`;
-    }
-    if (pressure > 0 && (!best || pressure > best.pressure)) best = { leader: f, pressure, why };
   }
   return best;
 }
@@ -222,10 +250,19 @@ export function cityLeader(state: GameState, family: FamilyName): { leader: Fami
 interface GoalOption {
   goal: Omit<AiGoal, "since" | "step" | "failures">;
   reason: string;
+  /** The city is about to be decided. Patience with the old plan does not apply. */
+  urgent?: boolean;
 }
 
 function recent(turns: number[], now: number, weeks: number): number {
   return turns.filter((t) => now - t < weeks).length;
+}
+
+/** 1 at heat 40, 0.4 at heat 80. Loud plans lose their appeal as the precinct closes in. */
+export function heatCaution(heat: number): number {
+  if (heat <= 40) return 1;
+  const t = Math.min(1, (heat - 40) / 40);
+  return 1 - t * 0.6;
 }
 
 function goalOptions(ctx: Ctx): GoalOption[] {
@@ -234,6 +271,7 @@ function goalOptions(ctx: Ctx): GoalOption[] {
   const turn = state.turn;
 
   // Expand: the best block next door, as the family reads its defence.
+  const caution = heatCaution(ctx.heat);
   const border = borderTargets(ctx)
     .map((t) => ({ t, v: (valueScore(t) / 1000) * (0.4 + believedCaptureChance(ctx, t)) }))
     .sort((a, b) => b.v - a.v);
@@ -244,7 +282,7 @@ function goalOptions(ctx: Ctx): GoalOption[] {
         kind: "expand",
         territoryId: border[0].t.id,
         target: border[0].t.owner ?? undefined,
-        score: style.goal.expand * Math.min(2, border[0].v) * cash * (border[0].t.owner ? 1 : spreadFactor(ctx)),
+        score: style.goal.expand * Math.min(2, border[0].v) * cash * (border[0].t.owner ? 1 : spreadFactor(ctx)) * caution,
       },
       reason: `${border[0].t.name} looks ${border[0].t.owner ? "lightly held" : "open"} next door`,
     });
@@ -252,12 +290,12 @@ function goalOptions(ctx: Ctx): GoalOption[] {
 
   // Enrich: room to build and money to build with, more so when the player's books dwarf ours.
   const lead = cityLeader(state, family);
-  const outEarned = !!lead && lead.leader === state.playerFamily && lead.why.startsWith("the richest");
+  const outEarned = !!lead && lead.track === "wealth";
   const slots = ctx.owned.reduce((n, t) => n + Math.max(0, maxRacketsFor(t) - t.rackets.length), 0);
   if (slots > 0 && ctx.treasury >= 1500) {
     out.push({
       goal: { kind: "enrich", score: style.goal.enrich * (0.8 + Math.min(0.6, slots * 0.1) + (outEarned ? DOMINANCE_PULL : 0)) },
-      reason: `${slots} open lots and cash to build${outEarned ? ", and the player is out-earning everyone" : ""}`,
+      reason: `${slots} open lots and cash to build${outEarned ? ", and someone is running away on wealth" : ""}`,
     });
   }
 
@@ -269,18 +307,29 @@ function goalOptions(ctx: Ctx): GoalOption[] {
     const ratio = believedStrength(state, family, score.actor) / Math.max(1, ctx.men);
     const defiant = pushed >= INTIMIDATION_HITS && (ratio <= 1 || personality === "volatile") ? DEFIANCE_PULL : 0;
     out.push({
-      goal: { kind: "retaliate", target: score.actor, score: style.goal.retaliate * (Math.min(2.5, score.score / 3) + defiant) },
+      goal: { kind: "retaliate", target: score.actor, score: style.goal.retaliate * (Math.min(2.5, score.score / 3) + defiant) * caution },
       reason: `a score to settle with ${score.actor} (${score.score.toFixed(1)})${defiant ? ", and we won't be pushed around" : ""}`,
     });
   }
 
-  // Contain the leader, harder if the family has signed on to a coalition.
+  // Contain the leader. Peace with them takes the teeth out of it and leaves the catch-up.
   const pact = coalitionTarget(state, family);
-  if (lead && !atPeace(state, family, lead.leader)) {
+  if (lead) {
     const bonus = pact === lead.leader ? 0.8 : 0;
+    const quiet = atPeace(state, family, lead.leader);
+    const heat = lead.live ? Math.max(caution, 0.7) : caution;
     out.push({
-      goal: { kind: "contain_leader", target: lead.leader, score: style.goal.contain_leader * (lead.pressure * CONTAIN_URGENCY + bonus) },
-      reason: `${lead.leader} is pulling ahead: ${lead.why}${bonus ? ", and we have a coalition" : ""}`,
+      goal: {
+        kind: "contain_leader",
+        target: lead.leader,
+        track: lead.track,
+        score:
+          style.goal.contain_leader *
+          (lead.pressure * CONTAIN_URGENCY * (lead.critical ? CRITICAL_URGENCY : 1) * (quiet ? 0.6 : 1) + bonus) *
+          heat,
+      },
+      reason: `${lead.leader} is pulling ahead: ${lead.why}${lead.critical ? ", and the clock is half run" : ""}${bonus ? ", and we have a coalition" : ""}${quiet ? "; we keep pace without raising a hand" : ""}`,
+      urgent: lead.critical,
     });
   }
 
@@ -291,8 +340,8 @@ function goalOptions(ctx: Ctx): GoalOption[] {
     recover += 1.6;
     why.push("the treasury is nearly empty");
   }
-  if (ctx.heat >= 60) {
-    recover += (ctx.heat - 60) / 30;
+  if (ctx.heat >= 40) {
+    recover += (ctx.heat - 40) / 40;
     why.push(`police heat at ${Math.round(ctx.heat)}`);
   }
   if (ctx.men < 4) {
@@ -410,11 +459,13 @@ export function chooseGoal(state: GameState, family: FamilyName): { state: GameS
       !still ||
       current.failures >= GOAL_MAX_FAILURES ||
       state.turn - current.since >= GOAL_MAX_WEEKS ||
-      (best && !sameGoal(best.goal, current) && best.goal.score > still.goal.score * (1 + ctx.style.patience));
+      (best && !sameGoal(best.goal, current) && best.goal.score > still.goal.score * (1 + (best.urgent ? 0 : ctx.style.patience)));
     if (!stale) {
+      // The leader can change which race he is running; the plan follows him.
+      const kept: AiGoal = { ...current, score: still!.goal.score, track: still!.goal.track };
       return {
-        state: withMind(state, family, { ...mind, stats, goal: { ...current, score: still!.goal.score } }),
-        goal: { ...current, score: still!.goal.score },
+        state: withMind(state, family, { ...mind, stats, goal: kept }),
+        goal: kept,
         reason: `sticking with it: ${still!.reason}`,
       };
     }
@@ -462,7 +513,16 @@ export function candidateActions(state: GameState, family: FamilyName, goal: AiG
   const out: AiAction[] = [];
   const g = goal?.kind;
   const target = goal?.target;
+  const track = goal?.track;
   const saving = g === "recover";
+  const quiet = g === "contain_leader" && !!target && atPeace(state, family, target);
+  const pace = quiet ? 0.6 : 1;
+  const challenge = g === "contain_leader" && target ? runaways(state).find((r) => r.family === target && r.track === track) : undefined;
+  // The summit would name the target on this track: the same job, with a date on it.
+  const claim =
+    g === "contain_leader" && target && target === state.playerFamily
+      ? summitThreats(state).find((t) => t.track === track)
+      : undefined;
 
   // Grabs next door, slower while the last one is still being digested or the men are spread thin.
   const digesting = ctx.mind.adapt.lastCapture != null && state.turn - ctx.mind.adapt.lastCapture < DIGEST_WEEKS;
@@ -499,6 +559,27 @@ export function candidateActions(state: GameState, family: FamilyName, goal: AiG
       s -= b;
       if (b > 0.1) reasons.push(`${t.owner} may answer`);
     }
+    const seat = boroughSeats(state).find((row) => row.borough === t.borough);
+    if (seat && seat.gap <= 2 && (seat.holder === null || seat.holder !== family)) {
+      s += track === "influence" ? 1 : 0.6;
+      reasons.push(`would move the ${t.borough} seat`);
+    }
+    if (seat && t.owner && t.owner === seat.holder && seat.holder === target && (seat.held - 1) * 2 <= seat.total) {
+      s += 0.6;
+      reasons.push(`breaks ${target}'s hold on the ${t.borough} seat`);
+    }
+    if (g === "contain_leader" && track === "turf") {
+      s *= 1.25;
+      reasons.push("a bigger second place raises their bar");
+      if (t.owner === target) {
+        const standing = trackStanding(state, target, "turf");
+        if (standing.value - 1 < standing.bar) {
+          s += 0.5;
+          reasons.push("this block drops them under the bar");
+        }
+      }
+    }
+    if (quiet) s *= pace;
     out.push({ kind: "expand", territoryId: t.id, targetFamily: t.owner ?? undefined, score: s, fit, reasons });
   }
 
@@ -562,7 +643,7 @@ export function candidateActions(state: GameState, family: FamilyName, goal: AiG
     if (!nextDoor.has(t.id) || !t.owner || t.owner === family || t.rackets.length === 0) continue;
     if (atPeace(state, family, t.owner)) continue;
     if (believedGarrison(state, family, t) >= 0.5) continue;
-    const fit = t.owner === target ? 1.6 : saving ? 1.3 : 1;
+    const fit = t.owner === target && track === "wealth" ? 1.9 : t.owner === target ? 1.6 : saving ? 1.3 : 1;
     out.push({
       kind: "shakedown",
       territoryId: t.id,
@@ -581,21 +662,20 @@ export function candidateActions(state: GameState, family: FamilyName, goal: AiG
     99999,
   );
   if (cheapest <= ctx.treasury) {
-    const fit = g === "enrich" ? 1.5 : saving ? 0.2 : 1;
-    out.push({ kind: "build", score: style.act.build * fit, fit, reasons: ["open lot and cash to build"] });
+    const fit = g === "enrich" || (g === "contain_leader" && track === "wealth") ? 1.5 : saving ? 0.2 : 1;
+    out.push({ kind: "build", score: style.act.build * fit * (g === "contain_leader" ? pace : 1), fit, reasons: ["open lot and cash to build"] });
   }
 
   // Hijacks.
   const routes = state.routes.filter((r) => r.status === "active" && r.family !== family && !atPeace(state, family, r.family));
   if (routes.length > 0) {
-    const lead = cityLeader(state, family);
     const fams = [...new Set(routes.map((r) => r.family))];
     for (const f of fams) {
       let fit = f === target ? 1.6 : 1;
       const reasons = [`${f} trucks on the road`];
-      if (lead?.leader === f && f === state.playerFamily) {
+      if (g === "contain_leader" && track === "wealth" && f === target) {
         fit *= 1.4;
-        reasons.push("bleed the richest books");
+        reasons.push("bleed the leader's books");
       }
       out.push({ kind: "hijack", targetFamily: f, score: style.act.hijack * fit, fit, reasons });
     }
@@ -603,8 +683,51 @@ export function candidateActions(state: GameState, family: FamilyName, goal: AiG
 
   // Liquor runs between their own blocks.
   if (ctx.owned.length >= 2) {
-    const fit = g === "enrich" ? 1.2 : 1;
-    out.push({ kind: "delivery", score: style.act.delivery * fit, fit, reasons: ["move product between our blocks"] });
+    const fit = g === "enrich" || (g === "contain_leader" && track === "wealth") ? 1.3 : 1;
+    out.push({
+      kind: "delivery",
+      score: style.act.delivery * fit * (g === "contain_leader" ? pace : 1),
+      fit,
+      reasons: ["move product between our blocks"],
+    });
+  }
+
+  if (g === "contain_leader" && target && track === "influence" && family !== target) {
+    const behind = familyInfluence(state, family) < familyInfluence(state, target);
+    const sanctioned = (state.diplomacy.rivalSanctions?.[family] ?? 0) > state.turn;
+    const bought = state.courtTurn?.[family] === state.turn;
+    if (behind && !sanctioned && !bought && ctx.treasury >= 1000) {
+      out.push({
+        kind: "court",
+        targetFamily: target,
+        score: style.act.court * 1.5 * pace * (claim ? Math.max(1, claim.pressure) : 1),
+        fit: 1.7,
+        reasons: [`buy standing to keep pace with ${target}`, ...(claim ? ["the summit is close"] : [])],
+      });
+    }
+  }
+
+  // The table. Only when it would hear the family, and the room doesn't read as a loss.
+  if (g === "contain_leader" && target && !quiet && family !== target && track && canPetition(state, family, target)) {
+    const war = track === "turf";
+    const kind = war ? "war" : track === "wealth" ? "tax" : "ruling";
+    const margin = !war || challenge?.level === "critical" ? petitionMargin(state, family, target, kind) : -1;
+    if (margin >= 0) {
+      out.push({
+        kind: "petition",
+        targetFamily: target,
+        score: style.act.petition * (war ? 1.4 : 1.2) * Math.max(0.6, challenge?.pressure ?? claim?.pressure ?? 0.8) * (margin > 0 ? 1 : 0.6),
+        fit: 1.7,
+        reasons: [
+          war
+            ? `ask the table for guns on ${target}`
+            : track === "wealth"
+              ? `ask the table to tax ${target}`
+              : `ask the table to rule against ${target}`,
+          margin > 0 ? "the seats lean our way" : "the seats are split",
+        ],
+      });
+    }
   }
 
   // Peace feelers.
@@ -659,6 +782,10 @@ export function actionLabel(a: Pick<AiAction, "kind" | "targetFamily" | "territo
       return `hijack ${a.targetFamily} trucks`;
     case "seek_peace":
       return `make peace with ${a.targetFamily}`;
+    case "court":
+      return `buy standing to keep pace with ${a.targetFamily}`;
+    case "petition":
+      return `call the Commission on ${a.targetFamily}`;
     default:
       return a.kind;
   }

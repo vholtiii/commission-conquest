@@ -4,20 +4,18 @@ import { releaseCrewHome } from "./jobReturn";
 
 /** Weeks the city stays quiet after a boss is killed, counting the week he dies. */
 export const MOURNING_WEEKS = 3;
-/** A made man's funeral, not a chair. One week of quiet streets. */
+/** A capo's funeral, or the brass below the chair. One week of quiet streets. */
 export const STREET_FUNERAL_WEEKS = 1;
 
-const MADE: ReadonlySet<CrewRole> = new Set([
-  "soldier",
-  "capo",
-  "hitman",
-  "underboss",
-  "consigliere",
-  "boss",
-]);
+const STREET_FUNERAL: ReadonlySet<CrewRole> = new Set(["capo", "underboss", "consigliere"]);
 
-export function isMadeMan(role: CrewRole | undefined): boolean {
-  return !!role && MADE.has(role);
+/**
+ * The city stops for a week for a capo, an underboss or a consigliere.
+ * A soldier's or a hitman's wake is the family's own business: no quiet,
+ * and no hit is called off for it.
+ */
+export function earnsStreetFuneral(role: CrewRole | undefined): boolean {
+  return !!role && STREET_FUNERAL.has(role);
 }
 
 export type MourningState = {
@@ -58,8 +56,8 @@ export function tableHit(op: { kind: string; intent?: string; errandId?: string 
 
 /**
  * Streets go quiet. A boss funeral is three weeks (two if the chair emptied
- * this week). A made man's funeral is one week. A later death of the same
- * kind restarts the clock. A boss death upgrades a street funeral. A street
+ * this week). A street funeral (see `earnsStreetFuneral`) is one week. A
+ * later death of the same kind restarts the clock. A boss death upgrades a street funeral. A street
  * death does not shorten a boss funeral.
  *
  * Street hits are called off. Commission hits stay up unless this is a boss funeral.

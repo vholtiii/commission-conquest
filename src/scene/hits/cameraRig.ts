@@ -78,9 +78,13 @@ function springStep(
 const MAX_FOLLOW_SPEED = 40;
 /** Fastest the camera moves on its own, over and above any subject it rides with. */
 const MAX_CAM_SPEED = 9;
+/** A follow shot is allowed to keep up with a car instead of trailing it. */
+const MAX_RIDE_SPEED = 26;
 const goalVel = new THREE.Vector3();
 const lookVel = new THREE.Vector3();
 const before = new THREE.Vector3();
+const leadPos = new THREE.Vector3();
+const leadLook = new THREE.Vector3();
 
 function velocityOf(out: THREE.Vector3, now: THREE.Vector3, prev: THREE.Vector3, dt: number): THREE.Vector3 {
   out.copy(now).sub(prev).divideScalar(dt);
@@ -89,9 +93,15 @@ function velocityOf(out: THREE.Vector3, now: THREE.Vector3, prev: THREE.Vector3,
 }
 
 /** Spring rate for the old per-frame-at-60Hz share, kept to a band that eases rather than snaps. */
-export function springOmega(k: number): number {
+export function springOmega(k: number, follow = false): number {
   const rate = -Math.log(1 - Math.min(0.95, Math.max(0.01, k))) * 60;
-  return THREE.MathUtils.clamp(rate * 0.45, 3, 12);
+  return follow ? THREE.MathUtils.clamp(rate * 0.8, 8, 22) : THREE.MathUtils.clamp(rate * 0.45, 3, 12);
+}
+
+/** Shortest signed turn from `current` toward `target`, eased so a figure doesn't snap on his heel. */
+export function dampAngle(current: number, target: number, dt: number, lambda = 10): number {
+  const diff = Math.atan2(Math.sin(target - current), Math.cos(target - current));
+  return current + diff * (1 - Math.exp(-lambda * Math.max(0, dt)));
 }
 
 /**
@@ -124,12 +134,20 @@ export function moveCam(
     }
   } else {
     const follow = !!opts?.follow && rig.hasPrev && dt > 0;
-    const omega = springOmega(k);
+    const omega = springOmega(k, !!opts?.follow);
     before.copy(camera.position);
     const ride = follow ? velocityOf(goalVel, pos, rig.prevGoal, dt) : undefined;
-    springStep(camera.position, rig.vel, pos, omega, step, ride);
+    const lookRide = follow ? velocityOf(lookVel, lookAt, rig.prevLook, dt) : undefined;
+    // Aim a little ahead of a moving subject so the lens arrives with him, not behind.
+    leadPos.copy(pos);
+    leadLook.copy(lookAt);
+    if (ride && ride.lengthSq() > 0.04) {
+      leadPos.addScaledVector(ride, 0.16);
+      if (lookRide) leadLook.addScaledVector(lookRide, 0.12);
+    }
+    springStep(camera.position, rig.vel, leadPos, omega, step, ride);
     // A long recovery glides at a steady pace rather than whipping across.
-    const limit = MAX_CAM_SPEED + (ride ? ride.length() : 0);
+    const limit = (opts?.follow ? MAX_RIDE_SPEED : MAX_CAM_SPEED) + (ride ? ride.length() : 0);
     if (step > 0 && camera.position.distanceTo(before) > limit * step) {
       camera.position.sub(before).setLength(limit * step).add(before);
       if (rig.vel.length() > limit) rig.vel.setLength(limit);
@@ -140,14 +158,7 @@ export function moveCam(
       rig.vel.set(0, 0, 0);
     }
     if (controls) {
-      springStep(
-        controls.target,
-        rig.targetVel,
-        lookAt,
-        omega * 1.15,
-        step,
-        follow ? velocityOf(lookVel, lookAt, rig.prevLook, dt) : undefined,
-      );
+      springStep(controls.target, rig.targetVel, leadLook, omega * 1.15, step, lookRide);
       controls.update();
     }
   }
@@ -221,7 +232,9 @@ export function handheld(camera: THREE.Camera, amount: number, seed = 0): void {
 
 /** The map's lens. Reels narrow it for close work and give it back afterwards. */
 export const BASE_FOV = 42;
-const LENS: Record<Coverage, number> = { wide: 42, medium: 40, close: 35, pull: 44, body: 38 };
+/** Lenses a reel can ask for by name. Punch is the snap-in on a shot or a blast. */
+export const FOV = { establish: 50, wide: 46, medium: 38, close: 28, punch: 20, body: 32, pull: 50 } as const;
+const LENS: Record<Coverage, number> = { wide: 50, medium: 38, close: 28, pull: 50, body: 32 };
 
 export function lensFor(coverage: Coverage): number {
   return LENS[coverage];
@@ -518,18 +531,24 @@ const VARIANTS: Variant[] = [
   raise(3.2, 0.7),
 ];
 
-/** How long the asked-for shot must stay usable before the camera gives up a fix for it. */
-const BASE_HOLD = 0.6;
-
 /**
  * Keeps a reel's camera out of the buildings. Tries the asked-for shot, then
  * swings round, steps in, or rises, and sticks with whatever worked last so the
  * camera does not hop between fixes from one frame to the next.
  */
 export class ShotSolver {
-  private last = 0;
-  private baseOkFor = 0;
+  private lock = 0;
+  private lockId = "";
+  /** The committed angle was blocked, so the next frame should cut rather than glide. */
+  private cut = false;
   constructor(private readonly space: Space | null) {}
+
+  /** True once, after a committed angle had to be abandoned mid-shot. */
+  takeCut(): boolean {
+    const due = this.cut;
+    this.cut = false;
+    return due;
+  }
 
   /** Floor the eye height without dipping under the subject's chest. */
   private floor(s: Shot): Shot {
@@ -543,53 +562,62 @@ export class ShotSolver {
   }
 
   /**
-   * `from` is where the camera is now, mid-shot: a fix is then chosen by how near
-   * and reachable it is. Without it (a new beat) fixes go in order of preference.
+   * Pick one angle for the whole shot (`commit`) and keep it. Samples are the
+   * shot at a few points along its move, so a dolly that would end inside a
+   * wall is refused up front. If the committed angle gets blocked anyway, cut.
    */
-  resolve(shot: Shot, from?: THREE.Vector3, dt = 1 / 60): Shot {
+  resolve(shot: Shot, from?: THREE.Vector3, _dt = 1 / 60, commit?: { id: string; samples?: Shot[] }): Shot {
     const base = this.floor(shot);
     const space = this.space;
     if (!space) return base;
-    if (this.last === 0) {
-      if (this.ok(base)) return base;
-    } else {
-      const baseOk = this.ok(base) && (!from || space.passable(from, base.pos));
-      this.baseOkFor = baseOk ? this.baseOkFor + Math.max(0, dt) : 0;
-      if (baseOk && this.baseOkFor >= BASE_HOLD) {
-        this.last = 0;
-        this.baseOkFor = 0;
-        return base;
-      }
-      const sticky = VARIANTS[this.last]!(base);
-      if (this.ok(sticky)) return sticky;
+    const id = commit?.id ?? "";
+    if (id !== this.lockId) {
+      this.lockId = id;
+      this.lock = this.pick(base, commit?.samples ?? [base], from);
     }
-    let best = -1;
-    let bestScore = Infinity;
-    let bestShot: Shot | null = null;
-    for (let i = 1; i < VARIANTS.length; i++) {
-      const s = VARIANTS[i]!(base);
-      if (!this.ok(s)) continue;
-      const score = from ? from.distanceToSquared(s.pos) + (space.passable(from, s.pos) ? 0 : 1e6) : i;
-      if (score < bestScore) {
-        best = i;
-        bestScore = score;
-        bestShot = s;
-      }
+    const placed = this.floor(VARIANTS[this.lock]!(base));
+    if (this.ok(placed)) return placed;
+    const next = this.pick(base, [base], from, this.lock);
+    if (next !== this.lock) {
+      this.lock = next;
+      this.cut = true;
     }
-    if (bestShot) {
-      this.last = best;
-      this.baseOkFor = 0;
-      return bestShot;
-    }
-    this.last = 0;
-    // Nothing at street level works: go straight up until clear of every roof, racket towers included.
+    const fixed = this.floor(VARIANTS[this.lock]!(base));
+    if (this.ok(fixed)) return fixed;
     const up = base.look.clone().add(new THREE.Vector3(0.6, 5.5, 0.6));
-    while (up.y < 14 && !this.space.isClear(up)) up.y += 0.5;
+    while (up.y < 14 && !space.isClear(up)) up.y += 0.5;
     return { pos: up, look: base.look };
   }
 
+  /** Index of the variant that keeps the most of `samples` in the clear. */
+  private pick(base: Shot, samples: Shot[], from?: THREE.Vector3, avoid = -1): number {
+    const space = this.space;
+    if (!space) return 0;
+    let best = 0;
+    let bestScore = -Infinity;
+    for (let i = 0; i < VARIANTS.length; i++) {
+      if (i === avoid) continue;
+      let clear = 0;
+      let reachable = true;
+      let near = 0;
+      for (const sample of samples) {
+        const s = this.floor(VARIANTS[i]!(this.floor(sample)));
+        if (this.ok(s)) clear++;
+        if (from && !space.passable(from, s.pos)) reachable = false;
+        if (from) near += from.distanceToSquared(s.pos);
+      }
+      const score = clear * 10 + (reachable ? 4 : 0) + (i === 0 ? 3 : 0) - near * 0.002;
+      if (score > bestScore) {
+        bestScore = score;
+        best = i;
+      }
+    }
+    return best;
+  }
+
   reset(): void {
-    this.last = 0;
-    this.baseOkFor = 0;
+    this.lock = 0;
+    this.lockId = "";
+    this.cut = false;
   }
 }

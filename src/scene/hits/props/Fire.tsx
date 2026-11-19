@@ -1,6 +1,7 @@
 import { useRef } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
+import { readReel, useInReel } from "../reelClock";
 import Smoke from "./Smoke";
 
 interface Props {
@@ -12,6 +13,7 @@ interface Props {
 export default function Fire({ active, at }: Props) {
   const tongues = useRef<THREE.Group>(null);
   const light = useRef<THREE.PointLight>(null);
+  const inReel = useInReel();
 
   useFrame(({ clock }) => {
     if (!tongues.current || !light.current) return;
@@ -21,7 +23,7 @@ export default function Fire({ active, at }: Props) {
       light.current.intensity = 0;
       return;
     }
-    const t = clock.elapsedTime;
+    const t = inReel ? (readReel()?.time ?? clock.elapsedTime) : clock.elapsedTime;
     light.current.intensity = 3.2 + Math.sin(t * 17) * 1.4 + Math.sin(t * 9) * 0.6;
     tongues.current.children.forEach((child, i) => {
       const s = 0.7 + Math.sin(t * (11 + i * 3) + i) * 0.25;

@@ -1,4 +1,5 @@
-import { Component, Suspense, useEffect, useMemo, type ReactNode } from "react";
+import { Component, Suspense, useEffect, useMemo, useRef, type ReactNode } from "react";
+import { useFrame } from "@react-three/fiber";
 import { useGLTF } from "@react-three/drei";
 import * as THREE from "three";
 import { SedanFleet, type SedanSpec } from "./Sedan";
@@ -18,6 +19,44 @@ interface FleetProps {
   cars: SedanSpec[];
   scale?: number;
   castShadow?: boolean;
+  /** Nose dip and roll from braking and turning. Off when a blast is already pitching the body. */
+  attitude?: boolean;
+}
+
+/** Nose dips under the brakes and the body rolls into a turn, from how the parent rig actually moved. */
+function Attitude({ children }: { children: ReactNode }) {
+  const ref = useRef<THREE.Group>(null);
+  const state = useRef({ prev: new THREE.Vector3(), speed: 0, yaw: 0, ready: false, pos: new THREE.Vector3() });
+
+  useFrame((_, rawDt) => {
+    const g = ref.current;
+    const parent = g?.parent;
+    if (!g || !parent) return;
+    const dt = Math.min(0.05, rawDt);
+    if (dt <= 1e-4) return;
+    const s = state.current;
+    parent.getWorldPosition(s.pos);
+    const yaw = parent.rotation.y;
+    if (!s.ready) {
+      s.prev.copy(s.pos);
+      s.yaw = yaw;
+      s.ready = true;
+      return;
+    }
+    const dist = Math.hypot(s.pos.x - s.prev.x, s.pos.z - s.prev.z);
+    const speed = dist / dt;
+    const accel = (speed - s.speed) / dt;
+    const yawRate = Math.atan2(Math.sin(yaw - s.yaw), Math.cos(yaw - s.yaw)) / dt;
+    s.prev.copy(s.pos);
+    s.speed = speed;
+    s.yaw = yaw;
+    const pitch = THREE.MathUtils.clamp(accel * 0.012, -0.1, 0.1);
+    const roll = THREE.MathUtils.clamp(-yawRate * 0.04, -0.09, 0.09);
+    g.rotation.z = THREE.MathUtils.damp(g.rotation.z, pitch, 5, dt);
+    g.rotation.x = THREE.MathUtils.damp(g.rotation.x, roll, 5, dt);
+  });
+
+  return <group ref={ref}>{children}</group>;
 }
 
 class ModelErrorBoundary extends Component<{ fallback: ReactNode; children: ReactNode }, { hasError: boolean }> {
@@ -127,13 +166,15 @@ function GltfSedans({ cars, scale = 1, castShadow = false }: FleetProps) {
 /** Cinematic cars. Kenney sedan when the file is present, procedural fleet otherwise. */
 export function ReelSedan(props: FleetProps) {
   if (props.cars.length === 0) return null;
-  return (
-    <ModelErrorBoundary fallback={<SedanFleet {...props} />}>
-      <Suspense fallback={<SedanFleet {...props} />}>
-        <GltfSedans {...props} />
+  const { attitude = true, ...fleet } = props;
+  const body = (
+    <ModelErrorBoundary fallback={<SedanFleet {...fleet} />}>
+      <Suspense fallback={<SedanFleet {...fleet} />}>
+        <GltfSedans {...fleet} />
       </Suspense>
     </ModelErrorBoundary>
   );
+  return attitude ? <Attitude>{body}</Attitude> : body;
 }
 
 useGLTF.preload(SEDAN_URL);

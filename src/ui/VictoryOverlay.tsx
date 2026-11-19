@@ -39,6 +39,9 @@ export default function VictoryOverlay() {
       <div className="panel-surface-elevated flex w-full max-w-[720px] flex-col items-center rounded-lg border p-6 text-center">
         {won ? <Trophy className="mb-3 h-12 w-12 text-money" /> : <Skull className="mb-3 h-12 w-12 text-heat" />}
         <h2 className="font-display text-3xl text-foreground">{won ? "Victory" : "Game Over"}</h2>
+        {!won && victory.winner && (
+          <p className="mt-1 text-sm text-heat">The {victory.winner} take the city.</p>
+        )}
         <p className="mt-2 text-sm text-muted-foreground">{victory.reason}</p>
         <p className="mt-1 text-xs text-muted-foreground">Reached on turn {turn}.</p>
 

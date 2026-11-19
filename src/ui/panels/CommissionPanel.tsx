@@ -35,8 +35,7 @@ import { Button } from "@/components/ui/button";
 import PanelShell from "./PanelShell";
 import Tip from "@/ui/Tip";
 import { titleCase, formatMoney } from "../formatters";
-import { DIRTY_WEIGHT, familyInfluence, familyWealth, STREAK_START_TURN, wealthFloor } from "@/engine/victory";
-import { leadTurnsFor } from "@/engine/tempo";
+import { DIRTY_WEIGHT, familyInfluence, familyWealth, playerWeeksNeeded, STREAK_START_TURN, wealthFloor } from "@/engine/victory";
 import { activeRivalPacts } from "@/engine/ai/rivalPacts";
 import { commissionMinutes, minuteAge, minuteFamily, rivalFeuds, seatChips } from "@/engine/commissionMinutes";
 import {
@@ -673,7 +672,9 @@ function CommissionCallBlock() {
   const influence = useGameStore((s) => s.influence);
   const lobby = useGameStore((s) => s.lobbySeat);
   const health = commissionHealth(useGameStore());
-  if (!call || call.phase !== "lobby" || call.caller !== playerFamily) return null;
+  if (!call || call.phase !== "lobby") return null;
+  if (call.thirdParty) return <ThirdPartyCall />;
+  if (call.caller !== playerFamily) return null;
   const shift = (health.sway - 0.5) * 0.4;
 
   return (
@@ -745,6 +746,55 @@ function CommissionCallBlock() {
             </div>
           );
         })}
+      </div>
+    </div>
+  );
+}
+
+/** A call one rival brought against another. The player's seat is counted with the boroughs. */
+function ThirdPartyCall() {
+  const call = useGameStore((s) => s.commissionCall);
+  const pledge = useGameStore((s) => s.pledgeSeat);
+  const playerFamily = useGameStore((s) => s.playerFamily);
+  if (!call?.thirdParty) return null;
+  const why =
+    call.kind === "war"
+      ? `${call.caller} wants guns on ${call.accused}`
+      : call.kind === "tax"
+        ? `${call.caller} wants ${call.accused} taxed`
+        : `${call.caller} wants a ruling against ${call.accused}`;
+  const side = call.pledge ?? "abstain";
+  return (
+    <div className="mb-3 rounded-md border border-panel-border bg-panel/40 p-2">
+      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">A call between families</div>
+      <p className="mt-1 text-xs text-steel-light">{why}.</p>
+      <p className="mt-1 text-[10px] text-muted-foreground">
+        The vote waits until next week. Your seat counts with the blocks you hold. Abstaining costs nothing.
+        {call.kind === "war" ? ` Back ${call.caller} and you are at war with ${call.accused} too if it carries.` : ""}
+      </p>
+      <ul className="mt-2 space-y-1">
+        {call.seats.map((seat) => {
+          const mine = seat.family === playerFamily;
+          const word = seat.lean > 0.2 ? call.caller : seat.lean < -0.2 ? call.accused : "undecided";
+          const backed = side === "caller" ? `backs ${call.caller}` : side === "accused" ? `backs ${call.accused}` : "abstains";
+          return (
+            <li key={seat.family} className="flex justify-between text-[11px]">
+              <span>{mine ? "Your seat" : seat.family}</span>
+              <span className="text-muted-foreground">{mine ? backed : `leans ${word}`}</span>
+            </li>
+          );
+        })}
+      </ul>
+      <div className="mt-2 flex gap-1">
+        <Button size="sm" variant={side === "caller" ? "default" : "secondary"} className="h-6 text-[10px]" onClick={() => pledge("caller")}>
+          Back {call.caller}
+        </Button>
+        <Button size="sm" variant={side === "accused" ? "default" : "secondary"} className="h-6 text-[10px]" onClick={() => pledge("accused")}>
+          Back {call.accused}
+        </Button>
+        <Button size="sm" variant={side === "abstain" ? "default" : "secondary"} className="h-6 text-[10px]" onClick={() => pledge("abstain")}>
+          Abstain
+        </Button>
       </div>
     </div>
   );
@@ -888,7 +938,7 @@ function Standings() {
   const snapshot = useGameStore();
   const defunct = useGameStore((s) => s.defunctFamilies);
   if (!playerFamily) return null;
-  const leadTurns = leadTurnsFor(snapshot.settings.gameLength);
+  const leadTurns = playerWeeksNeeded(snapshot);
   const left = Math.max(0, (victory?.finalTurn ?? 50) - turn);
   const rows = ALL_FAMILY_NAMES.map((f) => ({
     f,
@@ -939,8 +989,12 @@ function Standings() {
         <p className="mt-1.5 text-[10px] text-muted-foreground">
           {turn < STREAK_START_TURN
             ? `Sudden death opens turn ${STREAK_START_TURN}`
-            : `Sudden death ${victory?.influenceLeadTurns ?? 0}/${leadTurns} standing · ${victory?.wealthLeadTurns ?? 0}/${leadTurns} wealth`}
+            : `Sudden death ${victory?.influenceLeadTurns ?? 0}/${leadTurns} standing · ${victory?.wealthLeadTurns ?? 0}/${leadTurns} wealth · ${victory?.turfLeadTurns ?? 0}/${leadTurns} turf`}
           {(victory?.bankruptTurns ?? 0) > 0 ? ` · broke ${victory.bankruptTurns}/3` : ""}
+          {" · "}
+          <button type="button" className="underline" onClick={() => useGameStore.getState().setPanel("race")}>
+            Open the race
+          </button>
         </p>
       </Tip>
     </div>

@@ -16,6 +16,7 @@ import {
   findDeliveryPath,
   racketIncome,
   hasSafehouse,
+  isLegitBusiness,
 } from "./economy";
 import { nextRacketSiteIndex } from "./cityLayout";
 import { getRelation, setRelationDelta } from "./relations";
@@ -35,7 +36,9 @@ import { BOSS_PRESENCE, bossPresentIn, hqIsSoft } from "./bossPresence";
 import { actingUnderboss, bossIsJailed } from "./jail";
 import { isAbandonedTurf, isDefunct, settleRivalChair } from "./defection";
 import { startInterregnum } from "./interregnum";
-import { familiesPressingSuddenDeath } from "./victory";
+import { familiesPressingSuddenDeath, INFLUENCE_CAP, runaways, streakWeeks, summitThreats } from "./victory";
+import { aiPetition } from "./commission";
+import { tickRivalCountHouse } from "./countHouse";
 import { tempoFor } from "./tempo";
 import { recruitPrice } from "./recruiting";
 import { RIVAL_BRIBE_AT, RIVAL_CAPTAIN_BRIBE, RIVAL_COP_BRIBE, bumpRivalHeat } from "./rivalHeat";
@@ -50,7 +53,7 @@ import {
 import { withdrawCrates } from "./liquor";
 import { openIncidentFromHijack } from "./incidents";
 import { CRATE_STREET_VALUE, passageGrudges } from "./passage";
-import type { AiFamilyTrace, HitApproach } from "@/types/game";
+import type { AiFamilyTrace, AiGoal, HitApproach } from "@/types/game";
 import { brainOn, mindOf, withMind } from "./ai/minds";
 import { believedCrewSite, believedGarrison, scoutBlock, updateBeliefs } from "./ai/aiBeliefs";
 import {
@@ -129,7 +132,9 @@ function tryBuildRacket(
   if (!target) return { state };
 
   const allowed = allowedRacketTypes(target);
-  const preferred = priorities.filter((type) => allowed.includes(type));
+  const watched = (state.rivalHeat?.[family] ?? 0) >= 40;
+  const fronts = allowed.filter((type) => isLegitBusiness(type));
+  const preferred = (watched && fronts.length > 0 ? fronts : priorities).filter((type) => allowed.includes(type));
   const pool = preferred.length > 0 ? preferred : allowed;
   if (pool.length === 0) return { state };
   const type = pickWeighted(rng, pool, (tp) => {
@@ -282,6 +287,7 @@ export function tryExpand(
           owner: family,
           leadershipVacuum: 0,
           garrisonIds: [],
+          neutralSinceTurn: undefined,
           rackets: abandoned ? t.rackets.map((r) => ({ ...r, managerId: null })) : t.rackets,
         }
       : t,
@@ -364,6 +370,22 @@ export function believedBossSite(
   return familyHq(state, boss.family) ?? real;
 }
 
+/** Past this, a family keeps its head down unless it is already at war. */
+const HOT_QUIET = 70;
+const WAR_RELATION = -70;
+
+function alreadyAtWar(state: GameState, family: FamilyName): boolean {
+  if ((state.vendettas ?? []).includes(family)) return true;
+  return ALL_FAMILY_NAMES.some(
+    (other) => other !== family && getRelation(state.relations, family, other) <= WAR_RELATION,
+  );
+}
+
+/** Hits, hijacks and shakedowns stop once the precinct is this close, unless the war is already on. */
+function lyingLow(state: GameState, family: FamilyName): boolean {
+  return (state.rivalHeat?.[family] ?? 0) >= HOT_QUIET && !alreadyAtWar(state, family);
+}
+
 function tryHit(
   state: GameState,
   family: FamilyName,
@@ -373,6 +395,7 @@ function tryHit(
   opts?: { targetFamily?: FamilyName },
 ): { state: GameState; log?: TurnLogEntry } {
   if (handsDown(state)) return { state };
+  if (lyingLow(state, family)) return { state };
   if (state.interregnum?.family === family) return { state };
   const def = getFamilyDef(family);
   const brain = brainOn(state);
@@ -626,6 +649,7 @@ function tryHijack(
   rng: Rng,
   opts?: { targetFamily?: FamilyName },
 ): { state: GameState; log?: TurnLogEntry } {
+  if (lyingLow(state, family)) return { state };
   const brain = brainOn(state);
   const enemyRoutes = state.routes.filter(
     (r) =>
@@ -861,6 +885,7 @@ export function tryShakedown(
   rng: Rng,
   opts?: { territoryId?: string },
 ): { state: GameState; log?: TurnLogEntry } {
+  if (lyingLow(state, family)) return { state };
   const brain = brainOn(state);
   const owned = ownedTerritories(state, family);
   const adjacentIds = new Set(owned.flatMap((t) => t.adjacentTerritories));
@@ -1061,10 +1086,58 @@ function doScout(state: GameState, family: FamilyName, territoryId: string, rng:
   };
 }
 
+export const COURT_COST = 1000;
+export const COURT_GAIN = 5;
+
 /** Odds the street hears what a family has set its sights on, when it is you. */
 const GOAL_RUMOR = 0.4;
 /** Odds that rumor names the wrong block. */
 const GOAL_RUMOR_FALSE = 0.25;
+
+/** Said once, the week a family sets out to keep the player's name off the summit. */
+function summitLine(state: GameState, family: FamilyName, goal: AiGoal): TurnLogEntry | undefined {
+  if (goal.target !== state.playerFamily || goal.since !== state.turn) return undefined;
+  const claim = summitThreats(state).find((t) => t.track === goal.track);
+  if (!claim) return undefined;
+  const how =
+    claim.track === "influence"
+      ? "buying dinners for the seats and looking for a case against you"
+      : "opening new books and coming for your take";
+  return {
+    id: `log_summit_watch_${family}_${state.turn}`,
+    turn: state.turn,
+    category: "diplomacy",
+    text: `The ${family} are counting the weeks to the summit: ${claim.weeksLeft} left. They mean to keep your name off it — ${how}.`,
+    family: state.playerFamily ?? undefined,
+    tone: "intel",
+  };
+}
+
+function challengeLine(state: GameState, family: FamilyName): TurnLogEntry | undefined {
+  const goal = mindOf(state, family).goal;
+  if (!goal || goal.kind !== "contain_leader" || !goal.target || !goal.track) return undefined;
+  const row = runaways(state).find((r) => r.family === goal.target && r.track === goal.track);
+  if (!row || (row.level !== "pressing" && row.level !== "critical")) return summitLine(state, family, goal);
+  // Said once: the week the plan is made, or the week an older plan's target starts his clock.
+  if (goal.since !== state.turn && streakWeeks(state, goal.target, goal.track) !== 1) return undefined;
+  const you = goal.target === state.playerFamily;
+  const word = goal.track === "influence" ? "standing" : goal.track === "wealth" ? "wealth" : "turf";
+  const verb =
+    goal.track === "influence"
+      ? "buying dinners for the seats"
+      : goal.track === "wealth"
+        ? "opening new books"
+        : "moving on the blocks around them";
+  const pace = you ? `your ${word}` : `${goal.target}'s ${word}`;
+  return {
+    id: `log_challenge_${family}_${goal.track}_${state.turn}`,
+    turn: state.turn,
+    category: "diplomacy",
+    text: `The ${family} are ${verb}. They mean to keep pace with ${pace}.`,
+    family: state.playerFamily ?? undefined,
+    tone: "intel",
+  };
+}
 
 function goalRumor(state: GameState, family: FamilyName, rng: Rng): TurnLogEntry | undefined {
   const goal = mindOf(state, family).goal;
@@ -1093,7 +1166,7 @@ function runAction(
   family: FamilyName,
   rng: Rng,
   action: AiAction,
-): { state: GameState; log?: TurnLogEntry } {
+): { state: GameState; log?: TurnLogEntry; logs?: TurnLogEntry[] } {
   switch (action.kind) {
     case "expand":
       return tryExpand(state, family, rng, { territoryId: action.territoryId });
@@ -1111,6 +1184,34 @@ function runAction(
       return tryHijack(state, family, rng, { targetFamily: action.targetFamily });
     case "delivery":
       return tryDelivery(state, family, rng);
+    case "court": {
+      const cash = state.rivalTreasury?.[family] ?? 0;
+      if (cash < COURT_COST || state.courtTurn?.[family] === state.turn) return { state };
+      const gained = Math.min(INFLUENCE_CAP, (state.rivalInfluence?.[family] ?? 0) + COURT_GAIN);
+      return {
+        state: {
+          ...state,
+          rivalTreasury: { ...(state.rivalTreasury ?? {}), [family]: cash - COURT_COST },
+          rivalInfluence: { ...(state.rivalInfluence ?? {}), [family]: gained },
+          courtTurn: { ...(state.courtTurn ?? {}), [family]: state.turn },
+        },
+        log: {
+          id: `ai_court_${family}_${state.turn}`,
+          turn: state.turn,
+          category: "ai",
+          text: `${family} spends $${COURT_COST.toLocaleString("en-US")} buying dinners. Standing ${COURT_GAIN > 0 ? "+" : ""}${COURT_GAIN}.`,
+          family,
+        },
+      };
+    }
+    case "petition": {
+      const target = action.targetFamily;
+      const track = mindOf(state, family).goal?.track;
+      if (!target || !track) return { state };
+      const kind = track === "wealth" ? "tax" : track === "turf" ? "war" : "ruling";
+      const asked = aiPetition(state, family, target, kind, rng);
+      return { state: asked.state, log: asked.logs[0], logs: asked.logs.slice(1) };
+    }
     case "seek_peace": {
       if (action.targetFamily !== state.playerFamily) return { state };
       const invite = aiProposeSitdown(state, family, rng);
@@ -1129,17 +1230,35 @@ function runBrainTurn(state: GameState, family: FamilyName, rng: Rng): AiTurnRes
     state.settings.aiAggression *
     (def.personality === "volatile" ? 1.4 : def.personality === "covert" ? 0.8 : 1);
   const logs: TurnLogEntry[] = [];
-  let current = tryRecruit(state, family, rng);
+  let current = tryBribe(state, family, rng);
+  current = tryRecruit(current, family, rng);
   current = { ...current, crew: aiFillCrews(current.crew, family, current.turn) };
   current = refreshAdapt(current, family);
 
   const chosen = chooseGoal(current, family);
   current = chosen.state;
-  const rumor = goalRumor(current, family, rng);
-  if (rumor) logs.push(rumor);
+  const challenge = challengeLine(current, family);
+  if (challenge) logs.push(challenge);
+  else {
+    const rumor = goalRumor(current, family, rng);
+    if (rumor) logs.push(rumor);
+  }
 
   const options = candidateActions(current, family, chosen.goal);
-  const budget = Math.max(1, Math.floor(aggression * 2));
+  const liveGoal =
+    chosen.goal?.kind === "contain_leader" &&
+    !!chosen.goal.target &&
+    runaways(current).some(
+      (r) =>
+        r.family === chosen.goal?.target &&
+        r.track === chosen.goal?.track &&
+        (r.level === "pressing" || r.level === "critical"),
+    );
+  const summitGoal =
+    chosen.goal?.kind === "contain_leader" &&
+    chosen.goal.target === current.playerFamily &&
+    summitThreats(current).some((t) => t.track === chosen.goal?.track && t.leading);
+  const budget = Math.max(1, Math.floor(aggression * 2)) + (liveGoal || summitGoal ? 1 : 0);
   const picked = pickActions(options, budget, rng);
   const done: string[] = [];
 
@@ -1156,6 +1275,7 @@ function runBrainTurn(state: GameState, family: FamilyName, rng: Rng): AiTurnRes
     const result = runAction(current, family, rng, act);
     current = result.state;
     if (result.log) logs.push(result.log);
+    if (result.logs) logs.push(...result.logs);
     const worked = current !== before && !result.log?.id.includes("_fail_");
     current = noteStep(current, family, act, worked);
     if (worked && act.kind === "expand") {
@@ -1168,7 +1288,6 @@ function runBrainTurn(state: GameState, family: FamilyName, rng: Rng): AiTurnRes
   const msg = tryMessageHit(current, family, rng);
   current = msg.state;
   if (msg.log) logs.push(msg.log);
-  current = tryBribe(current, family, rng);
   current = fillUnderboss(current, family, rng, logs);
 
   // A family that learned its thin blocks get picked off keeps the border manned.
@@ -1185,6 +1304,16 @@ function runBrainTurn(state: GameState, family: FamilyName, rng: Rng): AiTurnRes
       if (r.log) logs.push(r.log);
     }
   }
+
+  const goal = mindOf(current, family).goal;
+  const house = tickRivalCountHouse(
+    current,
+    family,
+    rng,
+    goal ? { kind: goal.kind, target: goal.target, track: goal.track } : null,
+  );
+  current = house.state;
+  logs.push(...house.logs);
 
   const travel = tryBossTravel(current, family, rng);
   current = travel.state;
@@ -1240,7 +1369,8 @@ export function runAiTurn(
     (def.personality === "volatile" ? 1.4 : def.personality === "covert" ? 0.8 : 1);
 
   const logs: TurnLogEntry[] = [];
-  let current = tryRecruit(state, family, rng);
+  let current = tryBribe(state, family, rng);
+  current = tryRecruit(current, family, rng);
   // Capos fill their crews from the family's loose soldiers.
   current = { ...current, crew: aiFillCrews(current.crew, family, current.turn) };
 
@@ -1314,8 +1444,6 @@ export function runAiTurn(
     current = msg.state;
     if (msg.log) logs.push(msg.log);
   }
-
-  current = tryBribe(current, family, rng);
 
   // Promote a capo to underboss if the seat is empty
   const hasUb = current.crew.some(

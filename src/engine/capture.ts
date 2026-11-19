@@ -11,6 +11,42 @@ import { mattressDistrict, mattressSoldierBonus, MATTRESS_DEFENCE } from "./matt
 import { bribedHeat } from "./heat";
 import { isAbandonedTurf } from "./defection";
 
+/** Attack lost for each block past the one next door, and the floor it cannot fall through. */
+export const REACH_PENALTY = 0.15;
+export const REACH_FLOOR = 0.4;
+
+/**
+ * How far `territoryId` sits from the nearest block `family` owns.
+ * A bordering block is 1 and costs nothing. No turf at all costs nothing.
+ */
+export function captureReach(
+  state: Pick<GameState, "territories">,
+  family: FamilyName,
+  territoryId: string,
+): { blocks: number; mult: number } {
+  const owned = state.territories.some((t) => t.owner === family);
+  if (!owned) return { blocks: 0, mult: 1 };
+  const byId = new Map(state.territories.map((t) => [t.id, t]));
+  if (!byId.has(territoryId)) return { blocks: 0, mult: 1 };
+  const queue: { id: string; dist: number }[] = [{ id: territoryId, dist: 0 }];
+  const seen = new Set<string>([territoryId]);
+  while (queue.length > 0) {
+    const cur = queue.shift()!;
+    const node = byId.get(cur.id);
+    if (!node) continue;
+    if (cur.dist > 0 && node.owner === family) {
+      const extra = Math.max(0, cur.dist - 1);
+      return { blocks: cur.dist, mult: Math.max(REACH_FLOOR, 1 - extra * REACH_PENALTY) };
+    }
+    for (const adj of node.adjacentTerritories) {
+      if (seen.has(adj)) continue;
+      seen.add(adj);
+      queue.push({ id: adj, dist: cur.dist + 1 });
+    }
+  }
+  return { blocks: 6, mult: REACH_FLOOR };
+}
+
 /* ------------------------------------------------------------------ */
 /* Per-turn capture limit                                              */
 /* ------------------------------------------------------------------ */
@@ -190,12 +226,19 @@ export function captureStrength(
 
   const muscle = (c: CrewMember) =>
     (c.skills.muscle + mattressSoldierBonus(state, c)) * (isUnmade(c) ? 0.75 : 1);
+  const reach = captureReach(state, state.playerFamily, territoryId);
   const atk =
     attackers.reduce((n, c) => n + muscle(c), 0) *
     (1 + (getFamilyDef(state.playerFamily).bonuses.combatBonus || 0)) *
-    mods.atkMult;
+    mods.atkMult *
+    reach.mult;
   let fortified = safehouseCaptureDefence(t, state.turn ?? 0);
   const notes = [...mods.notes];
+  if (reach.blocks > 1) {
+    notes.push(
+      `${reach.blocks} blocks from your turf — attack −${Math.round((1 - reach.mult) * 100)}%`,
+    );
+  }
   if (fortified > 1) {
     notes.push(`Safehouse on the block — defence +${Math.round((fortified - 1) * 100)}%`);
   }
@@ -320,7 +363,12 @@ export function resolveCapture(
             return r;
           }),
           ...(x.id === territoryId
-            ? { owner: state.playerFamily, leadershipVacuum: 0, discovered: true }
+            ? {
+                owner: state.playerFamily,
+                leadershipVacuum: 0,
+                discovered: true,
+                neutralSinceTurn: undefined,
+              }
             : {}),
         })),
         crew: taken,

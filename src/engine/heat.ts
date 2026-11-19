@@ -145,9 +145,15 @@ export interface HeatThreshold {
   consequence: string;
 }
 
+/** Illegal take holds until heat 40, then loses half a percent a point, down to 70% at 100. */
+export function heatTakeMult(level: number): number {
+  if (level <= 40) return 1;
+  return Math.max(0.7, 1 - (level - 40) * 0.005);
+}
+
 export const HEAT_THRESHOLDS: HeatThreshold[] = [
   { level: 20, label: "Street Patrols", consequence: "Increased police foot patrols in hot districts." },
-  { level: 40, label: "Raids", consequence: "Vice squad raids on rackets — income reduced." },
+  { level: 40, label: "Raids", consequence: "Vice squad raids. Illegal take falls half a percent for every point of heat past 40." },
   {
     level: 60,
     label: "Warrants",
@@ -435,6 +441,7 @@ export function heatForecast(state: GameState): HeatForecast {
           ? `${listed} of your men are on the warrant list.`
           : `${listed} of your men would be on the warrant list.`
       : null,
+    `Illegal rackets pay ${Math.round(heatTakeMult(level) * 100)}% while the heat sits here. Fronts are left alone.`,
     "A hit or a capture adds heat on top of this.",
   ]
     .filter(Boolean)

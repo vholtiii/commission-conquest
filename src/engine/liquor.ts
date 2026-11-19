@@ -13,11 +13,11 @@ import { RACKET_LABELS } from "@/types/game";
 import type { Rng } from "./rng";
 import { createRng, hashString } from "./rng";
 import { isUnguarded } from "./territoryValue";
-import { findDeliveryPath, hasSafehouse } from "./economy";
+import { findDeliveryPath, hasSafehouse, racketPayment } from "./economy";
 import { BOSS_PRESENCE } from "./bossPresence";
 import { placementBonus } from "./districtFeatures";
 import { penalizeRacketFreeze } from "./practice";
-import { modifierProduct } from "./eventModifiers";
+import { modifierProduct, modifierSum } from "./eventModifiers";
 
 const SPEAKEASY_BASE_INCOME = 280;
 /** A crate that sat a week in a managed warehouse sells for this much more. */
@@ -1428,6 +1428,42 @@ export function liquorLedgerLog(
     category: "economy",
     text: `Liquor: ${net >= 0 ? "+" : ""}$${net} from ${ledger.sold} crates sold${losses > 0 ? `, −${losses} crates lost` : ""}${pilfer}${ledger.heat > 0 ? `, +${ledger.heat} heat` : ""}.`,
     family,
+  };
+}
+
+/** Buy whisky into one managed barn. The store wraps this with toasts. */
+export function orderWhisky(
+  state: GameState,
+  destTerritoryId: string,
+  crates: number,
+): { state: GameState; error?: string; qty?: number; arriveIn?: number; seizeP?: number; paid?: string } {
+  if (!state.playerFamily) return { state, error: "No family." };
+  const amount = Math.max(5, Math.round(crates / 5) * 5);
+  const dest = state.territories.find((t) => t.id === destTerritoryId);
+  if (!dest || dest.owner !== state.playerFamily) return { state, error: "Pick one of your districts" };
+  const lookup = makeManagerLookup(state.crew, state.playerFamily);
+  if (!hasManagedWarehouse(dest, lookup, state.turn)) return { state, error: "Assign a manager to that warehouse first" };
+  const { free } = warehouseRoom(dest, state.turn, lookup);
+  if (free < 5) return { state, error: "No free warehouse space" };
+  const qty = Math.min(amount, free);
+  const price = supplierPrice(state.seed, state.turn, state.heat.level);
+  const cost = qty * price;
+  const pay = racketPayment("warehouse", cost, state.money, state.dirtyMoney);
+  if (!pay) return { state, error: `Need $${cost} (dirty or clean)` };
+  const seizeP = shipmentSeizureChance(state.heat.level, state.bribes);
+  const arriveTurn = state.turn + 1 + Math.max(0, Math.round(modifierSum(state, "shipmentSpeed")));
+  const ship = { id: `ship_${state.turn}_${destTerritoryId}_${qty}`, crates: qty, destTerritoryId, arriveTurn, cost };
+  return {
+    state: {
+      ...state,
+      money: state.money - pay.clean,
+      dirtyMoney: state.dirtyMoney - pay.dirty,
+      pendingShipments: [...(state.pendingShipments ?? []), ship],
+    },
+    qty,
+    arriveIn: arriveTurn - state.turn,
+    seizeP,
+    paid: pay.dirty > 0 && pay.clean > 0 ? `$${pay.clean} clean and $${pay.dirty} dirty` : pay.dirty > 0 ? `$${pay.dirty} dirty` : `$${pay.clean} clean`,
   };
 }
 

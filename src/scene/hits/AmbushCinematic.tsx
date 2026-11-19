@@ -6,7 +6,9 @@ import { ReelSedan } from "@/scene/ReelSedan";
 import Goon from "./props/Goon";
 import MuzzleFlash from "./props/MuzzleFlash";
 import { PaddyWagon, PoliceLights } from "./props/PoliceLights";
-import { bodyThenPull, coverageShot, ease, executionShot, reelSide, twoShot } from "./cameraRig";
+import { bodyThenPull, coverageShot, dampAngle, ease, executionShot, FOV, reelSide, twoShot } from "./cameraRig";
+import { playShots, type DirectedShot } from "./director";
+import { AMBUSH } from "./shotlists";
 import { useReelCamera } from "./useReelCamera";
 import Headlamps from "./props/Headlamps";
 import Blood from "./props/Blood";
@@ -70,7 +72,7 @@ export default function AmbushCinematic({ cinematic, site, phase, local, clock, 
 
     // He comes in off the kerb during the wait and is at the alley mouth when the guns go.
     let walk = absent ? 0.15 : ph === "position" ? 0 : 1;
-    if (!absent && ph === "wait") walk = freeze ? Math.min(1, lc * 2) * 0.6 : lc;
+    if (!absent && ph === "wait") walk = freeze ? Math.min(1, lc * 2) * 0.6 : ease(lc);
     else if (!absent && freeze) walk = 0.6;
     tmp.mark.copy(site.road).lerp(stage.alley, walk);
     tmp.markHead.copy(tmp.mark).setY(0.85);
@@ -82,33 +84,115 @@ export default function AmbushCinematic({ cinematic, site, phase, local, clock, 
       if (!g) return;
       tmp.at.copy(home).lerp(stage.doors[i]!, run * 0.92);
       g.position.copy(tmp.at);
-      if (run > 0.02) g.rotation.y = Math.atan2(stage.car.x - tmp.at.x, stage.car.z - tmp.at.z);
-      else g.rotation.y = site.facing;
+      const want = run > 0.02 ? Math.atan2(stage.car.x - tmp.at.x, stage.car.z - tmp.at.z) : site.facing;
+      g.rotation.y = dampAngle(g.rotation.y, want, dt, 8);
     });
     tmp.gunman.copy(stage.shooters[1]!).setY(0);
 
+    const range = AMBUSH[ph] ?? AMBUSH.melt;
+    const shots: DirectedShot[] = [];
     if (ph === "position") {
-      cam.frame(ph, coverageShot(stage.alley, site.facing, "medium", { side, drift: lc, lookY: 0.6 }), {
-        k: 0.08,
-        dt,
-        coverage: "medium",
+      const [alley] = range;
+      shots.push({
+        id: alley!.id,
+        start: alley!.start,
+        end: alley!.end,
+        frame: () => coverageShot(stage.alley, site.facing, "medium", { side, drift: lc * 0.4, lookY: 0.6 }),
+        move: "orbit",
+        fov: [FOV.wide, FOV.medium],
+        k: 0.12,
       });
     } else if (ph === "wait") {
-      cam.frame(ph, twoShot(tmp.mark, tmp.gunman, side, { height: 1.05 }), {
-        k: 0.18,
-        dt,
-        coverage: "medium",
-        handheld: 0.012,
+      const [long] = range;
+      shots.push({
+        id: long!.id,
+        start: long!.start,
+        end: long!.end,
+        frame: () => coverageShot(tmp.mark, site.facing, "pull", { side, lookY: 0.7 }),
+        move: "dollyIn",
+        fov: [FOV.close, 22],
         follow: true,
+        k: 0.2,
+        handheld: 0.01,
+        subjects: () => [tmp.mark, tmp.gunman],
       });
     } else if (ph === "strike") {
-      cam.frame(ph, executionShot(tmp.mark, tmp.gunman, side), { k: 0.4, dt, coverage: "close", cut: true });
+      const [wide, punch, fall] = range;
+      shots.push({
+        id: wide!.id,
+        start: wide!.start,
+        end: wide!.end,
+        frame: () => executionShot(tmp.mark, tmp.gunman, side),
+        move: "static",
+        fov: [FOV.medium, FOV.close],
+        transition: "cut",
+        k: 0.4,
+        subjects: () => [tmp.mark, tmp.gunman],
+      });
+      shots.push({
+        id: punch!.id,
+        start: punch!.start,
+        end: punch!.end,
+        frame: () => executionShot(tmp.mark, tmp.gunman, side),
+        move: "dollyIn",
+        fov: [FOV.close, FOV.close],
+        punch: { at: 0.08, fov: FOV.punch },
+        k: 0.45,
+        handheld: 0.018,
+      });
+      shots.push({
+        id: fall!.id,
+        start: fall!.start,
+        end: fall!.end,
+        frame: () => executionShot(tmp.mark, tmp.gunman, side),
+        move: "dollyOut",
+        fov: [FOV.close, FOV.medium],
+        k: 0.22,
+      });
       if (!freeze) shake.current = Math.max(shake.current, 0.05);
     } else if (killed && !police) {
-      cam.frame(ph, bodyThenPull(tmp.mark, site.facing, lc, { drift: progress, side }), { k: 0.3, dt, coverage: lc < 0.6 ? "body" : "pull" });
+      const [body, pull] = range;
+      shots.push({
+        id: body!.id,
+        start: body!.start,
+        end: body!.end,
+        frame: () => bodyThenPull(tmp.mark, site.facing, Math.min(0.55, lc), { drift: progress, side }),
+        move: "static",
+        fov: [FOV.body, FOV.body],
+        k: 0.28,
+      });
+      shots.push({
+        id: pull!.id,
+        start: pull!.start,
+        end: pull!.end,
+        frame: () => bodyThenPull(tmp.mark, site.facing, lc, { drift: progress, side }),
+        move: "crane",
+        fov: [FOV.body, FOV.pull],
+        k: 0.18,
+      });
     } else {
-      cam.frame(ph, twoShot(tmp.gunman, stage.car, side, { margin: 2.4, height: 2.2 }), { k: 0.12, dt, coverage: "pull" });
+      const [body, pull] = range;
+      shots.push({
+        id: body!.id,
+        start: body!.start,
+        end: body!.end,
+        frame: () => twoShot(tmp.gunman, stage.car, side, { margin: 2.2, height: 1.6 }),
+        move: "static",
+        fov: [FOV.medium, FOV.wide],
+        k: 0.16,
+        subjects: () => [tmp.gunman, stage.car],
+      });
+      shots.push({
+        id: pull!.id,
+        start: pull!.start,
+        end: pull!.end,
+        frame: () => twoShot(tmp.gunman, stage.car, side, { margin: 2.6, height: 2.4 }),
+        move: "crane",
+        fov: [FOV.wide, FOV.pull],
+        k: 0.14,
+      });
     }
+    playShots(cam, shots, lc, dt);
   });
 
   const from: [number, number, number] = [stage.shooters[1]!.x, 0.7, stage.shooters[1]!.z];
@@ -135,6 +219,7 @@ export default function AmbushCinematic({ cinematic, site, phase, local, clock, 
             gun
             weapon={i === 1 ? "tommy" : "pistol"}
             firing={shooting}
+            shots={3}
             lookAt={melt ? undefined : tmp.markHead}
             muzzleRef={i === 1 ? muzzle : undefined}
             seed={i * 101 + 7}
@@ -150,6 +235,7 @@ export default function AmbushCinematic({ cinematic, site, phase, local, clock, 
             rot={site.facing + Math.PI}
             pose={markDown ? "down" : "walk"}
             moving={markWalking}
+            hitFrom={markDown ? tmp.gunman : undefined}
             lookAt={phase === "strike" ? tmp.gunman : undefined}
             role="boss"
             seed={53}
@@ -183,26 +269,27 @@ export default function AmbushCinematic({ cinematic, site, phase, local, clock, 
       {trap && (
         <MuzzleFlash active={phase === "strike"} from={[stage.alley.x - 0.8, 0.7, stage.alley.z - 0.4]} to={from} shots={3} />
       )}
-      {(extra || defenders) && phase === "strike" && (
-        <MuzzleFlash active from={[site.road.x + 1.4, 0.7, site.road.z - 0.6]} to={from} shots={3} />
-      )}
-      {phase !== "position" && (
+      <MuzzleFlash
+        active={(extra || defenders) && phase === "strike"}
+        from={[site.road.x + 1.4, 0.7, site.road.z - 0.6]}
+        to={from}
+        shots={3}
+      />
+      <group visible={phase !== "position"}>
         <ReelSedan
           cars={[{ x: stage.car.x, z: stage.car.z, rot: site.facing, color: paint(cinematic.attackerFamily), lamps: phase === "melt" }]}
         />
-      )}
-      {phase === "melt" && <Headlamps cars={[{ x: stage.car.x, z: stage.car.z, rot: site.facing }]} />}
+      </group>
+      <Headlamps cars={[{ x: stage.car.x, z: stage.car.z, rot: site.facing }]} lit={phase === "melt"} />
       <Bystanders at={[site.road.x, 0, site.road.z]} facing={site.facing} flee={phase === "strike" || phase === "melt"} />
       <Blood active={markDown} at={[stage.alley.x, 0, stage.alley.z]} facing={site.facing + Math.PI} />
       <Smoke active={melt} at={[site.road.x + 1.2, 0.15, site.road.z + 0.8]} loop size={0.65} />
-      {c === "patrol" && phase !== "position" && (
-        <pointLight
-          position={[site.road.x, 1.2, site.road.z]}
-          color="#fff3c4"
-          intensity={phase === "wait" ? 2 + local : 1.2}
-          distance={8}
-        />
-      )}
+      <pointLight
+        position={[site.road.x, 1.2, site.road.z]}
+        color="#fff3c4"
+        intensity={c === "patrol" && phase !== "position" ? (phase === "wait" ? 2 + local : 1.2) : 0}
+        distance={8}
+      />
       <PoliceLights active={police && phase === "melt"} at={[site.road.x, 0.4, site.road.z]} />
       <PaddyWagon active={police && phase === "melt"} x={site.road.x - 1.5} z={site.road.z + 1.6} rot={site.facing} />
     </group>

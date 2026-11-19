@@ -1,4 +1,5 @@
-import { useMemo } from "react";
+import { useMemo, useRef } from "react";
+import { useLetterbox } from "./Letterbox";
 import { useHitCinematicPhase } from "@/scene/hits/HitCinematic";
 import { useReelHold } from "@/scene/hits/reelHold";
 import { useGameStore } from "@/engine/store";
@@ -17,6 +18,8 @@ export default function HitCaptions() {
   const finishCinematic = useGameStore((s) => s.finishCinematic);
   const updateSettings = useGameStore((s) => s.updateSettings);
   const territories = useGameStore((s) => s.territories);
+  const frame = useRef<HTMLDivElement>(null);
+  const bar = useLetterbox(frame, !!cinematic);
 
   const text = useMemo(() => {
     if (!cinematic) return "";
@@ -33,10 +36,10 @@ export default function HitCaptions() {
     : label;
 
   return (
-    <div className="pointer-events-none absolute inset-0 z-50 flex flex-col justify-between">
-      {/* Letterbox */}
-      <div className="h-14 bg-gradient-to-b from-black/90 to-transparent" />
-      <div className="flex flex-col items-center gap-3 px-6 pb-8">
+    <div ref={frame} className="pointer-events-none absolute inset-0 z-50">
+      <div className="absolute inset-x-0 top-0 bg-black" style={{ height: bar }} />
+      <div className="absolute inset-x-0 bottom-0 bg-black" style={{ height: bar }} />
+      <div className="absolute inset-x-0 flex flex-col items-center gap-3 px-6" style={{ bottom: bar + 12 }}>
         <div className="max-w-xl rounded-md bg-black/75 px-4 py-3 text-center backdrop-blur-sm">
           <div className={`mb-1 text-[10px] uppercase tracking-[0.2em] ${witnessed ? "text-muted-foreground" : "text-heat"}`}>
             {header}
@@ -94,7 +97,6 @@ export default function HitCaptions() {
           )}
         </div>
       </div>
-      <div className="h-14 bg-gradient-to-t from-black/90 to-transparent" />
     </div>
   );
 }

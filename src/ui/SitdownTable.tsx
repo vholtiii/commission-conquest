@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useLetterbox } from "./Letterbox";
 import { useGameStore } from "@/engine/store";
 import { FAMILY_HEX } from "@/types/game";
 import { PassageTable } from "@/ui/panels/SitdownRequestModal";
@@ -22,6 +23,8 @@ export default function SitdownTable() {
   const justTalk = useGameStore((s) => s.justTalk);
   const updateSettings = useGameStore((s) => s.updateSettings);
   const [shown, setShown] = useState(1);
+  const frame = useRef<HTMLDivElement>(null);
+  const bar = useLetterbox(frame, !!phase);
   const [pick, setPick] = useState<AgendaPick | undefined>(undefined);
   const [ready, setReady] = useState(false);
 
@@ -65,13 +68,13 @@ export default function SitdownTable() {
   const readyToLeave = passage || agenda || openTable ? !!cinematic.result : shown >= script.length;
 
   return (
-    <div className="pointer-events-none absolute inset-0 z-50">
-      <div className="absolute inset-x-0 top-0 h-16 bg-black" />
-      <div className="absolute inset-x-0 bottom-0 h-16 bg-black" />
+    <div ref={frame} className="pointer-events-none absolute inset-0 z-50">
+      <div className="absolute inset-x-0 top-0 bg-black" style={{ height: bar }} />
+      <div className="absolute inset-x-0 bottom-0 bg-black" style={{ height: bar }} />
       <div className="absolute inset-0 bg-black/35" />
 
       {phase === "drive" && (
-        <div className="pointer-events-auto absolute bottom-20 right-4 flex gap-2">
+        <div className="pointer-events-auto absolute right-4 flex gap-2" style={{ bottom: bar + 16 }}>
           <Button size="sm" variant="secondary" onClick={() => openSitdownTable()}>
             Skip
           </Button>
@@ -89,7 +92,10 @@ export default function SitdownTable() {
       )}
 
       {phase === "table" && (
-        <div className="pointer-events-auto absolute inset-x-0 top-20 bottom-20 flex items-center justify-center px-4">
+        <div
+          className="pointer-events-auto absolute inset-x-0 flex items-center justify-center px-4"
+          style={{ top: bar + 12, bottom: bar + 12 }}
+        >
           <div className="panel-surface-elevated w-[min(40rem,100%)] rounded-lg border p-4">
             <div className="flex items-center justify-between gap-4">
               {playerBoss && (

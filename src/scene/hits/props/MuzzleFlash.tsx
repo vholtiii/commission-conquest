@@ -1,6 +1,7 @@
 import { useMemo, useRef, type RefObject } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
+import { readReel, useInReel } from "../reelClock";
 
 interface Props {
   active: boolean;
@@ -21,9 +22,11 @@ export default function MuzzleFlash({ active, from, to, fromRef, shots = 5 }: Pr
   const start = useRef<number | null>(null);
   const tmp = useMemo(() => ({ dir: new THREE.Vector3(), a: new THREE.Vector3(), b: new THREE.Vector3() }), []);
   const spin = useMemo(() => Math.random() * Math.PI, []);
+  const inReel = useInReel();
   const { camera } = useThree();
 
   useFrame(({ clock }) => {
+    const now = inReel ? (readReel()?.time ?? clock.elapsedTime) : clock.elapsedTime;
     if (!active) {
       start.current = null;
       if (flash.current) flash.current.visible = false;
@@ -32,8 +35,8 @@ export default function MuzzleFlash({ active, from, to, fromRef, shots = 5 }: Pr
       if (puff.current) puff.current.visible = false;
       return;
     }
-    if (start.current === null) start.current = clock.elapsedTime;
-    const t = clock.elapsedTime - start.current;
+    if (start.current === null) start.current = now;
+    const t = now - start.current;
     const interval = 0.9 / shots;
     const slot = Math.floor(t / interval);
     const on = slot < shots && t % interval < interval * 0.18;

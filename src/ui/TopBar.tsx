@@ -4,7 +4,8 @@ import { useGameStore } from "@/engine/store";
 import { getFamilyDef } from "@/data/families";
 import { getBoss } from "@/engine/crew";
 import { successionReadinessReasons } from "@/engine/succession";
-import { influenceBreakdown, influenceTick } from "@/engine/victory";
+import { influenceBreakdown, influenceTick, raceStatus } from "@/engine/victory";
+import { countHouseBlock, exposedCash } from "@/engine/countHouse";
 import { heatForecast } from "@/engine/heat";
 import { totalCapacity, totalCrates } from "@/engine/liquor";
 import { associateRuns } from "@/engine/economy";
@@ -43,6 +44,8 @@ function turnIsBlocked(): boolean {
 
 export default function TopBar() {
   const playerFamily = useGameStore((s) => s.playerFamily);
+  const setPanel = useGameStore((s) => s.setPanel);
+  const snapshot = useGameStore();
   const turn = useGameStore((s) => s.turn);
   const date = useGameStore((s) => s.date);
   const crew = useGameStore((s) => s.crew);
@@ -67,7 +70,6 @@ export default function TopBar() {
   const pendingRuling = useGameStore((s) => (s.pendingRulings?.length ?? 0) > 0);
   const pendingReports = useGameStore((s) => (s.pendingReports?.length ?? 0) > 0);
   const nextTurn = useGameStore((s) => s.nextTurn);
-  const setPanel = useGameStore((s) => s.setPanel);
   const selectTerritory = useGameStore((s) => s.selectTerritory);
   const phase = useTurnTransition((s) => s.phase);
   const timers = useRef<number[]>([]);
@@ -94,7 +96,15 @@ export default function TopBar() {
     };
   }, []);
 
-  if (!playerFamily) return null;
+  // Hooks run on every render, before the early return, so their order never changes.
+  const heatClock = useMemo(
+    () => (playerFamily ? heatForecast(useGameStore.getState()) : null),
+    // The economy reads the whole state; these are what move its heat.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [territories, turn, crew, playerFamily, heat, bribes, lawyerRetainer, dirtyMoney, launderPlan],
+  );
+
+  if (!playerFamily || !heatClock) return null;
   const def = getFamilyDef(playerFamily);
   const boss = getBoss(crew, playerFamily);
   const underboss = crew.find(
@@ -136,12 +146,6 @@ export default function TopBar() {
   const stored = totalCrates(liquorState, playerFamily);
   const cap = totalCapacity(liquorState, playerFamily);
   const liquorNet = liquorLedger ? liquorLedger.cashIn - liquorLedger.cashOut : null;
-  const heatClock = useMemo(
-    () => heatForecast(useGameStore.getState()),
-    // The economy reads the whole state; these are what move its heat.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [territories, turn, crew, playerFamily, heat, bribes, lawyerRetainer, dirtyMoney, launderPlan],
-  );
 
   const blocked =
     !!activeEvent ||
@@ -221,6 +225,17 @@ export default function TopBar() {
           format={formatMoney}
           chip={formatDelta}
           valueClassName="text-muted-foreground"
+          title={
+            playerFamily
+              ? (() => {
+                  const house = countHouseBlock(snapshot, playerFamily);
+                  const exposed = exposedCash(snapshot, playerFamily);
+                  return exposed > 0
+                    ? `${formatMoney(exposed)} sits in the count house${house ? ` in ${house.name}` : ""}.`
+                    : "Dirty cash under $10,000 stays off the street.";
+                })()
+              : undefined
+          }
         />
         <Stat
           icon={<Wine className="h-3.5 w-3.5 text-steel-light" />}
@@ -267,6 +282,22 @@ export default function TopBar() {
             .filter(Boolean)
             .join("\n")}
         />
+        {playerFamily && (
+          <button
+            type="button"
+            onClick={() => setPanel("race")}
+            title="Open the race"
+            className="rounded border border-panel-border px-2 py-1 text-[10px] uppercase tracking-wide text-muted-foreground hover:text-foreground"
+          >
+            {(() => {
+              const race = raceStatus(snapshot);
+              const hot = race.rivals[0];
+              if (hot) return hot.text;
+              const near = [...race.tracks].sort((a, b) => b.streak - a.streak || b.value / Math.max(1, b.bar) - a.value / Math.max(1, a.bar))[0];
+              return near ? `${near.label} ${near.streak}/${near.need}` : "Race";
+            })()}
+          </button>
+        )}
         <AnimatedStat
           icon={<Award className="h-3.5 w-3.5 text-steel-light" />}
           label="Respect"

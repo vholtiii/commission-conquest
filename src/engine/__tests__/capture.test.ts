@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { captureAllowance, captureStrength, resolveCapture } from "@/engine/capture";
+import { captureAllowance, captureReach, captureStrength, resolveCapture } from "@/engine/capture";
 import { createRacket } from "@/engine/economy";
 import { createCrewMember } from "@/engine/crew";
-import { scatterFamily } from "@/engine/defection";
+import { scatterFamily, tickAbandonedTurf } from "@/engine/defection";
 import { tryExpand } from "@/engine/rivalAI";
 import { buildInitialState, startGame } from "@/engine/initialState";
 import { createRng } from "@/engine/rng";
@@ -179,5 +179,42 @@ describe("abandoned turf", () => {
     expect(taken.owner).toBe(family);
     expect(taken.rackets[0]!.level).toBe(3);
     expect(out.log?.text).toContain("walked into");
+  });
+});
+
+describe("capture reach", () => {
+  it("is free next door and cheaper the further the block sits", () => {
+    const state = game();
+    const mine = state.territories.find((t) => t.owner === "Moretti")!;
+    const nextDoor = state.territories.find((t) => t.adjacentTerritories.includes(mine.id) && t.owner !== "Moretti");
+    expect(nextDoor).toBeTruthy();
+    expect(captureReach(state, "Moretti", nextDoor!.id).mult).toBe(1);
+    const far = state.territories.find(
+      (t) => t.owner !== "Moretti" && !t.adjacentTerritories.includes(mine.id) && t.adjacentTerritories.every((id) => !mine.adjacentTerritories.includes(id) && id !== mine.id),
+    );
+    if (far) expect(captureReach(state, "Moretti", far.id).mult).toBeLessThan(1);
+    const stripped = { ...state, territories: state.territories.map((t) => ({ ...t, owner: t.owner === "Moretti" ? null : t.owner })) };
+    expect(captureReach(stripped, "Moretti", nextDoor!.id).mult).toBe(1);
+  });
+});
+
+describe("abandoned clock", () => {
+  it("turns leftover blocks neutral after four weeks and then closes a racket", () => {
+    const state = game();
+    const scattered = scatterFamily(state, "Rinaldi", createRng(2)).state;
+    expect(scattered.defunctSince?.Rinaldi).toBe(state.turn);
+    let current = { ...scattered, turn: state.turn + 4 };
+    const opened = tickAbandonedTurf(current);
+    expect(opened.state.territories.filter((t) => t.owner === "Rinaldi")).toHaveLength(0);
+    const stamped = opened.state.territories.find((t) => t.neutralSinceTurn === current.turn && t.rackets.length > 0);
+    expect(stamped).toBeTruthy();
+    const before = stamped!.rackets.length;
+    const later = tickAbandonedTurf({ ...opened.state, turn: current.turn + 2 });
+    const after = later.state.territories.find((t) => t.id === stamped!.id)!;
+    expect(after.rackets.length).toBe(before - 1);
+    const startedNeutral = state.territories.find((t) => t.owner === null);
+    if (startedNeutral) {
+      expect(later.state.territories.find((t) => t.id === startedNeutral.id)?.rackets.length).toBe(startedNeutral.rackets.length);
+    }
   });
 });

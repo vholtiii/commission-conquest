@@ -14,7 +14,8 @@ import { Checkbox } from "@/components/ui/checkbox";
 import PortraitAvatar from "@/ui/PortraitAvatar";
 import PanelShell from "./PanelShell";
 import { dinnerActive } from "@/engine/dinner";
-import { isAbandonedTurf } from "@/engine/defection";
+import { abandonedWeeksLeft, isAbandonedTurf } from "@/engine/defection";
+import { canRaidCountHouse, countHouseBlock, exposedCash } from "@/engine/countHouse";
 
 export default function CapturePanel() {
   const selectedTerritoryId = useGameStore((s) => s.selectedTerritoryId);
@@ -48,6 +49,7 @@ export default function CapturePanel() {
   const party = captureParty(crew, picked);
   const along = party.filter((id) => !picked.includes(id));
   const abandoned = isAbandonedTurf(state, territory);
+  const weeksLeft = abandoned && territory.owner ? abandonedWeeksLeft(state, territory.owner) : 0;
   const strength = captureStrength(state, territory.id, party);
   const odds = captureOdds(strength.atk, strength.def);
   const oddsPct = abandoned ? 100 : Math.round(odds * 100);
@@ -93,6 +95,8 @@ export default function CapturePanel() {
         {abandoned && (
           <div className="text-money">
             The {territory.owner} are finished. Any associate can walk in — no muscle needed.
+            {" "}
+            {weeksLeft} week{weeksLeft === 1 ? "" : "s"} before this block is nobody's.
           </div>
         )}
         {territory.owner === null && !abandoned && (
@@ -225,6 +229,16 @@ export default function CapturePanel() {
         >
           {abandoned ? "Walk in" : "Attack"}
         </Button>
+        {territory.owner && countHouseBlock(state, territory.owner)?.id === territory.id && exposedCash(state, territory.owner) > 0 && (
+          <Button
+            className="mt-2 w-full"
+            variant="secondary"
+            disabled={!canRaidCountHouse(state, territory.owner).ok || picked.length === 0}
+            onClick={() => useGameStore.getState().raidCountHouse(territory.id, picked)}
+          >
+            Raid the count house
+          </Button>
+        )}
       </div>
     </PanelShell>
   );

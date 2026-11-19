@@ -43,7 +43,7 @@ import { applySuccession } from "./succession";
 import { territoryHops } from "./territoryHops";
 import { isDefunct, scatterFamily, settleRivalChair } from "./defection";
 import { startInterregnum } from "./interregnum";
-import { declareFuneral, declareMourning, handsDown, isMadeMan, tableHit, commissionHeld } from "./mourning";
+import { declareFuneral, declareMourning, earnsStreetFuneral, handsDown, tableHit, commissionHeld } from "./mourning";
 import { pullForJob, releaseCrewHome } from "./jobReturn";
 import { noteErrandCasing, payCommissionKill } from "./commissionErrand";
 import { applyHitPractice } from "./practice";
@@ -1506,13 +1506,13 @@ export function resolveHit(
       };
     }
   } else {
-    const madeDied =
-      (targetDead && isMadeMan(target?.role)) ||
+    const brassDied =
+      (targetDead && earnsStreetFuneral(target?.role)) ||
       casualtyDetail.some((d) => {
         if (d.fate !== "dead") return false;
-        return isMadeMan(crew.find((c) => c.id === d.crewId)?.role);
+        return earnsStreetFuneral(crew.find((c) => c.id === d.crewId)?.role);
       });
-    if (madeDied) {
+    if (brassDied) {
       const quiet = declareFuneral(newState, false);
       newState = quiet.state;
       if (quiet.logs.length) {

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import { useThree } from "@react-three/fiber";
 import * as THREE from "three";
+import { setReelFocus } from "./reelFocus";
 import {
   applyShake,
   dropOffset,
@@ -26,6 +27,12 @@ export interface FrameOpts {
   handheld?: number;
   /** The shot rides a moving subject: match its speed rather than trail it. */
   follow?: boolean;
+  /** Exact field of view for this frame. The director eases it; the rig applies it as-is. */
+  fov?: number;
+  /** World point the depth of field holds sharp. */
+  focus?: THREE.Vector3;
+  /** The shot at a few points along its move, checked once when the shot begins. */
+  preview?: Shot[];
 }
 
 /** Dev only: a move this far in one frame without a cut reads as a jump. */
@@ -52,7 +59,10 @@ export function useReelCamera(space: Space | null, reelKey: string, shake?: { cu
 
   useEffect(() => {
     beat.current = "";
-    return () => resetLens(camera);
+    return () => {
+      resetLens(camera);
+      setReelFocus(null);
+    };
   }, [camera, reelKey]);
 
   return {
@@ -66,19 +76,25 @@ export function useReelCamera(space: Space | null, reelKey: string, shake?: { cu
       }
       beat.current = beatKey;
       if (first) solver.reset();
-      const s = solver.resolve(shot, first ? undefined : camera.position, opts.dt);
+      const s = solver.resolve(shot, first ? undefined : camera.position, opts.dt, {
+        id: beatKey,
+        samples: opts.preview,
+      });
+      const blocked = solver.takeCut();
       // Easing down from the map, or across a corner into a new beat, would fly the lens through brick. Cut instead.
       const walled = first && !!space && !space.passable(camera.position, s.pos);
       const far = first && camera.position.distanceTo(s.pos) > FAR_SETUP;
-      const cut = (!!opts.cut && first) || opening || walled || far;
+      const cut = (!!opts.cut && first) || opening || walled || far || blocked;
       moveCam(camera, controls, s.pos, s.look, opts.k, opts.dt, { cut, follow: opts.follow, space });
-      setLens(camera, lensFor(opts.coverage), opts.dt, cut);
+      setLens(camera, opts.fov ?? lensFor(opts.coverage), opts.dt, cut || opts.fov != null);
       if (opts.handheld) handheld(camera, opts.handheld, seed);
       if (space && !space.isClear(camera.position)) dropOffset(camera);
       if (shake) applyShake(camera, shake, opts.dt, space, seed);
+      setReelFocus(opts.focus ?? s.look);
       if (import.meta.env.DEV) {
         const w = window as unknown as Record<string, unknown>;
         if (!cut && camera.position.distanceTo(prevPos.current) > JUMP) w.__camJumps = ((w.__camJumps as number) ?? 0) + 1;
+        if (opts.dt > 0.05) w.__camSpikes = ((w.__camSpikes as number) ?? 0) + 1;
         w.__camDbg = { beatKey, shot, s, cut, cam: camera.position.clone(), fov: (camera as THREE.PerspectiveCamera).fov };
       }
       prevPos.current.copy(camera.position);

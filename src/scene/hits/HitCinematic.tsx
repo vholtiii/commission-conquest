@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
-import type * as THREE from "three";
+import * as THREE from "three";
 import type { CityLayout } from "@/engine/cityLayout";
 import type { HitApproach, HitCinematic as HitCinematicData, HitResult } from "@/types/game";
 import { useGameStore } from "@/engine/store";
@@ -21,7 +21,8 @@ import {
   thud,
   tyreSqueal,
 } from "@/audio/sfx";
-import { phaseAt, timelineFor, totalDuration, type PhaseDef } from "./timeline";
+import { publishReel, ReelScope } from "./reelClock";
+import { frozenLocal, phaseAt, renderKey, scaleAt, timelineFor, totalDuration, type PhaseDef } from "./timeline";
 import { siteFor } from "./site";
 import { useReelHold } from "./reelHold";
 import { reelRain } from "./reelLook";
@@ -48,7 +49,7 @@ const SCENES: Record<HitApproach, typeof CarBombCinematic> = {
 
 function playCue(approach: HitApproach, phase: string, result: HitResult): void {
   const police = result.outcome === "botched_arrested" || result.outcome === "botched_killed";
-  if (phase === "plant" || phase === "roll" || phase === "arrive" || phase === "position" || phase === "drive") {
+  if (phase === "plant" || phase === "stakeout" || phase === "roll" || phase === "arrive" || phase === "position" || phase === "drive") {
     engine(approach === "drive_by" ? 2 : 1.2);
     if (phase === "position") footsteps(4, 0.5);
   }
@@ -110,7 +111,7 @@ export default function HitCinematic({ layout, controlsRef }: Props) {
   const cinematicQueue = useGameStore((s) => s.cinematicQueue);
   const pendingHitResult = useGameStore((s) => s.pendingHitResult);
   const sfxVolume = useGameStore((s) => s.settings.sfxVolume ?? 0.7);
-  const { invalidate } = useThree();
+  const { invalidate, gl, camera } = useThree();
 
   const current: HitCinematicData | null = pendingHitResult ? null : (cinematicQueue[0] ?? null);
   const phases = useMemo(
@@ -123,17 +124,27 @@ export default function HitCinematic({ layout, controlsRef }: Props) {
   );
 
   const startTime = useRef<number | null>(null);
+  const elapsedRef = useRef(0);
   const finishedRef = useRef(false);
   const lastCue = useRef<string>("");
+  const cueDone = useRef(false);
+  const liveKey = useRef("");
   const shake = useRef(0);
   const reelClock = useRef<ReelClock>({ phase: "", local: 0, progress: 0 });
+  const rootRef = useRef<THREE.Group>(null);
+  const warm = useRef<string | null>(null);
+  const warming = useRef(false);
   const [live, setLive] = useState<{ phase: PhaseDef; local: number } | null>(null);
 
   useEffect(() => {
     startTime.current = null;
+    elapsedRef.current = 0;
     finishedRef.current = false;
     lastCue.current = "";
+    cueDone.current = false;
+    liveKey.current = "";
     shake.current = 0;
+    publishReel(null);
     reelClock.current = { phase: phases[0]?.name ?? "", local: 0, progress: 0 };
     useReelHold.getState().setHeld(false);
     setLive(phases[0] ? { phase: phases[0], local: 0 } : null);
@@ -177,36 +188,69 @@ export default function HitCinematic({ layout, controlsRef }: Props) {
     );
   }, [live?.phase.name, current?.operationId]);
 
-  useFrame(({ clock }) => {
+  useFrame((_, dt) => {
     if (!current || phases.length === 0) return;
+    if (warm.current !== current.operationId) {
+      // Compile every material in the reel, lights included, before the first frame of action.
+      if (!warming.current && rootRef.current) {
+        warming.current = true;
+        const op = current.operationId;
+        gl.compileAsync(rootRef.current, camera).finally(() => {
+          warming.current = false;
+          // A skip can start the next reel before this compile finishes.
+          if (useGameStore.getState().cinematicQueue[0]?.operationId === op) warm.current = op;
+          invalidate();
+        });
+      }
+      invalidate();
+      return;
+    }
     if (startTime.current === null) {
       // Don't roll under the turn curtain; the first beat is the setup.
       if (useTurnTransition.getState().phase !== "idle") {
         invalidate();
         return;
       }
-      startTime.current = clock.getElapsedTime();
+      startTime.current = 0;
+      elapsedRef.current = 0;
     }
-    const elapsed = clock.getElapsedTime() - startTime.current;
+    const step = Math.min(0.05, Math.max(0, dt));
+    const before = phaseAt(phases, elapsedRef.current);
+    const scale = scaleAt(before.phase, before.local);
+    elapsedRef.current += step * scale;
+    const elapsed = elapsedRef.current;
     const total = totalDuration(phases);
     const at = phaseAt(phases, elapsed);
     reelClock.current.phase = at.phase.name;
     reelClock.current.local = at.local;
     reelClock.current.progress = total > 0 ? Math.min(1, elapsed / total) : 1;
+    publishReel({
+      time: elapsed,
+      dt: step * scale,
+      scale,
+      phase: at.phase.name,
+      local: at.local,
+      progress: reelClock.current.progress,
+    });
     if (lastCue.current !== at.phase.name) {
       const first = lastCue.current === "";
       lastCue.current = at.phase.name;
+      cueDone.current = false;
       setSfxVolume(sfxVolume);
       if (first) {
-        rainBed(total, reelRain(useGameStore.getState().date.month, current.result.complication));
+        // Slow motion stretches the wall clock past the timeline, so the bed outlasts the reel.
+        rainBed(total * 1.4, reelRain(useGameStore.getState().date.month, current.result.complication));
       }
+    }
+    if (!cueDone.current && at.local >= (at.phase.cueAt ?? 0)) {
+      cueDone.current = true;
       playCue(current.approach, at.phase.name, current.result);
     }
-    setLive((prev) =>
-      prev && prev.phase.name === at.phase.name && Math.abs(prev.local - at.local) < 0.02
-        ? prev
-        : { phase: at.phase, local: at.local },
-    );
+    const key = renderKey(at.phase.name, at.local);
+    if (key !== liveKey.current) {
+      liveKey.current = key;
+      setLive({ phase: at.phase, local: frozenLocal(at.phase.name, at.local) });
+    }
     invalidate();
     if (elapsed >= total && !finishedRef.current) {
       // Hold the last frame. The player moves on from the captions when ready;
@@ -220,13 +264,15 @@ export default function HitCinematic({ layout, controlsRef }: Props) {
   const Scene = SCENES[current.approach];
   const month = useGameStore.getState().date.month;
   return (
-    <group>
-      <ReelAtmosphere
-        center={site.road}
-        facing={site.facing}
-        amount={reelRain(month, current.result.complication)}
-      />
-      <Scene cinematic={current} site={site} phase={live.phase.name} local={live.local} clock={reelClock} shake={shake} />
+    <group ref={rootRef}>
+      <ReelScope>
+        <ReelAtmosphere
+          center={site.road}
+          facing={site.facing}
+          amount={reelRain(month, current.result.complication)}
+        />
+        <Scene cinematic={current} site={site} phase={live.phase.name} local={live.local} clock={reelClock} shake={shake} />
+      </ReelScope>
     </group>
   );
 }

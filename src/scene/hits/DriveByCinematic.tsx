@@ -9,7 +9,9 @@ import MuzzleFlash from "./props/MuzzleFlash";
 import GlassShards from "./props/GlassShards";
 import Smoke from "./props/Smoke";
 import { PaddyWagon, PoliceLights } from "./props/PoliceLights";
-import { bodyThenPull, facingOf, kerbShot, reelSide, trackShot, twoShot } from "./cameraRig";
+import { bodyThenPull, facingOf, FOV, kerbShot, reelSide, trackShot, twoShot } from "./cameraRig";
+import { playShots, type DirectedShot } from "./director";
+import { DRIVE_BY } from "./shotlists";
 import { useReelCamera } from "./useReelCamera";
 import Headlamps from "./props/Headlamps";
 import Blood from "./props/Blood";
@@ -94,28 +96,133 @@ export default function DriveByCinematic({ cinematic, site, phase, clock, shake 
 
     const side = reelSide(cinematic.operationId);
     const travel = facingOf(tmp.tan);
+    const shots: DirectedShot[] = [];
+    const range = DRIVE_BY[ph] ?? DRIVE_BY.getaway;
     if (ph === "roll") {
-      cam.frame(ph, trackShot(tmp.pos, travel, side, { back: 3.6, height: 1.4 }), { k: 0.3, dt, coverage: "wide", follow: true });
-    } else if (ph === "pass") {
-      cam.frame(ph, twoShot(tmp.pos, spray.mark, side, { height: 1.6, push: lc * 0.2 }), {
-        k: 0.25,
-        dt,
-        coverage: "medium",
-        handheld: 0.012,
+      const [track, window] = range;
+      shots.push({
+        id: track!.id,
+        start: track!.start,
+        end: track!.end,
+        frame: () => trackShot(tmp.pos, travel, side, { back: 4.2, height: 1.25 }),
+        move: "track",
+        fov: [FOV.establish, FOV.wide],
         follow: true,
+        k: 0.34,
+      });
+      shots.push({
+        id: window!.id,
+        start: window!.start,
+        end: window!.end,
+        frame: () => trackShot(tmp.pos, travel, side, { back: 2.6, height: 1.1 }),
+        move: "dollyIn",
+        fov: [FOV.wide, FOV.close],
+        follow: true,
+        k: 0.3,
+      });
+    } else if (ph === "pass") {
+      const [two, kerb] = range;
+      shots.push({
+        id: two!.id,
+        start: two!.start,
+        end: two!.end,
+        frame: () => twoShot(tmp.pos, spray.mark, side, { height: 1.55, push: lc * 0.15 }),
+        move: "push",
+        fov: [FOV.wide, FOV.medium],
+        follow: true,
+        k: 0.28,
+        subjects: () => [tmp.pos, spray.mark],
+      });
+      shots.push({
+        id: kerb!.id,
+        start: kerb!.start,
+        end: kerb!.end,
+        frame: () => kerbShot(spray.mark, site.facing, tmp.pos, side),
+        move: "dollyIn",
+        fov: [FOV.medium, FOV.close],
+        follow: true,
+        k: 0.24,
+        handheld: 0.01,
       });
     } else if (ph === "spray") {
-      cam.frame(ph, kerbShot(spray.mark, site.facing, spray.gunner, side), { k: 0.5, dt, coverage: "medium", cut: true });
+      const [wide, punch, hold] = range;
+      shots.push({
+        id: wide!.id,
+        start: wide!.start,
+        end: wide!.end,
+        frame: () => kerbShot(spray.mark, site.facing, spray.gunner, side),
+        move: "static",
+        fov: [FOV.medium, FOV.medium],
+        transition: "cut",
+        k: 0.4,
+        handheld: 0.012,
+        subjects: () => [spray.mark, spray.gunner],
+      });
+      shots.push({
+        id: punch!.id,
+        start: punch!.start,
+        end: punch!.end,
+        frame: () => kerbShot(spray.mark, site.facing, spray.gunner, side),
+        move: "dollyIn",
+        fov: [FOV.close, FOV.close],
+        punch: { at: 0.12, fov: FOV.punch },
+        k: 0.45,
+        handheld: 0.02,
+      });
+      shots.push({
+        id: hold!.id,
+        start: hold!.start,
+        end: hold!.end,
+        frame: () => kerbShot(spray.mark, site.facing, spray.gunner, side),
+        move: "static",
+        fov: [FOV.close, FOV.medium],
+        handheld: 0.014,
+      });
       shake.current = Math.max(shake.current, 0.06);
     } else if (killed) {
-      cam.frame(ph, bodyThenPull(spray.mark, site.facing, lc, { drift: progress, side }), {
+      const [body, pull] = range;
+      shots.push({
+        id: body!.id,
+        start: body!.start,
+        end: body!.end,
+        frame: () => bodyThenPull(spray.mark, site.facing, Math.min(0.6, lc), { drift: progress, side }),
+        move: "static",
+        fov: [FOV.body, FOV.body],
         k: 0.3,
-        dt,
-        coverage: lc < 0.6 ? "body" : "pull",
+      });
+      shots.push({
+        id: pull!.id,
+        start: pull!.start,
+        end: pull!.end,
+        frame: () => bodyThenPull(spray.mark, site.facing, lc, { drift: progress, side }),
+        move: "crane",
+        fov: [FOV.body, FOV.pull],
+        k: 0.2,
       });
     } else {
-      cam.frame(ph, trackShot(tmp.pos, travel, side, { back: 5, height: 2.6 }), { k: stalls ? 0.12 : 0.3, dt, coverage: "pull", follow: true });
+      const [body, pull] = range;
+      shots.push({
+        id: body!.id,
+        start: body!.start,
+        end: body!.end,
+        frame: () => trackShot(tmp.pos, travel, side, { back: 4.2, height: 1.8 }),
+        move: "track",
+        fov: [FOV.medium, FOV.wide],
+        follow: true,
+        k: stalls ? 0.14 : 0.3,
+      });
+      shots.push({
+        id: pull!.id,
+        start: pull!.start,
+        end: pull!.end,
+        frame: () => trackShot(tmp.pos, travel, side, { back: 6, height: 2.8 }),
+        move: "crane",
+        fov: [FOV.wide, FOV.pull],
+        follow: true,
+        k: 0.22,
+      });
     }
+    playShots(cam, shots, lc, dt);
   });
 
   return (
@@ -127,11 +234,12 @@ export default function DriveByCinematic({ cinematic, site, phase, clock, shake 
         <Smoke active={phase === "getaway" && !stalled} at={[-0.9, 0.15, 0]} loop size={0.65} />
         <PoliceLights active={stalled} at={[0, 0.5, 0]} />
       </group>
-      {blockedLane && (
+      <group visible={blockedLane}>
         <ReelSedan
           cars={[{ x: site.road.x + 1.6, z: site.road.z + 1.2, rot: spray.rot + Math.PI / 2, color: "#d6c9a8", lamps: false }]}
+          attitude={false}
         />
-      )}
+      </group>
       <Bystanders
         at={[site.road.x, 0, site.road.z]}
         facing={site.facing}
@@ -143,11 +251,12 @@ export default function DriveByCinematic({ cinematic, site, phase, clock, shake 
         rot={site.facing}
         pose={c === "fruit_cart" && phase !== "roll" ? "crouch" : markDown ? "down" : "stand"}
         lookAt={phase === "roll" ? undefined : tmp.carEye}
+        hitFrom={markDown ? spray.gunner : undefined}
         role="boss"
         seed={53}
         color={paint(cinematic.targetFamily)}
       />
-      {gunnerOut && (
+      <group visible={gunnerOut}>
         <Goon
           position={[spray.gunner.x, 0, spray.gunner.z]}
           rot={Math.atan2(spray.mark.x - spray.gunner.x, spray.mark.z - spray.gunner.z)}
@@ -155,13 +264,14 @@ export default function DriveByCinematic({ cinematic, site, phase, clock, shake 
           weapon="tommy"
           gun
           firing={phase === "spray"}
+          shots={returnFire ? 8 : 5}
           lookAt={stalled ? undefined : spray.markHead}
           muzzleRef={barrel}
           seed={211}
           role="soldier"
           color={paint(cinematic.attackerFamily)}
         />
-      )}
+      </group>
       {c === "fruit_cart" && (
         <mesh position={[markSpot[0] + 0.5, 0.35, markSpot[2]]}>
           <boxGeometry args={[0.7, 0.5, 0.5]} />
@@ -169,9 +279,7 @@ export default function DriveByCinematic({ cinematic, site, phase, clock, shake 
         </mesh>
       )}
       <MuzzleFlash active={phase === "spray"} from={muzzle} to={markSpot} fromRef={barrel} shots={returnFire ? 8 : 5} />
-      {returnFire && (
-        <MuzzleFlash active={phase === "spray" || phase === "getaway"} from={markSpot} to={muzzle} shots={4} />
-      )}
+      <MuzzleFlash active={returnFire && (phase === "spray" || phase === "getaway")} from={markSpot} to={muzzle} shots={4} />
       <GlassShards active={phase === "spray"} at={[site.building.x, 0, site.building.z]} />
       <PaddyWagon
         active={police && phase === "getaway"}

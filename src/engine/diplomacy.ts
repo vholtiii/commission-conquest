@@ -343,6 +343,7 @@ export function breakPact(state: GameState, target: FamilyName): GameState {
       ...state.reputation,
       respect: clamp100(state.reputation.respect - PACT_BREAK_RESPECT),
     },
+    influence: Math.max(0, state.influence - 20),
   };
   return pushLog(
     next,

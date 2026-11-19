@@ -5,7 +5,9 @@ import { FAMILY_HEX, type FamilyName } from "@/types/game";
 import { ReelSedan } from "@/scene/ReelSedan";
 import Goon from "./props/Goon";
 import MuzzleFlash from "./props/MuzzleFlash";
-import { coverageShot, ease, facingOf, kerbShot, reelSide, trackShot } from "./cameraRig";
+import { coverageShot, ease, facingOf, FOV, kerbShot, reelSide, trackShot } from "./cameraRig";
+import { playShots, type DirectedShot } from "./director";
+import { SUMMONS } from "./shotlists";
 import { useReelCamera } from "./useReelCamera";
 import Headlamps from "./props/Headlamps";
 import type { SceneProps } from "./sceneProps";
@@ -60,25 +62,80 @@ export default function SummonsCinematic({ cinematic, site, phase, local, clock,
     if (manRef.current) manRef.current.position.copy(tmp.man);
 
     const side = reelSide(cinematic.operationId);
+    const range = SUMMONS[ph] ?? SUMMONS.drive_off;
+    const shots: DirectedShot[] = [];
     if (ph === "call") {
-      cam.frame(ph, coverageShot(stage.door, site.facing, "wide", { side, drift: lc * 0.3 }), { k: 0.08, dt, coverage: "wide" });
-    } else if (ph === "drive" && lc < 0.4) {
-      cam.frame("car", trackShot(tmp.car, stage.heading, side, { back: 3.4, height: 1.3 }), { k: 0.25, dt, coverage: "wide", follow: true });
+      const [door] = range;
+      shots.push({
+        id: door!.id,
+        start: door!.start,
+        end: door!.end,
+        frame: () => coverageShot(stage.door, site.facing, "wide", { side, drift: lc * 0.35 }),
+        move: "orbit",
+        fov: [FOV.establish, FOV.wide],
+        k: 0.1,
+      });
     } else if (ph === "drive") {
-      // From the pavement, so his own car is not filling the foreground.
-      cam.frame("walk", kerbShot(stage.door, site.facing, tmp.man, side), {
-        k: 0.18,
-        dt,
-        coverage: "medium",
-        handheld: 0.008,
+      const [car, walk] = range;
+      shots.push({
+        id: car!.id,
+        start: car!.start,
+        end: car!.end,
+        frame: () => trackShot(tmp.car, stage.heading, side, { back: 3.8, height: 1.25 }),
+        move: "track",
+        fov: [FOV.establish, FOV.wide],
         follow: true,
+        k: 0.3,
+      });
+      shots.push({
+        id: walk!.id,
+        start: walk!.start,
+        end: walk!.end,
+        frame: () => kerbShot(stage.door, site.facing, tmp.man, side),
+        move: "dollyIn",
+        fov: [FOV.wide, FOV.close],
+        follow: true,
+        handheld: 0.008,
+        k: 0.22,
       });
     } else if (ph === "back_room") {
-      cam.frame(ph, kerbShot(stage.door, site.facing, stage.doorman, -side), { k: 0.5, dt, coverage: "close", cut: true });
+      const [dolly, hold] = range;
+      shots.push({
+        id: dolly!.id,
+        start: dolly!.start,
+        end: dolly!.end,
+        frame: () => kerbShot(stage.door, site.facing, stage.doorman, side),
+        move: "dollyIn",
+        fov: [FOV.medium, FOV.close],
+        transition: "cut",
+        k: 0.3,
+      });
+      shots.push({
+        id: hold!.id,
+        start: hold!.start,
+        end: hold!.end,
+        frame: () => kerbShot(stage.door, site.facing, stage.doorman, side),
+        move: "static",
+        fov: [FOV.close, FOV.close],
+        punch: { at: 0.15, fov: FOV.punch },
+        k: 0.4,
+        handheld: 0.012,
+      });
       shake.current = Math.max(shake.current, 0.05);
     } else {
-      cam.frame(ph, trackShot(tmp.car, stage.heading, side, { back: 4.5, height: 2.4 }), { k: 0.15, dt, coverage: "pull", follow: true });
+      const [off] = range;
+      shots.push({
+        id: off!.id,
+        start: off!.start,
+        end: off!.end,
+        frame: () => trackShot(tmp.car, stage.heading, side, { back: 5, height: 2.2 }),
+        move: "crane",
+        fov: [FOV.medium, FOV.pull],
+        follow: true,
+        k: 0.18,
+      });
     }
+    playShots(cam, shots, lc, dt);
   });
 
   const glow = phase === "back_room" ? 1 - local * 0.7 : phase === "drive_off" ? 0.1 : 0.85;
@@ -89,10 +146,10 @@ export default function SummonsCinematic({ cinematic, site, phase, local, clock,
     <group>
       <group ref={carRig} position={[stage.approach.x, 0, stage.approach.z]} rotation={[0, site.facing, 0]}>
         <ReelSedan cars={[{ x: 0, z: 0, rot: 0, color, lamps: lampsOn }]} />
-        {lampsOn && <Headlamps cars={[{ x: 0, z: 0, rot: 0 }]} />}
+        <Headlamps cars={[{ x: 0, z: 0, rot: 0 }]} lit={lampsOn} />
       </group>
       <pointLight position={[door.x, 1.3, door.z]} color="#ffb060" intensity={glow * 2.4} distance={6} />
-      {phase !== "call" && (
+      <group visible={phase !== "call"}>
         <Goon
           position={[stage.doorman.x, 0, stage.doorman.z]}
           rot={site.facing + Math.PI}
@@ -102,13 +159,12 @@ export default function SummonsCinematic({ cinematic, site, phase, local, clock,
           role="associate"
           color="#2a2420"
         />
-      )}
+      </group>
       <mesh position={[site.building.x, 1.15, site.building.z]}>
         <boxGeometry args={[0.7, 0.45, 0.08]} />
         <meshStandardMaterial color="#e0b070" emissive="#e0b070" emissiveIntensity={glow} />
       </mesh>
-      {showMan && (
-        <group ref={manRef} position={[stage.manStart.x, 0, stage.manStart.z]}>
+      <group ref={manRef} visible={showMan} position={[stage.manStart.x, 0, stage.manStart.z]}>
           <Goon
             position={[0, 0, 0]}
             rot={site.facing + Math.PI}
@@ -119,8 +175,7 @@ export default function SummonsCinematic({ cinematic, site, phase, local, clock,
             role="soldier"
             color={color}
           />
-        </group>
-      )}
+      </group>
       <MuzzleFlash active={phase === "back_room"} from={inside} to={[door.x, 0.8, door.z]} shots={1} />
     </group>
   );

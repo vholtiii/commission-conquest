@@ -55,6 +55,7 @@ import {
 import { canJoinHit, canSendOnHit, pullForJob } from "./jobReturn";
 import { isAbandonedTurf, isDefunct } from "./defection";
 import { createRng, hashString } from "./rng";
+import { canRaidCountHouse, moveCountHouse as moveCountHouseTo, raidCountHouse as raidCountHouseOn } from "./countHouse";
 import {
   assignCrew,
   canPromote,
@@ -99,6 +100,7 @@ import {
 } from "./economy";
 import {
   emptyLiquorLedger,
+  orderWhisky,
   hasManagedWarehouse,
   makeManagerLookup,
   shipmentSeizureChance,
@@ -156,7 +158,7 @@ import {
 } from "./sitdowns";
 import { breakDeal, inTruce } from "./deals";
 import { commissionHeld, funeralWeeksLeft, handsDown, hydrateMourningForBoss } from "./mourning";
-import { answerRuling as settleRuling, lobbySeat as buySeat, openCommissionCall, openWarCall } from "./commission";
+import { answerRuling as settleRuling, lobbySeat as buySeat, openCommissionCall, openWarCall, pledgeSeat as castPledge } from "./commission";
 import {
   answerCoverRequest,
   cancelSupplyRoute,
@@ -428,6 +430,8 @@ interface GameStore extends GameState {
   lobbySeat: (family: FamilyName, kind: "cash" | "influence") => void;
   /** Accept or refuse the ruling on the card. */
   answerRuling: (answer: "accept" | "refuse") => void;
+  /** Back a side, or neither, on a call between two rivals. */
+  pledgeSeat: (side: "caller" | "accused" | "abstain") => void;
   /** Take the Commission's manhunt. The lead comes with it. */
   acceptCommissionErrand: () => void;
   /** Turn the manhunt down. Another family may take it. */
@@ -462,6 +466,10 @@ interface GameStore extends GameState {
   nextTurn: () => void;
   payFuneral: (deadCrewId: string) => void;
   captureTerritory: (territoryId: string, attackerIds: string[]) => void;
+  /** Move the count house onto an owned block. Once a week. */
+  moveCountHouse: (territoryId: string) => void;
+  /** Raid a rival count house. Needs a casing report. */
+  raidCountHouse: (territoryId: string, attackerIds: string[]) => void;
   /** Write the game to a slot under this name. False if the browser refused it. */
   saveSlot: (slot: number, name?: string) => boolean;
   loadSlot: (slot: number) => boolean;
@@ -1138,48 +1146,14 @@ export const useGameStore = create<GameStore>()(
       },
 
       buyWhisky: (destTerritoryId, crates) => {
-        const s = get();
-        if (!s.playerFamily) return;
-        const amount = Math.max(5, Math.round(crates / 5) * 5);
-        const dest = s.territories.find((t) => t.id === destTerritoryId);
-        if (!dest || dest.owner !== s.playerFamily) {
-          toast.error("Pick one of your districts");
+        const ordered = orderWhisky(get(), destTerritoryId, crates);
+        if (ordered.error || !ordered.qty) {
+          toast.error(ordered.error ?? "Couldn't buy");
           return;
         }
-        const lookup = makeManagerLookup(s.crew, s.playerFamily);
-        if (!hasManagedWarehouse(dest, lookup, s.turn)) {
-          toast.error("Assign a manager to that warehouse first");
-          return;
-        }
-        const { free } = warehouseRoom(dest, s.turn, lookup);
-        if (free < 5) {
-          toast.error("No free warehouse space");
-          return;
-        }
-        const qty = Math.min(amount, free);
-        const price = supplierPrice(s.seed, s.turn, s.heat.level);
-        const cost = qty * price;
-        const pay = racketPayment("warehouse", cost, s.money, s.dirtyMoney);
-        if (!pay) {
-          toast.error(`Need $${cost} (dirty or clean)`);
-          return;
-        }
-        const seizeP = shipmentSeizureChance(s.heat.level, s.bribes);
-        const ship = {
-          id: `ship_${Date.now()}`,
-          crates: qty,
-          destTerritoryId,
-          arriveTurn: s.turn + 1 + Math.max(0, Math.round(modifierSum(s, "shipmentSpeed"))),
-          cost,
-        };
-        set({
-          money: s.money - pay.clean,
-          dirtyMoney: s.dirtyMoney - pay.dirty,
-          pendingShipments: [...(s.pendingShipments ?? []), ship],
-        });
-        const paid = formatPaymentParts(pay);
-        toast.message(`Whisky ordered — ${qty} crates`, {
-          description: `${ship.arriveTurn > s.turn + 1 ? `Arrives in ${ship.arriveTurn - s.turn} turns (docks slowed)` : "Arrives next turn"} · ${paid} · ${(seizeP * 100).toFixed(0)}% seizure risk`,
+        set(ordered.state);
+        toast.message(`Whisky ordered — ${ordered.qty} crates`, {
+          description: `${(ordered.arriveIn ?? 1) > 1 ? `Arrives in ${ordered.arriveIn} turns (docks slowed)` : "Arrives next turn"} · ${ordered.paid} · ${((ordered.seizeP ?? 0) * 100).toFixed(0)}% seizure risk`,
         });
       },
 
@@ -2364,6 +2338,12 @@ export const useGameStore = create<GameStore>()(
         else toast.error(result.log.text);
       },
 
+      pledgeSeat: (side) => {
+        const result = castPledge(get(), side);
+        set({ ...result.state, turnLog: [...result.state.turnLog, result.log].slice(-200) });
+        toast.message(result.log.text);
+      },
+
       answerRuling: (answer) => {
         const s = get();
         const ruling = s.pendingRulings?.[0];
@@ -2979,6 +2959,38 @@ export const useGameStore = create<GameStore>()(
         if (brokePact) toast.warning(`You broke your word with ${t.owner}.`);
       },
 
+      moveCountHouse: (territoryId) => {
+        const moved = moveCountHouseTo(get(), territoryId);
+        if (moved.error) {
+          toast.error(moved.error);
+          return;
+        }
+        const name = moved.state.territories.find((t) => t.id === territoryId)?.name ?? "that block";
+        set(moved.state);
+        toast.success(`The count house is in ${name}`);
+      },
+
+      raidCountHouse: (territoryId, attackerIds) => {
+        const s = get();
+        if (!s.playerFamily || attackerIds.length < 1) return;
+        const block = s.territories.find((t) => t.id === territoryId);
+        if (!block?.owner) return;
+        const check = canRaidCountHouse(s, block.owner);
+        if (!check.ok) {
+          toast.error(check.reason ?? "Not this week");
+          return;
+        }
+        const rng = createRng(s.seed + s.turn * 61 + territoryId.length);
+        const raid = raidCountHouseOn(s, s.playerFamily, block.owner, attackerIds, rng);
+        set({
+          ...raid.state,
+          activePanel: "district",
+          turnLog: [...raid.state.turnLog, raid.log].slice(-200),
+        });
+        if (raid.success) toast.success(`Took $${raid.taken} from the count house`);
+        else toast.error(`The raid on ${block.name} failed`);
+      },
+
       saveSlot: (slot, name) => {
         const result = writeSlot(slot, cloneState(get()), name);
         if ("error" in result) {
@@ -3231,9 +3243,12 @@ export const useGameStore = create<GameStore>()(
           "callCommissionWar",
           "lobbySeat",
           "answerRuling",
+          "pledgeSeat",
           "nextTurn",
           "payFuneral",
           "captureTerritory",
+          "moveCountHouse",
+          "raidCountHouse",
           "saveSlot",
           "loadSlot",
         ];

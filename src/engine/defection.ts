@@ -42,6 +42,11 @@ export function isDefunct(state: Pick<GameState, "defunctFamilies">, family: Fam
   return (state.defunctFamilies ?? []).includes(family);
 }
 
+/** Weeks a finished family's blocks stay named before they become nobody's. */
+export const ABANDONED_WEEKS = 4;
+/** Weeks between one racket closing on a block that has already gone neutral. */
+export const DECAY_EVERY = 2;
+
 /** Finished family's leftover blocks — still named theirs, nobody holding them. */
 export function isAbandonedTurf(
   state: Pick<GameState, "defunctFamilies">,
@@ -190,6 +195,76 @@ function offerToPlayer(state: GameState, man: CrewMember): GameState {
   };
 }
 
+/** Weeks left before a finished family's leftover blocks become nobody's. */
+export function abandonedWeeksLeft(
+  state: Pick<GameState, "turn" | "defunctFamilies" | "defunctSince">,
+  family: FamilyName,
+): number {
+  if (!isDefunct(state, family)) return 0;
+  const since = state.defunctSince?.[family] ?? state.turn;
+  return Math.max(0, since + ABANDONED_WEEKS - state.turn);
+}
+
+function lowestRacket(rackets: Territory["rackets"]): string | undefined {
+  const ranked = [...rackets].sort((a, b) => a.level - b.level || a.id.localeCompare(b.id));
+  return ranked[0]?.id;
+}
+
+/**
+ * Leftover turf of a finished family. After ABANDONED_WEEKS the blocks are
+ * nobody's, and every DECAY_EVERY weeks after that one racket closes.
+ * A block that started the game neutral has no stamp and is left alone.
+ */
+export function tickAbandonedTurf(state: GameState): { state: GameState; logs: TurnLogEntry[] } {
+  const logs: TurnLogEntry[] = [];
+  const gone = state.defunctFamilies ?? [];
+  if (gone.length === 0 && !state.territories.some((t) => t.neutralSinceTurn != null)) {
+    return { state, logs };
+  }
+  let since = { ...(state.defunctSince ?? {}) };
+  for (const family of gone) {
+    if (since[family] == null && state.territories.some((t) => t.owner === family)) {
+      since = { ...since, [family]: state.turn };
+    }
+  }
+  let territories = state.territories;
+  for (const family of gone) {
+    const started = since[family];
+    if (started == null || state.turn < started + ABANDONED_WEEKS) continue;
+    const held = territories.filter((t) => t.owner === family);
+    if (held.length === 0) continue;
+    territories = territories.map((t) =>
+      t.owner === family
+        ? { ...t, owner: null, leadershipVacuum: 0, garrisonIds: [], neutralSinceTurn: state.turn }
+        : t,
+    );
+    logs.push({
+      id: `log_neutral_${family}_${state.turn}`,
+      turn: state.turn,
+      category: "system",
+      text: `Nobody holds what the ${family} left. ${held.map((t) => t.name).join(", ")} ${held.length === 1 ? "is" : "are"} open.`,
+      family: state.playerFamily ?? undefined,
+    });
+  }
+  territories = territories.map((t) => {
+    if (t.neutralSinceTurn == null || t.owner || t.rackets.length === 0) return t;
+    const age = state.turn - t.neutralSinceTurn;
+    if (age <= 0 || age % DECAY_EVERY !== 0) return t;
+    const drop = lowestRacket(t.rackets);
+    if (!drop) return t;
+    const racket = t.rackets.find((r) => r.id === drop);
+    logs.push({
+      id: `log_decay_${t.id}_${state.turn}`,
+      turn: state.turn,
+      category: "economy",
+      text: `${t.name} has no one minding it. The ${racket?.type.replace("_", " ") ?? "joint"} closes.`,
+      family: state.playerFamily ?? undefined,
+    });
+    return { ...t, rackets: t.rackets.filter((r) => r.id !== drop) };
+  });
+  return { state: { ...state, defunctSince: since, territories }, logs };
+}
+
 /** Call off hits and casing aimed at a finished family, and send those crews home. */
 function dropJobs(state: GameState, family: FamilyName): { state: GameState; calledOff: number } {
   const dropped = state.operations.filter(
@@ -238,6 +313,7 @@ export function scatterFamily(
   let current: GameState = {
     ...state,
     defunctFamilies: [...(state.defunctFamilies ?? []), family],
+    defunctSince: { ...(state.defunctSince ?? {}), [family]: state.turn },
     territories: state.territories.map((t) =>
       t.owner === family ? { ...t, garrisonIds: [] } : t,
     ),

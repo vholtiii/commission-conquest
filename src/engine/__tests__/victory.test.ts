@@ -37,21 +37,21 @@ describe("wealth win", () => {
   });
 
   it("raises the bar every week", () => {
-    expect(wealthFloor(10)).toBe(45_000);
-    expect(wealthFloor(30)).toBe(75_000);
+    expect(wealthFloor(10)).toBe(30_000);
+    expect(wealthFloor(30)).toBe(50_000);
   });
 
   it("presses at turn 10 only past the week's bar", () => {
     const base = game();
-    const short = withMoney(base, 10, 44_000, 0, 1_000);
+    const short = withMoney(base, 10, 20_000, 0, 1_000);
     expect(familiesPressingSuddenDeath(short)).not.toContain("Moretti");
-    const clear = withMoney(base, 10, 46_000, 0, 1_000);
+    const clear = withMoney(base, 10, 30_000, 0, 1_000);
     expect(familiesPressingSuddenDeath(clear)).toContain("Moretti");
   });
 
   it("the same pile is not enough at turn 30", () => {
-    const s = withMoney(game(), 30, 70_000, 0, 1_000);
-    expect(familyWealth(s, "Moretti")).toBe(70_000);
+    const s = withMoney(game(), 30, 40_000, 0, 1_000);
+    expect(familyWealth(s, "Moretti")).toBe(40_000);
     expect(familiesPressingSuddenDeath(s)).not.toContain("Moretti");
     expect(checkVictory(s).wealthLeadTurns).toBe(0);
   });
@@ -60,6 +60,49 @@ describe("wealth win", () => {
     const s = withMoney(game(), 1, 500_000, 0, 1_000);
     expect(familiesPressingSuddenDeath(s)).toEqual([]);
     expect(checkVictory(s).wealthLeadTurns).toBe(0);
+  });
+
+  it("ignores a finished family's treasury and turf", () => {
+    const s = withMoney(game(), 12, 40_000, 0, 1_000);
+    s.rivalTreasury = { ...s.rivalTreasury, Valenti: 900_000 };
+    s.defunctFamilies = ["Valenti"];
+    expect(familiesPressingSuddenDeath(s)).toContain("Moretti");
+    expect(checkVictory(s).won).toBe(false);
+    expect(checkVictory(s).wealthLeadTurns).toBe(1);
+  });
+
+  it("refuses a wealth lead that is almost all dirty", () => {
+    const s = withMoney(game(), 12, 5_000, 80_000, 1_000);
+    expect(familiesPressingSuddenDeath(s)).not.toContain("Moretti");
+  });
+
+  it("crowns the last family standing", () => {
+    const s = game();
+    s.turn = 3;
+    s.defunctFamilies = ["Valenti", "Ferraro", "Salvati", "Rinaldi"];
+    const end = checkVictory(s);
+    expect(end.won).toBe(true);
+    expect(end.reason).toMatch(/last family/i);
+  });
+
+  it("lets a rival finish a streak, and gives the player a same-week tie", () => {
+    let s = withMoney(game(), 10, 1_000, 0, 1_000);
+    s = { ...s, rivalTreasury: { ...s.rivalTreasury, Valenti: 500_000 } };
+    for (let i = 0; i < 6; i++) {
+      s = { ...s, turn: 10 + i };
+      s = { ...s, victory: checkVictory(s) };
+    }
+    expect(s.victory.lost).toBe(true);
+    expect(s.victory.winner).toBe("Valenti");
+
+    let tied = withMoney(game(), 10, 200_000, 0, 1_000);
+    tied = { ...tied, influence: 100, rivalInfluence: { ...tied.rivalInfluence, Valenti: 300 } };
+    for (let i = 0; i < 6; i++) {
+      tied = { ...tied, turn: 10 + i };
+      tied = { ...tied, victory: checkVictory(tied) };
+    }
+    expect(tied.victory.won).toBe(true);
+    expect(tied.victory.winner).toBe("Moretti");
   });
 
 });

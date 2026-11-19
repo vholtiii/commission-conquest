@@ -14,6 +14,8 @@ import type {
 } from "@/types/game";
 import { RACKET_LABELS } from "@/types/game";
 import { ALL_FAMILY_NAMES, getFamilyDef } from "@/data/families";
+import { isDefunct } from "./defection";
+import { heatTakeMult } from "./heat";
 import { CRATE_STREET_VALUE } from "./passage";
 import { assessPath, roadCut, truckingLevel } from "./supplyRoutes";
 import type { Rng } from "./rng";
@@ -1467,6 +1469,9 @@ export function processEconomyTurn(
   let idleStorage = 0;
   let laundryClean = 0;
   let laundryDirty = 0;
+  let heatLost = 0;
+  const familyHeat = isPlayer ? state.heat.level : (state.rivalHeat?.[family] ?? 0);
+  const illegalCut = heatTakeMult(familyHeat);
   const activeIds = new Set(
     state.crew.filter((c) => c.status === "active").map((c) => c.id),
   );
@@ -1602,7 +1607,10 @@ export function processEconomyTurn(
             )
           : null;
         const place = placementBonus(t, racket, updated.rackets);
-        let inc = racketIncome(racket, incomeBonus, manager, state.crew, bossHere, place.mult);
+        const full = racketIncome(racket, incomeBonus, manager, state.crew, bossHere, place.mult);
+        const cut = isLegitBusiness(racket.type) ? 1 : illegalCut;
+        let inc = Math.floor(full * cut);
+        if (isPlayer) heatLost += full - inc;
         if (isPlayer && dinnerActive(state)) inc = Math.floor(inc * DINNER_INCOME_MULT);
         const take = racketTake(racket.type, inc);
         moneyDelta += take.clean;
@@ -1632,8 +1640,10 @@ export function processEconomyTurn(
     );
     updated = sell.territory;
     const thin = isPlayer && dinnerActive(state) ? DINNER_INCOME_MULT : 1;
-    const cleanLanded = Math.floor(sell.revenue * thin);
-    const dirtyLanded = Math.floor(sell.dirtyRevenue * thin);
+    const barCut = illegalCut;
+    if (isPlayer) heatLost += Math.floor((sell.revenue + sell.dirtyRevenue) * thin * (1 - barCut));
+    const cleanLanded = Math.floor(sell.revenue * thin * barCut);
+    const dirtyLanded = Math.floor(sell.dirtyRevenue * thin * barCut);
     moneyDelta += cleanLanded;
     dirtyDelta += dirtyLanded;
     if (isPlayer && sell.byRacket.length > 0) {
@@ -1748,7 +1758,7 @@ export function processEconomyTurn(
       id: `log_econ_${state.turn}_${family}`,
       turn: state.turn,
       category: "economy",
-      text: `Net income: $${netIncome >= 0 ? "+" : ""}${netIncome} (upkeep $${upkeep}).`,
+      text: `Net income: $${netIncome >= 0 ? "+" : ""}${netIncome} (upkeep $${upkeep}).${heatLost > 0 ? ` Heat cost you $${heatLost}.` : ""}`,
       family,
     });
   }
@@ -1816,7 +1826,9 @@ export function processAllEconomy(
   };
   const belt: FamilyName[] = [];
 
-  const families = [...new Set(territories.map((t) => t.owner).filter(Boolean))] as FamilyName[];
+  const families = ([...new Set(territories.map((t) => t.owner).filter(Boolean))] as FamilyName[]).filter(
+    (family) => !isDefunct(state, family),
+  );
 
   for (const family of families) {
     const partial = processEconomyTurn({ ...state, territories, crew: roster }, family);

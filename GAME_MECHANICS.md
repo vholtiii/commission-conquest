@@ -139,7 +139,7 @@ When a boss dies, a ready underboss (active, loyalty≥60, Lv≥5, held rank ≥
 
 A headless rival family doesn't stay frozen: each turn (50%) an interim boss seizes the chair — underboss, else senior capo, else consigliere — and the vacuum on their turf clears. Until then the family takes no AI actions and its districts are soft. Soldiers never inherit.
 
-**Finished families** (`src/engine/defection.ts`). A rival with no living boss and nobody left who could take the chair is finished: it's added to `defunctFamilies`, skipped by the AI forever, and the Commission seat is greyed out — the table line and the family row — with the diplomacy buttons gone and a "Finished" badge. Its turf keeps the family tag and its vacuum (a land-grab, per the capture rules). Every surviving soldier, hitman and associate picks a new family that turn — you included — by a weighted roll: standing is the biggest pull (influence relative to the top family, up to +3), nearby turf helps (+2 within one hop, +1 at two), the two families' relation adds −1…+1.5, and a family his old one was at war with is weighted at a quarter. Men who pick a rival garrison its nearest block at loyalty 45. Men who pick you land in the recruitment pool at **$0** for 3 weeks (they don't count against the walk-in cap); hire them and they keep their name, record and `origin`; pass on them and they go to a rival instead. Wounded men skip the pool and go straight to a rival. Jailed or held men stay on the dead roster.
+**Finished families** (`src/engine/defection.ts`). A rival with no living boss and nobody left who could take the chair is finished: it's added to `defunctFamilies`, skipped by the AI forever, and the Commission seat is greyed out — the table line and the family row — with the diplomacy buttons gone and a "Finished" badge. Its turf keeps the family tag for 4 weeks and nobody holds it: any associate can walk in, there is no fight, and the rackets stay but lose their managers. After 4 weeks the blocks become nobody's, and every 2 weeks after that one racket closes. A finished family does not earn, does not gain standing, and does not count in anyone's lead. Every surviving soldier, hitman and associate — wounded included — lands in the player's pool at **$0** for 3 weeks; pass on them and they leave town. Jailed or held men stay on the dead roster.
 
 ### Safehouses (`src/engine/safehouse.ts`)
 
@@ -178,7 +178,7 @@ Crates live in per-racket `stock` (level-scaled caps). The **Liquor** panel list
 |------|---------|------|
 | Still | 30 | Produces `5 + 3L` crates/turn into own stock; overflow spills to same-district warehouses |
 | Brewery | 50 | Produces `8 + 4L` |
-| Warehouse | 100 × manager cap mult | **The dock.** Trucks load only here, and only while it is managed. Crates that sit the week are proofed and worth $5 more next week. First 40 empty slots are free of the 10¢ rent |
+| Warehouse | 100 × manager cap mult | **The dock.** A managed barn can ship the family's whole pile (other barns, then stills, then speakeasies). Crates that sit the week are proofed and worth $5 more next week. First 40 empty slots are free of the 10¢ rent. A whisky buy lands in the barn you picked |
 | Speakeasy | 40 | Pulls from warehouses then producers (same district), proofed crates first; sells `5 + 2L` at `$15 + 5L`, and proofed crates at $5 more (+`L` more with a managed warehouse on the block). Dry earns 25% base. Districts without local stock need a **supply route** |
 
 **Warehouse managers** (smarts + bookkeeper +20, score 0–100):
@@ -280,7 +280,9 @@ District value is how many rackets you can build there — derived from the Voro
 
 ## Hits (`src/engine/hitOps.ts`)
 
-A boss's death quiets the city for three weeks (`MOURNING_WEEKS`). Nobody orders or lands a hit. Another death starts those three weeks over. A death that leaves the chair empty — the five-week crisis — quiets the city for two weeks instead.
+A boss's death quiets the city for three weeks (`MOURNING_WEEKS`). Nobody orders or lands a hit, and the Commission stands down too. Another boss's death starts those three weeks over. A death that leaves the chair empty — the five-week crisis — quiets the city for two weeks instead.
+
+**Street funerals** (`src/engine/mourning.ts`). A capo, an underboss or a consigliere killed in a hit — the mark or a man caught in it — quiets the streets for one week (`STREET_FUNERAL_WEEKS`): street hits already planned are called off and nobody orders a new one, but a hit the Commission ordered still stands and the table keeps meeting. A soldier's or a hitman's death does not stop the city: no quiet week, and no hit is called off for it. A boss's death during a street funeral turns it into a boss funeral; a street death never shortens one.
 
 Approaches:
 
@@ -408,7 +410,13 @@ The player can **Call the Commission** on any rival — too much fighting in the
 
 **Calling the table to war.** A rival who ignored a ruling in the last 12 weeks wears an *Ignored the table* badge on the Commission panel. If the player's Commission health is 50 or better ("Respected") and his standing part is at least 15 of 30, he can call the table again — same 25 standing, same 8-week rhythm — to ask for war. The seats vote at the end of the week from their usual leans, plus 0.15 for every ruling the target ignored and another 0.15 for a seat whose own ruling was spat on; the player can lobby them as normal. If the yes votes carry, every seat that said yes drops to war relations (−70) with the target, alongside the player, and the target's defiance is wiped clean. A deadlock or a no costs 3 respect and 5 relation with the target. Below the health bar, the option isn't there — an ignored ruling only raises the odds of a message hit, never a guaranteed war.
 
-**Refusing.** A family that refuses loses 10 relation with every seat that voted for the ruling. The player's second refusal **sanctions** him for 4 weeks: those seats won't sit down with him, one fewer man walks in looking for work each week, and the table won't hear another call from him until it lifts.
+**Refusing.** The loser of a ruling or a tax loses 8 standing. A family that refuses loses another 12 standing and 10 relation with every seat that voted for the ruling. The second defiance inside 12 weeks **sanctions** that family, player or rival, for 4 weeks: 5 standing a week, no sit-downs, and the table won't hear them.
+
+**A challenge.** A rival who has set out to contain a leader can petition the table on that track: a ruling for standing, a tax for wealth, and a war only once the streak is half run. It costs 25 standing, one open call at a time, and that caller waits 8 weeks. The table hears a rival under the player's rules: not while sanctioned, not with the boss in the Tombs, and the seats start from the same leans — 0.3 against a call with no case (bad blood at −30 or a hit in the last six weeks is a case), 0.6 against a war on a family that has ignored no ruling, and the tax leans below. A rival reads the room first and does not spend the standing on a call the opening leans say it will lose. A call on the player is voted the same week. A call on another rival waits a week. The player's seat backs the caller, backs the accused, or abstains. Backing a side is +8 relation with them and −8 with the other. Abstaining costs nothing, and a war between two rivals leaves the player out of it unless his seat backed the caller. Both rivals accept or refuse through the same ruling: a truce becomes a pact between them, a tax is 20% of the loser's treasury paid at once, and a war uses the same guns. The result is a log line and a headline, not a card. If either family falls while the call is open, the call lapses and the caller gets the 25 standing back.
+
+**Asking for a tax.** A tax is a truce with a cut of the loser's richest block on top. Every seat starts 0.25 further against it than against a plain truce, and economic and smuggler seats another 0.15.
+
+**Borough seats** (`src/engine/boroughSeats.ts`). A family that owns more than half the blocks in a borough holds that seat for as long as the majority holds. Each seat is +1.5 standing a week and one extra Commission vote: the caller and the accused vote their own seats for themselves, and a voting family adds its seats to the side it already chose. The District panel says how many blocks a seat is away, and a log line names a seat when it changes hands.
 
 **The message.** Every refusal rolls the chance the table answers it with a hit — a warning, not a war. The chance starts at 35%, rises 15% for each ruling the refuser has ignored before (the player's own refusals count for him; a rival's ignored rulings in the last 12 weeks count for him), and falls 10% for each seat the player lobbied that voted for the ruling. The seat leaning hardest sends it: an ambush or a drive-by on one of the refuser's men, never the boss, arriving the next week. When the player is the one refusing, it plays as an incoming reel.
 
@@ -440,7 +448,7 @@ Respect (0–100) is on the top bar. It drives the recruitment tier (see Recruit
 Street also moves at the end of each week, before the influence drift: +1 per live public racket you own (speakeasy, gambling, brothel, restaurant), capped at +2, plus +1 when the boss was seen — on the road to a sit-down, or the week he arrives on a block off the HQ that he hasn't held in the last 10 weeks (`streetSeen`). Staying on a block pays nothing after that first week, so parking him is not a Street farm. A frozen racket does not count.
 
 - Sit-down betrayal odds gain up to +10% from fear
-- Each turn: `influence += respect*0.04 + fear*0.03 + street*0.02 − 2` (0..300)
+- Each turn: `influence += respect*0.04 + fear*0.03 + street*0.02 − 2`, plus 1.5 per borough seat, minus 5 while sanctioned (0..300)
 - Hostile relations decay slower toward neutral when fear ≥ 50
 - Bribes weight fear equally with respect (`/400`)
 
@@ -482,7 +490,11 @@ Personalities:
 
 Temperament changes how long they wait (`tempo.ts`): a volatile truce or contract is 4 weeks and they send another message after 4, an economic truce is 8 weeks and they wait 8. Passage grudges and standing liquor sales follow the same table. Dinner, Commission errands, and Commission asks jitter once per seed (dinner 7–10 weeks, the other two 6–10). The sudden-death streak is 5 weeks on a short game, 6 on medium, 8 on long.
 
-A new game sets `aiAggression` from the difficulty button (`aggressionForDifficulty` in `initialState.ts`): easy 0.45, normal 1, hard 1.5. Each rival then attempts `floor(aggression × personality × 2)` actions a week (at least one; volatile ×1.4, covert ×0.8) and each attempt fires with chance `0.5 + aggression × 0.15`. Easy is one action about half the time. Normal is two (one for a covert family). Hard is three, or four for a volatile family. A save keeps the aggression it started with. Rivals fight each other; vendettas escalate retaliation.
+A new game sets `aiAggression` from the difficulty button (`aggressionForDifficulty` in `initialState.ts`): easy 0.45, normal 1, hard 1.5. Each rival then attempts `floor(aggression × personality × 2)` actions a week (at least one; volatile ×1.4, covert ×0.8), plus one more when its goal is a leader on a live streak or, on Hard, a player the summit would name. Each attempt fires with chance `0.5 + aggression × 0.15`. Easy is one action about half the time. Normal is two (one for a covert family). Hard is three, or four for a volatile family. A save keeps the aggression it started with. Rivals fight each other; vendettas escalate retaliation.
+
+**Challenging a runaway.** From 80% of a win bar the rest of the table can see who is ahead, and on which track. Pressure rises to 1 at the bar, jumps by 1 once the streak is live, and adds up to 1.5 more as the weeks fill. A family answers in that category: $1,000 once a week buys 5 standing while it is behind and not sanctioned; building and hijacks answer wealth; grabs answer turf, and a grab that breaks a borough seat or drops the leader under the bar scores higher. A truce or a pact with the leader takes away the hits, hijacks, shakedowns and petitions and leaves the catch-up moves at 0.6 of the score. Heat stops muting that goal once a streak is live (the floor is 0.7). Once the streak is half run the goal scores 1.5 times as much and the family's patience with its old plan no longer protects it, so a private feud gives way. If the leader changes track, a family already containing him follows without starting over. Hits, hijacks and shakedowns still wait while the family is lying low. A live streak is a log line in the category's words. Below that it stays a rumor.
+
+**Planning for the summit (Hard only).** On Easy and Normal the rivals only answer a sudden-death run; nobody works against the family the summit would name. On Hard they do, over the last quarter of the game (`SUMMIT_WATCH_SHARE`: the last 7 weeks of a short game, 12 of a medium, 20 of a long). Each week in that window they look at standing and at wealth the way the summit will: if you lead the next family by 10%, or sit within 10% of it, that is a claim. They count the whole pile; they cannot see how much of it is clean. A claim you lead weighs 1 when the window opens and 2.5 in the last week; one where you are only close weighs 0.6 of that. It feeds the same contain-the-leader goal as a runaway, on that track, so the answers are the same: dinners and a call to the table for standing; books, shakedowns, hijacks and a tax call for wealth. With two claims the families split between them. Once half the window is gone and you lead, the goal scores 1.5 times as much and the family's patience with its old plan no longer protects it, as with a half-run streak. A family working against a claim you lead gets one more action a week, and its dinners score higher the closer the summit is. The week a family takes this up you get a log line saying so, and the Race panel lists who is on which claim. A truce or a pact with that family still takes the teeth out of it.
 
 Bosses travel. Each turn an AI boss has a ~25% chance (expansionist/volatile +10, covert −10, only 5% if a tipped-off car bomb is aimed at his family) to spend the week in another district he owns, weighted toward racket-heavy and leaderless blocks, and drives home the week after. Both legs can spring a car bomb. A headless family stays frozen until an interim boss takes the chair.
 
@@ -504,7 +516,7 @@ Clean cash pays bribes, property, and promotions; upkeep prefers clean first.
 
 ## Territory capture (`src/engine/capture.ts`)
 
-Capture opens a squad picker (idle crew, plus anyone garrisoned on your blocks). A man posted elsewhere is pulled off that block if the grab succeeds. First pick leads and garrisons on success; others keep their prior assignments. Odds ≈ P(atk×U(0.8,1.2) > def×U(0.8,1.2)) where atk = squad muscle × combat bonus and def = (defender muscle + 40) × (1 + defenseBonus) × 0.7 under leadership vacuum. Fail: +4 heat and +1 loyalty for the squad. Success: flip owner, wound old garrison, +8 heat, +3 fear, +2 street influence, +1 muscle and +3 loyalty for every man in the squad.
+Capture opens a squad picker (idle crew, plus anyone garrisoned on your blocks). A man posted elsewhere is pulled off that block if the grab succeeds. First pick leads and garrisons on success; others keep their prior assignments. Odds ≈ P(atk×U(0.8,1.2) > def×U(0.8,1.2)) where atk = squad muscle × combat bonus × reach and def = (defender muscle + 40) × (1 + defenseBonus) × 0.7 under leadership vacuum. Reach is free on a bordering block and for a family with no turf; each block further costs 15% attack, down to a floor of 40%. A finished family's block is a walk-in: no roll, no heat. Fail: +4 heat and +1 loyalty for the squad. Success: flip owner, wound old garrison, +8 heat, +3 fear, +2 street influence, +1 muscle and +3 loyalty for every man in the squad.
 
 **One district a week.** Every family (player and AI) can take at most one district per turn (`captureAllowance`, tracked in `GameState.captureTally`). A second grab is allowed only when: the family is expansionist (Valenti, always 2 moves), the target is in leadership vacuum, or the target belongs to a family you're in a vendetta with. Never more than two. The check runs before any pact is broken, and the Capture panel shows "Moves this week: n/limit".
 
@@ -517,7 +529,7 @@ Only the **player's** operations draw heat: racket heat per turn = Σ own `heatG
 Thresholds:
 
 - 20 — street patrols
-- 40 — raids (income penalty)
+- 40 — raids. Illegal take holds until here, then loses 0.5% per point of heat, down to 70% at 100. Legit fronts are untouched. The same cut hits a rival's illegal take off `rivalHeat`. Past 70 a rival skips hits, hijacks and shakedowns unless it is already at war, and it buys the cops off before it plans the week. The week's books say what heat cost.
 - 60 — warrants (jailed risk for high-wanted crew)
 - 80 — federal investigation
 
@@ -562,15 +574,25 @@ Watch and wait is the small swing. The other choices pay more when they are righ
 
 **Racket map feedback:** Player build/upgrade FX wait ~0.8s for the camera fly-in, then play a 1.8s burst (gold rise for builds, type-colored double pulse + "Lv N" chip for upgrades). Racket buildings use type-tinted bodies with emissive floor bands = level; newly built/upgraded rackets keep a pulsing halo and NEW/UPGRADED tag until the next turn. District markers show type icons and a gold pulse when something changed this turn.
 
+## The count house (`src/engine/countHouse.ts`)
+
+Dirty cash above $10,000 sits on a block you choose (the HQ until you move it, once a week, from the district panel). A rival's treasury above the same amount sits at their HQ. Raiding it is a capture roll that does not take the block: success takes 35% of the exposed cash as dirty money, costs 10 heat and −30 relation, and cannot be repeated on that family for 4 weeks. It needs a casing report and a broken truce stops it. A rival who means to cut you down cases the block one week and hits it the next. A rival too far away can tip the police when your heat is 50 or more, and the precinct takes 20%, unless the captains or the chiefs are paid. A rival containing a wealth leader raids that rival's count house the same week, if it is within 2 blocks, and that pair waits 4 weeks. You still get the week's warning. No rival cases, raids or tips on a family it has a truce or a pact with, and men already watching your block are called home when the guns go down.
+
 ## Victory / defeat
 
-Length is chosen next to difficulty on a new game (short 30 turns, medium 50, long 80) and locked onto `victory.finalTurn`.
+Length is chosen next to difficulty on a new game (short 30 turns, medium 50, long 80) and locked onto `victory.finalTurn`. The **Race** button on the left toolbar, and the chip on the top bar, open the race: each track, what you are short, who is challenging the leader on that track, every rival clock, the summit, and the borough seats. A streak that falls back to zero is a log line and a headline, for you and for a rival.
 
-**Sudden death (6 weeks on every length, streaks count from turn 10):** influence at least 200 and 1.5× second place, or wealth (clean + dirty at face value) at least $30,000 and 2× second place. Rivals keep a standing pool (`rivalInfluence`), seeded at 120 and spent when they call a sit-down.
+**Sudden death** counts from turn 10. The streak is 5 weeks on a short game, 6 on medium, 8 on long. On Easy a rival needs 2 more weeks. On Hard you need 2 more weeks yourself (`HARD_PLAYER_EXTRA`: 7 / 8 / 10), and the rivals do not. Three tracks, the same bars for every seated family:
 
-**Summit** on the final turn, after the other checks: lead either track by 10% and you win; trail both by more than 10% and you lose; within 10% on both, more districts than every rival wins, otherwise you lose.
+- **Standing.** 150 / 165 / 180 by length, and 1.55× the next family. Borough seats feed this every week.
+- **Wealth.** Clean cash in full plus dirty cash at 55%, at least $20,000 plus $1,000 a week, and 2.75× the next family. Your clean cash must also be at least 35% of clean plus dirty (`CLEAN_SHARE`); on Easy, 20% (`EASY_CLEAN_SHARE`). A rival's single treasury has no clean-share gate.
+- **Turf.** At least 40% of the blocks and 1.5× the next family.
 
-**Lose:** five weeks pass with no boss after the chair emptied; or both cash pools stay negative for 3 weeks. A ready underboss still takes the chair the week the boss dies, and the game goes on.
+A finished family is not in the count. The player's streak is checked first, so a same-week tie goes to the player. A rival who finishes a streak wins the city, and the end screen names them. The week a rival's streak starts, a log line and a headline say how many weeks are left. Wiping out every other family wins at once: the last family standing.
+
+**Summit** on the final turn: lead standing or wealth by 10% (wealth only if the clean share holds) and you win; within 10% on both, more districts than every seated rival wins; otherwise you lose. On Easy the summit names whoever is first (`EASY_SUMMIT_RATIO`): level with the next family or better is a lead, no margin needed, and the clean share it asks for is the Easy 20%. The Race panel's "Named today" and its clean-share line use the same numbers.
+
+**Lose:** five weeks with no boss; both coffers empty for 3 weeks; a rival's streak; or the summit.
 
 **Leaderless** (`interregnum.ts`): if nobody is ready, the family fractures once (about a third of its districts, never the home seat, and shaky soldiers walk) and has five weeks to crown an underboss. During those weeks income is 75%, loyalty drops 3 a week, and the family cannot capture or order a hit. Promoting a capo to underboss waives the hit requirement, asks level 3 and loyalty 25, and a wounded capo can still be named. The $2,500 can come from either pocket. It steps down an underboss who cannot take the chair. A made soldier of level 4 can be named underboss. An underboss with loyalty 30 who has held the rank a week becomes boss. A man named that same week does not also take the loyalty drip. A rival gets the same clock: each week a 50% chance to name his best capo, wounded or not, and if the clock runs out the outfit scatters and the men join the player's pool. Only one family holds the clock; another rival waits his turn, and the player takes the slot if he needs it. Rivals aim at a leaderless family more often.
 

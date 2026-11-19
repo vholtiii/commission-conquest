@@ -43,19 +43,34 @@ Open http://localhost:3000
 
 1. Pick a family on the title screen.
 2. Click districts on the 3D map to garrison, build rackets, capture, or plan hits.
-3. Use the left toolbar for Crew, Rackets, Operations, Corruption, Commission, Log, and Menu (save/load).
+3. Use the left toolbar for Crew, Rackets, Launder, Lawyer, Liquor, Operations, Corruption, Commission, Race, Log, and Menu (save/load).
 4. End the turn with **NEXT TURN** — rivals act, deliveries resolve, income/heat/events tick.
 
 ### Victory
 
-- Control **60%** of districts, **or**
-- Eliminate all rival bosses, **or**
-- Hold Commission chairmanship for **10** turns
+Streaks open on week 10. Short games need 5 weeks, medium 6, long 8. On Easy a rival needs two more. On Hard you need two more.
+
+- **Standing** — clear the bar for your game length and lead the next family by about half again. Borough seats feed standing.
+- **Wealth** — clean cash in full, dirty cash at 55%, two and three quarters times the next family, and clean cash at least 35% of the pile (20% on Easy).
+- **Turf** — hold 40% of the city and half again what the next family holds.
+- **Last family standing** — every other family is finished.
+- **The summit** — on the last week, lead standing or wealth by 10%, or win the district tie-break. On Easy, being first is enough.
+
+The Race button shows how far you are from each, which rival is closing in, and who is already challenging the leader on that track. A rival who holds a streak wins before the summit. From 80% of a bar the other families answer in the same category: dinners for standing, books and raids for wealth, blocks for turf. On Hard they also plan for the summit: over the last quarter of the game, lead or run close on standing or wealth and they work against it the same way.
 
 ### Defeat
 
-- Your boss is killed/jailed, **or**
-- You go bankrupt (clean and dirty cash both below zero)
+- The chair stays empty for five weeks, or the boss never leaves the Tombs with no heir ready
+- Both coffers stay empty for three weeks
+- A rival finishes a standing, wealth, or turf streak
+- The summit names someone else
+
+### What's on the street
+
+- **Count house** — dirty cash above $10,000 sits on a block and can be raided, including by one rival against another
+- **Borough seats** — most of a borough is a Commission vote and weekly standing. A call between two rivals waits a week for your seat.
+- **Heat** — past 40 it cuts illegal income, for you and for the rivals
+- **The race** — one click from the toolbar
 
 ## Optional Kenney props
 

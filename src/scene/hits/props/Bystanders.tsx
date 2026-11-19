@@ -2,6 +2,7 @@ import { useMemo, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import Person from "@/scene/Person";
+import { readReel, useInReel } from "../reelClock";
 
 interface Props {
   at: [number, number, number];
@@ -25,6 +26,7 @@ export default function Bystanders({ at, facing, flee }: Props) {
   const side = useMemo(() => new THREE.Vector3(-Math.cos(facing), 0, Math.sin(facing)), [facing]);
   const away = useMemo(() => new THREE.Vector3(Math.sin(facing), 0, Math.cos(facing)), [facing]);
   const focus = useMemo(() => new THREE.Vector3(at[0], 0.9, at[2]).addScaledVector(away, -1.2), [at, away]);
+  const inReel = useInReel();
   const homes = useMemo(
     () =>
       SPOTS.map(([along, out]) =>
@@ -34,9 +36,10 @@ export default function Bystanders({ at, facing, flee }: Props) {
   );
 
   useFrame(({ clock, camera }) => {
+    const now = inReel ? (readReel()?.time ?? clock.elapsedTime) : clock.elapsedTime;
     if (!flee) started.current = null;
-    else if (started.current === null) started.current = clock.elapsedTime;
-    const k = started.current === null ? 0 : Math.min(1, (clock.elapsedTime - started.current) / 1.5);
+    else if (started.current === null) started.current = now;
+    const k = started.current === null ? 0 : Math.min(1, (now - started.current) / 1.5);
     homes.forEach((home, i) => {
       const g = groups[i]!.current;
       if (!g) return;

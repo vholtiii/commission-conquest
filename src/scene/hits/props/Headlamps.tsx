@@ -9,17 +9,17 @@ export interface LampCar {
 }
 
 /** Two warm pools of light in front of a reel car. Not used by the street fleet. */
-export default function Headlamps({ cars }: { cars: LampCar[] }) {
+export default function Headlamps({ cars, lit = true }: { cars: LampCar[]; lit?: boolean }) {
   return (
     <group>
       {cars.map((car, i) => (
-        <Pair key={i} car={car} />
+        <Pair key={i} car={car} lit={lit} />
       ))}
     </group>
   );
 }
 
-function Pair({ car }: { car: LampCar }) {
+function Pair({ car, lit }: { car: LampCar; lit: boolean }) {
   const c = Math.cos(car.rot);
   const s = Math.sin(car.rot);
   const y = (car.y ?? 0) + 0.6;
@@ -30,15 +30,13 @@ function Pair({ car }: { car: LampCar }) {
       {[0.28, -0.28].map((lz) => {
         const px = car.x + (0.86 * c + lz * s);
         const pz = car.z + (-0.86 * s + lz * c);
-        return (
-          <Lamp key={lz} x={px} y={y} z={pz} fx={fwdX} fz={fwdZ} />
-        );
+        return <Lamp key={lz} x={px} y={y} z={pz} fx={fwdX} fz={fwdZ} lit={lit} />;
       })}
     </group>
   );
 }
 
-function Lamp({ x, y, z, fx, fz }: { x: number; y: number; z: number; fx: number; fz: number }) {
+function Lamp({ x, y, z, fx, fz, lit }: { x: number; y: number; z: number; fx: number; fz: number; lit: boolean }) {
   const light = useRef<THREE.SpotLight>(null);
   const target = useRef<THREE.Object3D>(null);
 
@@ -53,7 +51,7 @@ function Lamp({ x, y, z, fx, fz }: { x: number; y: number; z: number; fx: number
         position={[x, y, z]}
         angle={0.42}
         penumbra={0.95}
-        intensity={5}
+        intensity={lit ? 5 : 0}
         distance={11}
         color="#ffd9a0"
       />

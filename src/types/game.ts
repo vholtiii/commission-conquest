@@ -105,6 +105,7 @@ export type PanelId =
   | "operations"
   | "corruption"
   | "commission"
+  | "race"
   | "log"
   | "district"
   | "hit_planner"
@@ -390,6 +391,11 @@ export interface Territory {
   racketSlots: number;
   /** What the block is good at. Stamped from the city seed; old saves get it on load. */
   feature?: "docks" | "downtown" | "industrial" | "residential";
+  /**
+   * Turn a finished family's block became nobody's. Rackets on a stamped
+   * block decay. Blocks that started the game neutral have no stamp.
+   */
+  neutralSinceTurn?: number;
 }
 
 export interface BribeStatus {
@@ -1074,6 +1080,10 @@ export interface DiplomacyState {
   commissionCooldown?: number;
   /** The player defied a ruling. Seats won't sit with him until this turn. */
   sanctionUntil?: number;
+  /** Rival -> first turn their sanction lifts. Two defiances inside the window. */
+  rivalSanctions?: Partial<Record<FamilyName, number>>;
+  /** Rival -> first turn they may call the Commission again. */
+  rivalCallCooldown?: Partial<Record<FamilyName, number>>;
   /** Rulings the player has refused. Two and the table sanctions him. */
   refusals?: number;
   /** Truces and coalitions between rival families. */
@@ -1088,6 +1098,8 @@ export interface SeatVote {
   lean: number;
   vote?: "caller" | "accused" | "abstain";
   line?: string;
+  /** Extra votes from borough seats, on top of this family's one vote. */
+  extra?: number;
 }
 
 /** What the table is being asked: a truce, a war, or a tax. */
@@ -1145,6 +1157,12 @@ export interface CommissionCall {
   lobbied: Partial<Record<FamilyName, "cash" | "influence">>;
   phase: "lobby" | "voted" | "answered";
   ruling?: CommissionRuling;
+  /** A rival called this on another rival. The player's seat waits a week. */
+  thirdParty?: boolean;
+  /** Which side the player's seat is on. Missing is an abstention. */
+  pledge?: "caller" | "accused" | "abstain";
+  /** The track the accused is running away on, when the call is a challenge. */
+  track?: "influence" | "wealth" | "turf";
 }
 
 /** Where the player is pointed after a sit-down result card. */
@@ -1477,18 +1495,30 @@ export interface HeatState {
 
 export type GameLength = "short" | "medium" | "long";
 
+export interface RivalLeadClock {
+  influence: number;
+  wealth: number;
+  turf: number;
+}
+
 export interface VictoryState {
   won: boolean;
   lost: boolean;
   reason?: string;
+  /** The family that took the city, when a rival's streak ended the game. */
+  winner?: FamilyName;
   /** Turn the summit is held. Set once when the game starts. */
   finalTurn: number;
   /** Consecutive turns the player has held a sudden-death influence lead. */
   influenceLeadTurns: number;
   /** Consecutive turns the player has held a sudden-death wealth lead. */
   wealthLeadTurns: number;
+  /** Consecutive turns the player has held most of the city. */
+  turfLeadTurns?: number;
   /** Consecutive turns both cash pools have been negative. */
   bankruptTurns: number;
+  /** Rival sudden-death clocks. A finished streak ends the game. */
+  rivalLeadTurns?: Partial<Record<FamilyName, RivalLeadClock>>;
 }
 
 export interface GameSettings {
@@ -1623,6 +1653,20 @@ export interface GameState {
   crewRequests: CrewRequest[];
   /** Families with nobody left to take the chair. Their men have scattered. */
   defunctFamilies: FamilyName[];
+  /** Turn each family was finished. The clock on their leftover turf starts here. */
+  defunctSince?: Partial<Record<FamilyName, number>>;
+  /** Block holding the player's dirty cash above the safe amount. Missing means the HQ. */
+  countHouseId?: string | null;
+  /** Turn the count house was last moved. Once a week. */
+  countHouseMovedTurn?: number;
+  /** Family -> first turn the player may raid that count house again. */
+  countHouseCooldown?: Partial<Record<FamilyName, number>>;
+  /** `${attacker}|${victim}` -> first turn that pair may raid again. */
+  countHouseRivalCooldown?: Record<string, number>;
+  /** Family -> the turn they last bought standing. */
+  courtTurn?: Partial<Record<FamilyName, number>>;
+  /** A rival casing the player's count house, hitting on `hitTurn`. */
+  countHouseCasing?: { family: FamilyName; territoryId: string; hitTurn: number } | null;
   /** Sit-downs both bosses must travel to (scheduled, then held or aborted). */
   sitdowns: Sitdown[];
   /** Result cards waiting after a table breaks up. */
@@ -1773,6 +1817,8 @@ export type AiGoalKind =
 export interface AiGoal {
   kind: AiGoalKind;
   target?: FamilyName;
+  /** The track a contain-the-leader plan is answering. */
+  track?: "influence" | "wealth" | "turf";
   territoryId?: string;
   since: number;
   /** Steps of the plan carried out so far. */

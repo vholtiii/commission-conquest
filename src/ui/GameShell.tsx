@@ -21,6 +21,7 @@ import CrewPanel from "./panels/CrewPanel";
 import CrewSheet from "./panels/CrewSheet";
 import CorruptionPanel from "./panels/CorruptionPanel";
 import CommissionPanel from "./panels/CommissionPanel";
+import RacePanel from "./panels/RacePanel";
 import TurnLogDrawer from "./panels/TurnLogDrawer";
 import MenuPanel from "./panels/MenuPanel";
 import EventModal from "./panels/EventModal";
@@ -236,6 +237,8 @@ function ActivePanel() {
       return <CorruptionPanel />;
     case "commission":
       return <CommissionPanel />;
+    case "race":
+      return <RacePanel />;
     case "log":
       return <TurnLogDrawer />;
     case "menu":

@@ -3,13 +3,17 @@ import {
   commissionHeld,
   declareFuneral,
   declareMourning,
+  earnsStreetFuneral,
   funeralWeeksLeft,
   handsDown,
   MOURNING_WEEKS,
   STREET_FUNERAL_WEEKS,
 } from "@/engine/mourning";
 import { buildInitialState, startGame } from "@/engine/initialState";
-import { createRng } from "@/engine/rng";
+import { createRng, type Rng } from "@/engine/rng";
+import { getBoss } from "@/engine/crew";
+import { resolveCrewTerritoryId } from "@/engine/crewLocation";
+import { resolveHit } from "@/engine/hitOps";
 import { resolvePlayerHits } from "@/engine/turnPipeline";
 import { canWorkErrand } from "@/engine/commissionErrand";
 import type { CommissionErrand, Operation } from "@/types/game";
@@ -64,7 +68,64 @@ describe("funeral quiet", () => {
     expect(second.logs[0]?.text).toContain("three weeks");
   });
 
-  it("a soldier's funeral is one week, Commission hit still stands, casing is allowed", async () => {
+  it("stops the streets for a capo or the brass, not for a soldier or a hitman", () => {
+    expect(earnsStreetFuneral("capo")).toBe(true);
+    expect(earnsStreetFuneral("underboss")).toBe(true);
+    expect(earnsStreetFuneral("consigliere")).toBe(true);
+    expect(earnsStreetFuneral("soldier")).toBe(false);
+    expect(earnsStreetFuneral("hitman")).toBe(false);
+    expect(earnsStreetFuneral("associate")).toBe(false);
+    expect(earnsStreetFuneral(undefined)).toBe(false);
+  });
+
+  it("a killed soldier leaves the streets open and other hits standing; a killed capo closes them for a week", () => {
+    const game = startGame(buildInitialState(4, { startMode: "classic" }), "Moretti");
+    const boss = getBoss(game.crew, "Moretti")!;
+    const kill = (): Rng => {
+      const base = createRng(7);
+      let invite = true;
+      return {
+        ...base,
+        chance: () => {
+          if (!invite) return false;
+          invite = false;
+          return true;
+        },
+        next: () => 0,
+      };
+    };
+    const hitOn = (role: "soldier" | "capo") => {
+      const mark = game.crew.find((c) => c.family === "Valenti" && c.status === "active" && c.role === role)!;
+      expect(mark, `a Valenti ${role}`).toBeTruthy();
+      const venue = resolveCrewTerritoryId(game, mark.id)!;
+      const op: Operation = {
+        ...streetOp(venue),
+        id: `kill_${role}`,
+        targetCrewId: mark.id,
+        approach: "sitdown_betrayal",
+        negotiatorId: boss.id,
+        tippedOff: false,
+        pendingTurns: 0,
+      };
+      const waiting = { ...streetOp(venue), id: "waiting", family: "Rinaldi" as const };
+      const out = resolveHit({ ...game, operations: [op, waiting] }, op, kill());
+      expect(out.result.targetDead).toBe(true);
+      return out.state;
+    };
+
+    const soldier = hitOn("soldier");
+    expect(handsDown(soldier)).toBe(false);
+    expect(soldier.operations.find((o) => o.id === "waiting")?.resolved).toBe(false);
+    expect(soldier.turnLog.some((l) => l.id.startsWith("log_mourning_"))).toBe(false);
+
+    const capo = hitOn("capo");
+    expect(handsDown(capo)).toBe(true);
+    expect(capo.mourningUntil).toBe(game.turn + STREET_FUNERAL_WEEKS);
+    expect(commissionHeld(capo)).toBe(false);
+    expect(capo.operations.find((o) => o.id === "waiting")?.resolved).toBe(true);
+  });
+
+  it("a capo's funeral is one week, Commission hit still stands, casing is allowed", async () => {
     expect(STREET_FUNERAL_WEEKS).toBe(1);
     const game = startGame(buildInitialState(7), "Moretti");
     const territoryId = game.territories.find((t) => t.owner === "Valenti")?.id ?? game.territories[0]!.id;

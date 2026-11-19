@@ -18,7 +18,7 @@ import { MEMORY_CAP } from "../ai/minds";
 import { beliefError } from "../ai/aiBeliefs";
 
 const AI_ACTION_LOG = /^ai_([a-z]+)_(?:fail_|quiet_)?([A-Z][a-z]+)_/;
-const AI_ACTION_KINDS = new Set(["racket", "expand", "hit", "delivery", "hijack", "shift", "shake", "scout"]);
+const AI_ACTION_KINDS = new Set(["racket", "expand", "hit", "delivery", "hijack", "shift", "shake", "scout", "court"]);
 
 /** What the rival families did and thought over a game, for the AI suite. */
 export interface AiMetrics {
@@ -42,6 +42,8 @@ export interface AiMetrics {
   beliefErrorSamples: number;
   scouts: number;
   goalSwitches: number;
+  /** Hits, hijacks, shakedowns and grabs taken while that family's heat was 70 or more. */
+  loudWhileHot: number;
 }
 
 function emptyAiMetrics(): AiMetrics {
@@ -61,6 +63,7 @@ function emptyAiMetrics(): AiMetrics {
     beliefErrorSamples: 0,
     scouts: 0,
     goalSwitches: 0,
+    loudWhileHot: 0,
   };
 }
 
@@ -77,6 +80,12 @@ function recordAiWeek(before: GameState, after: GameState, newLogs: GameState["t
     const fam = hit[2]!;
     const row = (m.actions[fam] ??= {});
     row[hit[1]!] = (row[hit[1]!] ?? 0) + 1;
+    if (
+      (hit[1] === "hit" || hit[1] === "hijack" || hit[1] === "shake" || hit[1] === "expand") &&
+      (after.rivalHeat?.[fam as FamilyName] ?? 0) >= 70
+    ) {
+      m.loudWhileHot++;
+    }
     // A grab or a shakedown on a family it was at peace with all week; the log names the owner at the time.
     const victim = (
       line.id.startsWith("ai_expand_") ? / from ([A-Z][a-z]+)/.exec(line.text) : line.id.startsWith("ai_shake_") ? /shook down ([A-Z][a-z]+)'s/.exec(line.text) : null
@@ -206,7 +215,137 @@ export interface SimResult {
   peakHeat: number;
   /** Longest run of weeks where nobody could order a hit. */
   longestQuiet: number;
+  playerActions: { routes: number; whisky: number; bribes: number; calls: number; sitdowns: number; safehouses: number };
+  challenge: ChallengeMetrics;
   timeline: WeekSnapshot[];
+}
+
+export interface ChallengeCell {
+  started: number;
+  broken: number;
+  finished: number;
+  liveWeeks: number;
+  /** Live weeks in which a rival held a plan against the holder on that same track. */
+  answeredWeeks: number;
+  /** Live weeks in which a rival held a plan against the holder on any track. */
+  leanedOnWeeks?: number;
+}
+
+export interface ChallengeMetrics {
+  player: Record<"influence" | "wealth" | "turf", ChallengeCell>;
+  rival: Record<"influence" | "wealth" | "turf", ChallengeCell>;
+  court: number;
+  petition: number;
+  rivalRaids: number;
+  /** Unanswered live weeks that were a streak's first: the rivals planned before the clock started. */
+  lagWeeks?: number;
+  /** What the other families were doing instead, on the later unanswered weeks. */
+  elsewhere?: Record<string, number>;
+}
+
+function emptyCell(): ChallengeCell {
+  return { started: 0, broken: 0, finished: 0, liveWeeks: 0, answeredWeeks: 0 };
+}
+
+export function emptyChallenge(): ChallengeMetrics {
+  return {
+    player: { influence: emptyCell(), wealth: emptyCell(), turf: emptyCell() },
+    rival: { influence: emptyCell(), wealth: emptyCell(), turf: emptyCell() },
+    court: 0,
+    petition: 0,
+    rivalRaids: 0,
+  };
+}
+
+const CHALLENGE_TRACKS = ["influence", "wealth", "turf"] as const;
+
+function clockOf(state: GameState, family: FamilyName, track: (typeof CHALLENGE_TRACKS)[number]): number {
+  const victory = state.victory;
+  if (family === state.playerFamily) {
+    if (track === "influence") return victory?.influenceLeadTurns ?? 0;
+    if (track === "wealth") return victory?.wealthLeadTurns ?? 0;
+    return victory?.turfLeadTurns ?? 0;
+  }
+  return victory?.rivalLeadTurns?.[family]?.[track] ?? 0;
+}
+
+function noteChallenge(prior: GameState, state: GameState, fresh: { id: string; text: string }[], metrics: ChallengeMetrics) {
+  const player = state.playerFamily;
+  for (const family of ALL_FAMILY_NAMES) {
+    const holder = family === player ? metrics.player : metrics.rival;
+    for (const track of CHALLENGE_TRACKS) {
+      const before = clockOf(prior, family, track);
+      const after = clockOf(state, family, track);
+      const cell = holder[track];
+      if (before === 0 && after >= 1) cell.started++;
+      if (before > 0 && after === 0 && !state.victory.won && !state.victory.lost) cell.broken++;
+      if (after > 0) {
+        cell.liveWeeks++;
+        const answered = ALL_FAMILY_NAMES.some((f) => {
+          const goal = state.aiMinds?.[f]?.goal;
+          return f !== family && goal?.kind === "contain_leader" && goal.target === family && goal.track === track;
+        });
+        const leanedOn = ALL_FAMILY_NAMES.some((f) => {
+          const goal = state.aiMinds?.[f]?.goal;
+          return f !== family && goal?.kind === "contain_leader" && goal.target === family;
+        });
+        if (leanedOn) cell.leanedOnWeeks = (cell.leanedOnWeeks ?? 0) + 1;
+        if (answered) cell.answeredWeeks++;
+        else if (before === 0) metrics.lagWeeks = (metrics.lagWeeks ?? 0) + 1;
+        else {
+          const why = (metrics.elsewhere ??= {});
+          for (const f of ALL_FAMILY_NAMES) {
+            if (f === family || f === player || (state.defunctFamilies ?? []).includes(f)) continue;
+            const goal = state.aiMinds?.[f]?.goal;
+            const key = !goal
+              ? "no plan"
+              : goal.kind !== "contain_leader"
+                ? `${goal.kind}${goal.target === family ? " on the holder" : goal.target === player ? " on the player" : ""}${atPeace(state, f, family) ? " (at peace with the holder)" : ""}`
+                : goal.target === family
+                  ? `contain on ${goal.track ?? "?"} not ${track}`
+                  : "containing someone else";
+            why[key] = (why[key] ?? 0) + 1;
+          }
+        }
+      }
+    }
+  }
+  if (!prior.victory.won && !prior.victory.lost && (state.victory.won || state.victory.lost)) {
+    const winner = state.victory.winner;
+    const reason = state.victory.reason ?? "";
+    const track = /summit|too close|last family|no boss|chair stayed|coffers/i.test(reason)
+      ? null
+      : /richest/i.test(reason)
+        ? "wealth"
+        : /standing/i.test(reason)
+          ? "influence"
+          : /held the city/i.test(reason)
+            ? "turf"
+            : null;
+    if (winner && track) {
+      const holder = winner === player ? metrics.player : metrics.rival;
+      holder[track].finished++;
+    }
+  }
+  for (const line of fresh) {
+    if (line.id.startsWith("ai_court_")) metrics.court++;
+    if (line.id.startsWith("log_commission_petition_")) metrics.petition++;
+    if (line.id.startsWith("log_count_") && player && !line.id.startsWith(`log_count_${player}_`) && line.text.includes("raided the count house")) {
+      metrics.rivalRaids++;
+    }
+  }
+}
+
+export function challengeLive(metrics: ChallengeMetrics | undefined): { live: number; answered: number; leanedOn: number; started: number; broken: number; finished: number } {
+  const rows = metrics ? [...Object.values(metrics.player), ...Object.values(metrics.rival)] : [];
+  return {
+    live: rows.reduce((n, c) => n + c.liveWeeks, 0),
+    answered: rows.reduce((n, c) => n + c.answeredWeeks, 0),
+    leanedOn: rows.reduce((n, c) => n + (c.leanedOnWeeks ?? 0), 0),
+    started: rows.reduce((n, c) => n + c.started, 0),
+    broken: rows.reduce((n, c) => n + c.broken, 0),
+    finished: rows.reduce((n, c) => n + c.finished, 0),
+  };
 }
 
 function finite(n: unknown): boolean {
@@ -316,6 +455,16 @@ function playGame(request: SimRequest): SimResult {
   let peakHeat = state.heat.level;
   let longestQuiet = 0;
   let quietRun = 0;
+  const playerActions = { routes: 0, whisky: 0, bribes: 0, calls: 0, sitdowns: 0, safehouses: 0 };
+  const challenge = emptyChallenge();
+  const countOf = (s: GameState) => ({
+    routes: (s.supplyRoutes ?? []).length,
+    whisky: (s.pendingShipments ?? []).length,
+    bribes: (["cops", "captains", "chiefs", "mayor", "judge"] as const).filter((k) => s.bribes[k].isActive).length,
+    sitdowns: (s.sitdowns ?? []).length,
+    calls: s.commissionHistory?.length ?? 0,
+    safehouses: s.territories.reduce((n, t) => n + t.rackets.filter((r) => r.type === "safehouse" && t.owner === s.playerFamily).length, 0),
+  });
   const timeline: WeekSnapshot[] = [];
   const ownedBy = (s: GameState) =>
     new Set(s.territories.filter((t) => t.owner === s.playerFamily).map((t) => t.id));
@@ -343,14 +492,24 @@ function playGame(request: SimRequest): SimResult {
   try {
     while (!state.victory.won && !state.victory.lost && state.turn <= limit) {
       const held = ownedBy(state);
+      const beforeActs = countOf(state);
       state = autoPlayer(state, rng, request.strategy ?? "balanced");
+      const afterActs = countOf(state);
+      if (afterActs.routes > beforeActs.routes) playerActions.routes++;
+      if (afterActs.whisky > beforeActs.whisky) playerActions.whisky++;
+      if (afterActs.bribes > beforeActs.bribes) playerActions.bribes++;
+      if (afterActs.sitdowns > beforeActs.sitdowns) playerActions.sitdowns++;
+      if (afterActs.calls > beforeActs.calls) playerActions.calls++;
+      if (afterActs.safehouses > beforeActs.safehouses) playerActions.safehouses++;
       const before = state.turnLog.length;
       const prior = state;
       const started = performance.now();
       state = endTurn(state, rng);
       slowest = Math.max(slowest, performance.now() - started);
       const seenIds = new Set(prior.turnLog.map((l) => l.id));
-      recordAiWeek(prior, state, state.turnLog.filter((l) => !seenIds.has(l.id)), ai);
+      const fresh = state.turnLog.filter((l) => !seenIds.has(l.id));
+      recordAiWeek(prior, state, fresh, ai);
+      noteChallenge(prior, state, fresh, challenge);
       hitsTaken += state.incomingHitReel?.length ?? 0;
       const heldAfter = ownedBy(state);
       for (const id of held) if (!heldAfter.has(id)) districtsLost++;
@@ -480,8 +639,63 @@ function playGame(request: SimRequest): SimResult {
     heatCapWeeks,
     peakHeat,
     longestQuiet,
+    playerActions,
+    challenge,
     timeline,
   };
+}
+
+export type WinKind = "wealth" | "standing" | "turf" | "last" | "summit" | "other";
+
+export function winKind(reason: string | undefined): WinKind {
+  const text = reason ?? "";
+  if (/last family/i.test(text)) return "last";
+  if (/summit/i.test(text)) return "summit";
+  if (/richest/i.test(text)) return "wealth";
+  if (/standing/i.test(text)) return "standing";
+  if (/held the city/i.test(text)) return "turf";
+  return "other";
+}
+
+/** Flags a win mix that has collapsed onto one ending, or a system the bot never touched. */
+export function winMixNotes(games: SimResult[]): string[] {
+  const notes: string[] = [];
+  const wins = games.filter((g) => g.outcome === "won");
+  if (wins.length >= 10) {
+    const counts: Record<string, number> = {};
+    for (const g of wins) {
+      const kind = winKind(g.reason);
+      counts[kind] = (counts[kind] ?? 0) + 1;
+    }
+    for (const [kind, n] of Object.entries(counts)) {
+      if (n / wins.length > 0.55) notes.push(`${kind} wins were ${pct(n / wins.length)} of wins`);
+    }
+  }
+  if (games.length >= 10) {
+    const wonKinds = new Set(wins.map((g) => winKind(g.reason)));
+    if (!wonKinds.has("standing")) notes.push("standing streak never won");
+    if (!wonKinds.has("turf")) notes.push("turf streak never won");
+    if (!wonKinds.has("wealth")) notes.push("wealth streak never won");
+  }
+  const normal = games.filter((g) => g.difficulty === "normal");
+  if (normal.length > 0) {
+    const rival = normal.filter((g) => g.outcome === "lost" && /richest family|held the city|city's standing/i.test(g.reason ?? "")).length / normal.length;
+    if (rival > 0.25) notes.push(`rival streaks ended ${pct(rival)} of normal games`);
+  }
+  const anyRival = games.some((g) => g.outcome === "lost" && /richest family|held the city|city's standing/i.test(g.reason ?? ""));
+  if (games.length >= 10 && !anyRival) notes.push("no rival finished a streak");
+  const live = games.reduce((n, g) => n + challengeLive(g.challenge).live, 0);
+  const answered = games.reduce((n, g) => n + challengeLive(g.challenge).answered, 0);
+  if (live >= 8 && answered / live < 0.8) notes.push(`answered share ${pct(answered / live)}`);
+  const started = games.reduce((n, g) => n + challengeLive(g.challenge).started, 0);
+  const broken = games.reduce((n, g) => n + challengeLive(g.challenge).broken, 0);
+  if (games.length >= 10 && started > 0 && broken === 0) notes.push("no streak was ever broken");
+  const systems = ["routes", "whisky", "bribes", "calls", "sitdowns", "safehouses"] as const;
+  for (const key of systems) {
+    const used = games.reduce((n, g) => n + (g.playerActions?.[key] ?? 0), 0);
+    if (used === 0) notes.push(`bot never used ${key}`);
+  }
+  return notes;
 }
 
 export interface SimReport {
@@ -545,6 +759,9 @@ export function balanceNotes(games: SimResult[]): string[] {
   const heatSamples = games.reduce((s, g) => s + g.heatSamples, 0);
   const heat = heatSamples === 0 ? 0 : games.reduce((s, g) => s + g.heatSum, 0) / heatSamples;
   if (heat < 10 || heat > 50) notes.push(`average rival heat ${heat.toFixed(1)}`);
+  const actions = games.reduce((n, g) => n + Object.values(g.ai?.actions ?? {}).reduce((s, row) => s + Object.values(row).reduce((a, b) => a + b, 0), 0), 0);
+  const loud = games.reduce((n, g) => n + (g.ai?.loudWhileHot ?? 0), 0);
+  if (actions >= 40 && loud / actions > 0.08) notes.push(`rivals stayed loud while hot on ${pct(loud / actions)} of actions`);
   const placeBase = games.reduce((s, g) => s + g.placeBase, 0);
   const placeShare = placeBase === 0 ? 0 : games.reduce((s, g) => s + g.placeExtra, 0) / (placeBase + games.reduce((s, g) => s + g.placeExtra, 0));
   if (placeShare < 0.05 || placeShare > 0.2) notes.push(`placement bonus was ${pct(placeShare)} of racket income`);

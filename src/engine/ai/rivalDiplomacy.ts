@@ -75,6 +75,17 @@ function pactLog(state: GameState, pact: Pick<RivalPact, "a" | "b">, id: string,
   };
 }
 
+export function signRivalPact(
+  state: GameState,
+  a: FamilyName,
+  b: FamilyName,
+  kind: RivalPactKind,
+  weeks: number,
+  target?: FamilyName,
+): { state: GameState; log: TurnLogEntry } {
+  return sign(state, a, b, kind, weeks, target);
+}
+
 function sign(
   state: GameState,
   a: FamilyName,

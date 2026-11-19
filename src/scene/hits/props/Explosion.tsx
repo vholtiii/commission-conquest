@@ -1,6 +1,7 @@
 import { useMemo, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
+import { readReel, useInReel } from "../reelClock";
 
 interface Props {
   active: boolean;
@@ -19,6 +20,7 @@ export default function Explosion({ active, at, secondary = false }: Props) {
   const bits = useRef<THREE.InstancedMesh>(null);
   const start = useRef<number | null>(null);
   const dummy = useMemo(() => new THREE.Object3D(), []);
+  const inReel = useInReel();
   const seeds = useMemo(
     () =>
       Array.from({ length: DEBRIS }, (_, i) => ({
@@ -30,6 +32,7 @@ export default function Explosion({ active, at, secondary = false }: Props) {
   );
 
   useFrame(({ clock }) => {
+    const now = inReel ? (readReel()?.time ?? clock.elapsedTime) : clock.elapsedTime;
     if (!active) {
       start.current = null;
       if (ball.current) ball.current.visible = false;
@@ -38,8 +41,8 @@ export default function Explosion({ active, at, secondary = false }: Props) {
       if (bits.current) bits.current.visible = false;
       return;
     }
-    if (start.current === null) start.current = clock.elapsedTime;
-    const t = Math.min(1, (clock.elapsedTime - start.current) / 1.3);
+    if (start.current === null) start.current = now;
+    const t = Math.min(1, (now - start.current) / 1.3);
     const scale = secondary ? 1.35 : 1;
     if (ball.current) {
       ball.current.visible = t < 0.85;

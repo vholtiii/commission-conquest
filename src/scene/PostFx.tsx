@@ -1,8 +1,9 @@
-import { useLayoutEffect, useMemo } from "react";
+import { useLayoutEffect, useMemo, useRef } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import {
   BlendFunction,
   BloomEffect,
+  DepthOfFieldEffect,
   EffectComposer,
   EffectPass,
   NoiseEffect,
@@ -14,6 +15,7 @@ import {
   VignetteEffect,
   type Effect,
 } from "postprocessing";
+import { reelFocus } from "./hits/reelFocus";
 import { N8AOPostPass } from "n8ao";
 import { HalfFloatType } from "three";
 import type { GraphicsTier } from "./sceneTheme";
@@ -59,6 +61,8 @@ export default function PostFx({ tier }: { tier: GraphicsTier }) {
       next.addPass(ao);
     }
 
+    let dof: DepthOfFieldEffect | null = null;
+    let dofPass: EffectPass | null = null;
     if (tier !== "low") {
       next.addPass(
         new EffectPass(
@@ -71,6 +75,16 @@ export default function PostFx({ tier }: { tier: GraphicsTier }) {
           }),
         ),
       );
+      // Compiled on the first frame (bokeh at 0), then only while a reel names a focus.
+      dof = new DepthOfFieldEffect(camera, {
+        focusDistance: 8,
+        focusRange: 3,
+        bokehScale: 0,
+        resolutionScale: tier === "high" ? 0.5 : 0.35,
+      });
+      dof.target = null;
+      dofPass = new EffectPass(camera, dof);
+      next.addPass(dofPass);
     }
 
     const finals: Effect[] = [];
@@ -85,7 +99,7 @@ export default function PostFx({ tier }: { tier: GraphicsTier }) {
       new ToneMappingEffect({ mode: ToneMappingMode.ACES_FILMIC }),
     );
     next.addPass(new EffectPass(camera, ...finals));
-    return { next, autoClear };
+    return { next, autoClear, dof, dofPass };
   }, [gl, scene, camera, tier]);
 
   useLayoutEffect(() => {
@@ -102,7 +116,24 @@ export default function PostFx({ tier }: { tier: GraphicsTier }) {
     };
   }, [composer, gl]);
 
+  const dofWarmed = useRef(false);
+
   useFrame((_, delta) => {
+    const dof = composer.dof;
+    const pass = composer.dofPass;
+    if (dof && pass) {
+      const on = reelFocus.active;
+      // One frame at zero bokeh compiles the pass before a reel needs it.
+      if (!dofWarmed.current) {
+        pass.enabled = true;
+        dof.bokehScale = 0;
+        dofWarmed.current = true;
+      } else {
+        pass.enabled = on;
+        dof.bokehScale = on ? 2.6 : 0;
+        dof.target = on ? reelFocus.point : null;
+      }
+    }
     composer.next.render(delta);
   }, 1);
 

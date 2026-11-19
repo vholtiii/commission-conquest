@@ -3,6 +3,7 @@ import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import { type SedanSpec } from "@/scene/Sedan";
 import { ReelSedan } from "@/scene/ReelSedan";
+import { readReel, useInReel } from "../reelClock";
 
 interface LightsProps {
   active: boolean;
@@ -13,13 +14,17 @@ interface LightsProps {
 export function PoliceLights({ active, at }: LightsProps) {
   const a = useRef<THREE.PointLight>(null);
   const b = useRef<THREE.PointLight>(null);
+  const inReel = useInReel();
 
   useFrame(({ clock }) => {
     if (!a.current || !b.current) return;
-    a.current.visible = active;
-    b.current.visible = active;
-    if (!active) return;
-    const blink = Math.sin(clock.elapsedTime * 18) > 0;
+    if (!active) {
+      a.current.intensity = 0;
+      b.current.intensity = 0;
+      return;
+    }
+    const now = inReel ? (readReel()?.time ?? clock.elapsedTime) : clock.elapsedTime;
+    const blink = Math.sin(now * 18) > 0;
     a.current.intensity = blink ? 4 : 0.15;
     b.current.intensity = blink ? 0.15 : 4;
   });
@@ -39,14 +44,15 @@ interface WagonProps {
   rot: number;
 }
 
-/** Dark wagon with a roof lamp, pulled across the escape lane. */
+/** Dark wagon with a roof lamp, pulled across the escape lane. Stays mounted so its shaders are warm before it rolls in. */
 export function PaddyWagon({ active, x, z, rot }: WagonProps) {
-  if (!active) return null;
   const car: SedanSpec = { x, z, rot, color: "#14233f", accent: "#8a1a1a", lamps: true, scale: 1.05 };
   return (
     <group>
-      <ReelSedan cars={[car]} />
-      <PoliceLights active at={[x, 0.4, z]} />
+      <group visible={active}>
+        <ReelSedan cars={[car]} attitude={false} />
+      </group>
+      <PoliceLights active={active} at={[x, 0.4, z]} />
     </group>
   );
 }

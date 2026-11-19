@@ -1,8 +1,10 @@
-import { useEffect, useMemo, useRef, type Ref } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, type Ref } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import { useGameStore } from "@/engine/store";
-import { blendRate, restJoints, targetPose, type Joints, type PoseKind } from "./figure/poses";
+import { dampAngle } from "./hits/cameraRig";
+import { readReel, useInReel } from "./hits/reelClock";
+import { restJoints, targetPose, type Joints, type PoseKind } from "./figure/poses";
 
 export type PersonPose = "stand" | "walk" | "crouch" | "down" | "run" | "aim" | "talk" | "sit" | "handshake" | "getIn";
 export type PersonRole = "boss" | "soldier" | "associate";
@@ -25,6 +27,10 @@ interface Props {
   lookAt?: THREE.Vector3 | [number, number, number];
   /** Recoil while aiming. */
   firing?: boolean;
+  /** Shots in the burst. The kick matches the muzzle flash that uses the same count. */
+  shots?: number;
+  /** World point the shot came from, so the fall goes away from it. */
+  hitFrom?: THREE.Vector3 | [number, number, number];
   /** Same seed, same face, coat shade and habits. */
   seed?: number;
   /** Tip of the barrel, for muzzle flashes. */
@@ -148,6 +154,20 @@ function poseKind(pose: PersonPose, moving: boolean): PoseKind {
   return "idle";
 }
 
+function transitionSeconds(from: PoseKind, to: PoseKind): number {
+  if (to === "down") return 0.22;
+  if (to === "aim" || from === "aim") return 0.32;
+  if (to === "run" || from === "run") return 0.22;
+  if (to === "walk" || from === "walk") return 0.3;
+  if (to === "crouch" || to === "sit" || to === "getIn") return 0.42;
+  return 0.35;
+}
+
+function easeBlend(k: number): number {
+  const c = Math.min(1, Math.max(0, k));
+  return c * c * (3 - 2 * c);
+}
+
 const HIP = 0.5;
 const HAT_REST = 1.02;
 
@@ -163,9 +183,12 @@ export default function Person({
   role = "soldier",
   lookAt,
   firing = false,
+  shots = 5,
+  hitFrom,
   seed,
   muzzleRef,
 }: Props) {
+  const inReel = useInReel();
   const low = useGameStore((s) => s.settings.graphics === "low");
   const g = geos(low);
   const boss = role === "boss";
@@ -221,15 +244,40 @@ export default function Person({
 
   const joints = useRef<Joints>(restJoints());
   const target = useRef<Joints>(restJoints());
+  const fromPose = useRef<Joints>(restJoints());
   const hitAt = useRef<number | null>(null);
   const bornDown = useRef(pose === "down");
   const hatDrop = useRef(pose === "down" ? 1 : 0);
+  const prevKind = useRef<PoseKind>(poseKind(pose, moving));
+  const blend = useRef(1);
+  const blendDur = useRef(0.3);
+  const stride = useRef(0);
+  const fireAt = useRef<number | null>(null);
+  const ground = useRef(new THREE.Vector3());
+  const grounded = useRef(false);
   const tmp = useMemo(() => new THREE.Vector3(), []);
+  const hitPoint = useMemo(() => new THREE.Vector3(), []);
+
+  useLayoutEffect(() => {
+    if (root.current) root.current.rotation.y = rot;
+    // Later turns are damped in the frame loop, so a new facing doesn't snap.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useFrame(({ clock }, delta) => {
-    const dt = Math.min(0.05, delta);
-    const t = clock.elapsedTime;
+    const reel = inReel ? readReel() : null;
+    const dt = Math.min(0.05, reel?.dt ?? delta);
+    const t = reel?.time ?? clock.elapsedTime;
     const kind = poseKind(pose, moving);
+    if (kind !== prevKind.current) {
+      Object.assign(fromPose.current, joints.current);
+      blendDur.current = transitionSeconds(prevKind.current, kind);
+      blend.current = 0;
+      prevKind.current = kind;
+    }
+    blend.current = Math.min(1, blend.current + dt / blendDur.current);
+    const blendK = easeBlend(blend.current);
+
     if (kind === "down" && hitAt.current === null) hitAt.current = bornDown.current ? t - 2 : t;
     if (kind !== "down") {
       hitAt.current = null;
@@ -237,9 +285,49 @@ export default function Person({
     }
     const since = hitAt.current === null ? 0 : t - hitAt.current;
 
+    if (firing) {
+      if (fireAt.current === null) fireAt.current = t;
+    } else fireAt.current = null;
+    const sinceFire = fireAt.current === null ? 0 : t - fireAt.current;
+
+    let moved = 0;
+    if (root.current) {
+      root.current.getWorldPosition(tmp);
+      if (grounded.current) moved = Math.hypot(tmp.x - ground.current.x, tmp.z - ground.current.z);
+      ground.current.copy(tmp);
+      grounded.current = true;
+    }
+    if (kind === "walk" || kind === "run") {
+      const cycle = kind === "run" ? 0.85 : 1.15;
+      const fallback = moving && moved < 0.002 ? (kind === "run" ? 3.2 : 1.3) * dt : 0;
+      stride.current += ((moved + fallback) / cycle) * Math.PI * 2;
+    }
+
+    let hitYaw = 0;
+    if (hitFrom && root.current && kind === "down") {
+      if (Array.isArray(hitFrom)) hitPoint.set(hitFrom[0], hitFrom[1], hitFrom[2]);
+      else hitPoint.copy(hitFrom);
+      root.current.updateWorldMatrix(true, false);
+      root.current.worldToLocal(hitPoint);
+      hitYaw = Math.atan2(hitPoint.x, hitPoint.z);
+    }
+
     const tg = targetPose(
       kind,
-      { t, gait: look.gait, seed: look.habit, armed: !!armed, since, firing },
+      {
+        t,
+        gait: look.gait,
+        seed: look.habit,
+        armed: !!armed,
+        since,
+        firing,
+        blend: blendK,
+        stride: stride.current,
+        shots,
+        sinceFire,
+        hitYaw,
+        fallRate: 0.8 + look.habit * 0.45,
+      },
       target.current,
     );
 
@@ -262,16 +350,21 @@ export default function Person({
     }
 
     const j = joints.current;
-    const rate = blendRate(kind);
     if (bornDown.current && kind === "down" && since > 1.9) {
       Object.assign(j, tg);
       bornDown.current = false;
-    } else {
+      blend.current = 1;
+    } else if (blend.current < 1) {
+      const from = fromPose.current;
       for (const k in tg) {
         const key = k as keyof Joints;
-        j[key] = THREE.MathUtils.damp(j[key], tg[key], rate, dt);
+        j[key] = from[key] + (tg[key] - from[key]) * blendK;
       }
+    } else {
+      Object.assign(j, tg);
     }
+
+    if (root.current) root.current.rotation.y = dampAngle(root.current.rotation.y, rot, dt, kind === "run" ? 14 : 9);
 
     if (fall.current) {
       fall.current.position.set(0, HIP - j.fallDrop, -j.fallBack);
@@ -310,7 +403,7 @@ export default function Person({
   const width = boss ? 1.14 : 1;
 
   return (
-    <group ref={root} position={position} rotation={[0, rot, 0]} scale={look.scale}>
+    <group ref={root} position={position} scale={look.scale}>
       <group ref={fall} position={[0, HIP, 0]}>
         <group position={[0, -HIP, 0]}>
           <group ref={hips} position={[0, HIP, 0]}>

@@ -8,7 +8,9 @@ import Goon from "./props/Goon";
 import MuzzleFlash from "./props/MuzzleFlash";
 import GlassShards from "./props/GlassShards";
 import { PaddyWagon, PoliceLights } from "./props/PoliceLights";
-import { bodyThenPull, ease, executionShot, frameLerp, kerbShot, reelSide, trackShot, twoShot } from "./cameraRig";
+import { bodyThenPull, ease, executionShot, FOV, frameLerp, kerbShot, reelSide, trackShot, twoShot } from "./cameraRig";
+import { playShots, type DirectedShot } from "./director";
+import { BETRAYAL } from "./shotlists";
 import { useReelCamera } from "./useReelCamera";
 import Headlamps from "./props/Headlamps";
 import Blood from "./props/Blood";
@@ -81,33 +83,122 @@ export default function SitdownBetrayalCinematic({ cinematic, site, phase, local
     }
 
     const side = reelSide(cinematic.operationId);
+    const range = BETRAYAL[ph] ?? BETRAYAL.walk_out;
+    const shots: DirectedShot[] = [];
+    const hands = () => twoShot(tmp.at, stage.mark, side, { height: 1.25, margin: 1.5 });
     if (ph === "arrive") {
-      cam.frame(ph, kerbShot(stage.meet, site.facing, tmp.at, side), { k: 0.15, dt, coverage: "wide", follow: true });
-    } else if (ph === "table") {
-      cam.frame(ph, twoShot(tmp.at, stage.mark, side, { height: 1.4, push: lc * 0.3 }), {
-        k: 0.12,
-        dt,
-        coverage: "medium",
-        handheld: 0.01,
+      const [kerb] = range;
+      shots.push({
+        id: kerb!.id,
+        start: kerb!.start,
+        end: kerb!.end,
+        frame: () => kerbShot(stage.meet, site.facing, tmp.at, side),
+        move: "dollyIn",
+        fov: [FOV.establish, FOV.medium],
+        follow: true,
+        k: 0.2,
       });
-    } else if (ph === "handshake" && (lc < SHAKE_END || !fires)) {
-      cam.frame("shake-hands", twoShot(tmp.at, stage.mark, side, { height: 1.2, margin: 1.4, push: 0.2 }), {
-        k: 0.3,
-        dt,
-        coverage: "close",
+    } else if (ph === "table") {
+      const [push] = range;
+      shots.push({
+        id: push!.id,
+        start: push!.start,
+        end: push!.end,
+        frame: () => twoShot(tmp.at, stage.mark, side, { height: 1.35, push: lc * 0.22 }),
+        move: "push",
+        fov: [FOV.wide, FOV.close],
+        handheld: 0.01,
+        k: 0.16,
+        subjects: () => [tmp.at, stage.mark],
+      });
+    } else if (ph === "handshake" && !fires) {
+      const [close] = range;
+      shots.push({
+        id: close!.id,
+        start: 0,
+        end: 1,
+        frame: hands,
+        move: "dollyIn",
+        fov: [FOV.medium, FOV.close],
+        k: 0.24,
       });
     } else if (ph === "handshake") {
-      cam.frame(ph, executionShot(stage.mark, tmp.at, side), { k: 0.5, dt, coverage: "close", cut: true });
-      shake.current = Math.max(shake.current, shatters ? 0.12 : 0.04);
+      const [close, punch, hold] = range;
+      shots.push({
+        id: close!.id,
+        start: close!.start,
+        end: close!.end,
+        frame: hands,
+        move: "dollyIn",
+        fov: [FOV.medium, FOV.close],
+        k: 0.28,
+      });
+      shots.push({
+        id: punch!.id,
+        start: punch!.start,
+        end: punch!.end,
+        frame: () => executionShot(stage.mark, tmp.at, side),
+        move: "static",
+        fov: [FOV.close, FOV.close],
+        punch: { at: 0.08, fov: FOV.punch },
+        transition: "cut",
+        k: 0.45,
+        handheld: 0.016,
+      });
+      shots.push({
+        id: hold!.id,
+        start: hold!.start,
+        end: hold!.end,
+        frame: () => executionShot(stage.mark, tmp.at, side),
+        move: "dollyOut",
+        fov: [FOV.close, FOV.medium],
+        k: 0.2,
+      });
+      if (lc >= SHAKE_END) shake.current = Math.max(shake.current, shatters ? 0.12 : 0.04);
     } else if (killed) {
-      cam.frame(ph, bodyThenPull(stage.mark, site.facing, lc, { drift: progress, side }), {
-        k: 0.3,
-        dt,
-        coverage: lc < 0.6 ? "body" : "pull",
+      const [body, pull] = range;
+      shots.push({
+        id: body!.id,
+        start: body!.start,
+        end: body!.end,
+        frame: () => bodyThenPull(stage.mark, site.facing, Math.min(0.55, lc), { drift: progress, side }),
+        move: "static",
+        fov: [FOV.body, FOV.body],
+        k: 0.26,
+      });
+      shots.push({
+        id: pull!.id,
+        start: pull!.start,
+        end: pull!.end,
+        frame: () => bodyThenPull(stage.mark, site.facing, lc, { drift: progress, side }),
+        move: "crane",
+        fov: [FOV.body, FOV.pull],
+        k: 0.16,
       });
     } else {
-      cam.frame(ph, trackShot(tmp.at, site.facing, side, { back: 4, height: 2.4 }), { k: 0.12, dt, coverage: "pull", follow: true });
+      const [body, pull] = range;
+      shots.push({
+        id: body!.id,
+        start: body!.start,
+        end: body!.end,
+        frame: () => trackShot(tmp.at, site.facing, side, { back: 3.6, height: 1.6 }),
+        move: "track",
+        fov: [FOV.medium, FOV.wide],
+        follow: true,
+        k: 0.18,
+      });
+      shots.push({
+        id: pull!.id,
+        start: pull!.start,
+        end: pull!.end,
+        frame: () => trackShot(tmp.at, site.facing, side, { back: 5, height: 2.6 }),
+        move: "crane",
+        fov: [FOV.wide, FOV.pull],
+        follow: true,
+        k: 0.14,
+      });
     }
+    playShots(cam, shots, lc, dt);
   });
 
   const negotiatorPose =
@@ -130,9 +221,9 @@ export default function SitdownBetrayalCinematic({ cinematic, site, phase, local
   return (
     <group>
       <ReelSedan cars={cars} />
-      <Headlamps cars={cars.filter((car) => car.lamps).map((car) => ({ x: car.x, z: car.z, rot: car.rot }))} />
+      <Headlamps cars={cars.map((car) => ({ x: car.x, z: car.z, rot: car.rot }))} lit={phase === "arrive"} />
       <pointLight position={[door.x, 1.3, door.z]} color="#ffb060" intensity={glow * 2.2} distance={6} />
-      {phase !== "arrive" && (
+      <group visible={phase !== "arrive"}>
         <Goon
           position={[door.x + 0.55, 0, door.z + 0.1]}
           rot={site.facing + Math.PI}
@@ -141,7 +232,7 @@ export default function SitdownBetrayalCinematic({ cinematic, site, phase, local
           role="associate"
           color="#2a2420"
         />
-      )}
+      </group>
       <Blood active={killed && markPose === "down"} at={[stage.mark.x, 0, stage.mark.z]} facing={site.facing} />
       <mesh position={[site.building.x, 1.15, site.building.z]}>
         <boxGeometry args={[0.7, 0.45, 0.08]} />
@@ -154,6 +245,7 @@ export default function SitdownBetrayalCinematic({ cinematic, site, phase, local
           moving={phase === "arrive" || phase === "walk_out"}
           gun={drawn}
           firing={drawn}
+          shots={shatters ? 3 : 1}
           lookAt={phase === "table" || phase === "handshake" ? stage.markHead : undefined}
           muzzleRef={barrel}
           seed={211}
@@ -161,32 +253,33 @@ export default function SitdownBetrayalCinematic({ cinematic, site, phase, local
           color={paint(cinematic.attackerFamily)}
         />
       </group>
-      {phase !== "arrive" && !markLeaves && (
+      <group visible={phase !== "arrive" && !markLeaves}>
         <Goon
           position={[stage.mark.x, 0, stage.mark.z]}
           rot={site.facing}
           pose={markPose}
+          hitFrom={markPose === "down" ? tmp.at : undefined}
           lookAt={markPose === "down" ? undefined : tmp.head}
           seed={53}
           role="boss"
           color={paint(cinematic.targetFamily)}
         />
-      )}
-      {markLeaves && (
-        <group ref={leaverRef} position={[door.x, 0, door.z]}>
-          <Goon position={[0, 0, 0]} rot={site.facing} pose="walk" moving seed={53} role="boss" color={paint(cinematic.targetFamily)} />
+      </group>
+      <group ref={leaverRef} visible={markLeaves} position={[door.x, 0, door.z]}>
+        <Goon position={[0, 0, 0]} rot={site.facing} pose="walk" moving seed={53} role="boss" color={paint(cinematic.targetFamily)} />
+      </group>
+      {(c === "witness" || c === "kitchen_backup") && !witnessed && (
+        <group visible={phase !== "arrive"}>
+          <Goon
+            position={[door.x + 0.7, 0, door.z - 0.2]}
+            rot={site.facing + Math.PI}
+            pose={drawn ? "aim" : "stand"}
+            lookAt={tmp.head}
+            gun
+            role="soldier"
+            color="#3f1a1e"
+          />
         </group>
-      )}
-      {(c === "witness" || c === "kitchen_backup") && !witnessed && phase !== "arrive" && (
-        <Goon
-          position={[door.x + 0.7, 0, door.z - 0.2]}
-          rot={site.facing + Math.PI}
-          pose={drawn ? "aim" : "stand"}
-          lookAt={tmp.head}
-          gun
-          role="soldier"
-          color="#3f1a1e"
-        />
       )}
       <MuzzleFlash
         active={drawn}

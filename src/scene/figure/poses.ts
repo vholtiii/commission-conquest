@@ -43,12 +43,24 @@ export interface PoseContext {
   t: number;
   /** Per-figure phase offset so a crowd does not move in step. */
   gait: number;
-  /** 0-1 per figure, for idle habits. */
+  /** 0-1 per figure, for idle habits and which way he falls. */
   seed: number;
   armed: boolean;
   /** Seconds since the shot, for `down`. */
   since: number;
   firing: boolean;
+  /** 0–1 blend into this pose. Aim uses it as the draw. */
+  blend: number;
+  /** Radians of the stride, advanced by how far the feet actually travelled. */
+  stride: number;
+  /** Shots in the burst, so the kick lands on the same beats as the muzzle flash. */
+  shots: number;
+  /** Seconds since the burst started. */
+  sinceFire: number;
+  /** Yaw of the shot in the figure's frame. */
+  hitYaw: number;
+  /** Multiplier on the fall, so not every man drops at the same speed. */
+  fallRate: number;
 }
 
 export function restJoints(): Joints {
@@ -64,7 +76,9 @@ function smooth(v: number, a: number, b: number): number {
 
 function idle(j: Joints, c: PoseContext): void {
   const { t, seed } = c;
-  j.spineX = 0.02 * Math.sin(t * 1.6 + seed * 6) + 0.03;
+  // A little overshoot as he settles into standing, then it dies out.
+  const over = c.blend < 1 ? Math.sin(c.blend * Math.PI) * (1 - c.blend) * 0.08 : 0;
+  j.spineX = 0.02 * Math.sin(t * 1.6 + seed * 6) + 0.03 + over;
   j.hipZ = 0.035 * Math.sin(t * 0.45 + seed * 10);
   j.lThighZ = -j.hipZ;
   j.rThighZ = -j.hipZ;
@@ -74,8 +88,8 @@ function idle(j: Joints, c: PoseContext): void {
   j.rKnee = 0.06 + Math.max(0, -j.hipZ) * 2;
   j.lShoulderX = 0.02;
   j.rShoulderX = 0.02;
-  j.lShoulderZ = -0.09;
-  j.rShoulderZ = 0.09;
+  j.lShoulderZ = -0.09 - over;
+  j.rShoulderZ = 0.09 + over;
   j.lElbow = -0.18;
   j.rElbow = -0.18;
   // Now and then he looks down the street.
@@ -85,7 +99,7 @@ function idle(j: Joints, c: PoseContext): void {
 }
 
 function stride(j: Joints, c: PoseContext, run: boolean): void {
-  const f = c.t * (run ? 12.5 : 7.4) + c.gait;
+  const f = c.stride + c.gait;
   const s = Math.sin(f);
   const co = Math.cos(f);
   const thigh = run ? 0.85 : 0.48;
@@ -134,16 +148,22 @@ function aim(j: Joints, c: PoseContext): void {
   j.lKnee = 0.18;
   j.rKnee = 0.12;
   j.hipZ = 0.02;
-  j.spineX = 0.06;
-  const kick = c.firing ? 0.1 * Math.max(0, Math.sin(c.t * 34)) : 0;
-  j.rShoulderX = -1.5 - kick;
+  // The gun comes up off the hip, then settles a hair past the aim and back.
+  const draw = smooth(c.blend, 0, 0.62);
+  const settle = c.blend < 1 ? Math.sin(smooth(c.blend, 0.55, 1) * Math.PI) * (1 - c.blend) * 0.08 : 0;
+  const interval = 0.9 / Math.max(1, c.shots || 1);
+  const slot = c.firing ? (c.sinceFire % interval) / interval : 1;
+  const kick = c.firing && slot < 0.18 ? 1 - slot / 0.18 : 0;
+  j.spineX = 0.06 * draw - kick * 0.08;
+  j.spineZ = kick * 0.05;
+  j.rShoulderX = -0.35 + (-1.15 - settle) * draw - kick * 0.16;
   j.rShoulderZ = 0.08;
-  j.rElbow = -0.06 + kick * 0.5;
-  // Support hand under the grip.
-  j.lShoulderX = -1.28 - kick;
-  j.lShoulderZ = 0.55;
-  j.lElbow = -0.55;
-  j.neckX = 0.05;
+  j.rElbow = -0.85 + 0.79 * draw + kick * 0.14;
+  // Support hand comes in under the grip as the gun rises.
+  j.lShoulderX = -0.2 + (-1.08 - settle * 0.5) * draw - kick * 0.1;
+  j.lShoulderZ = 0.12 + 0.43 * draw;
+  j.lElbow = -0.3 - 0.25 * draw;
+  j.neckX = 0.05 * draw;
 }
 
 function talk(j: Joints, c: PoseContext): void {
@@ -197,31 +217,39 @@ function getIn(j: Joints): void {
   j.tail = 0.25;
 }
 
-/** The shot snaps him back, the knees go, then he lies on his back. */
+/** The shot snaps him back, the knees go, then he lies on his back. Seed picks the fall. */
 function down(j: Joints, c: PoseContext): void {
-  const impact = smooth(c.since, 0, 0.18);
-  const knees = smooth(c.since, 0.18, 0.55);
-  const flat = smooth(c.since, 0.45, 1.05);
+  const rate = c.fallRate > 0 ? c.fallRate : 1;
+  const since = c.since * rate;
+  const style = Math.floor(c.seed * 3) % 3;
+  const kneesFirst = style === 2;
+  const spin = style === 1;
+  const impact = smooth(since, 0, kneesFirst ? 0.28 : 0.16);
+  const knees = smooth(since, kneesFirst ? 0.02 : 0.16, kneesFirst ? 0.4 : 0.52);
+  const flat = smooth(since, spin ? 0.32 : 0.42, spin ? 1.2 : 1.05);
   const buckle = knees * (1 - flat);
+  const stagger = style === 0 ? smooth(since, 0.02, 0.22) * (1 - knees) : 0;
+  const twist = spin ? 1 - flat : 0;
   j.spineX = -0.45 * impact * (1 - flat);
-  j.spineZ = Math.sin(c.since * 26) * 0.18 * impact * (1 - knees);
+  j.spineY = twist * since * 1.7 + Math.sin(c.hitYaw) * 0.2 * flat;
+  j.spineZ = Math.sin(since * 26) * 0.18 * impact * (1 - knees) + Math.sin(c.hitYaw) * 0.22 * impact;
   j.neckX = -0.4 * impact * (1 - flat) + 0.25 * flat;
-  j.neckY = 0.45 * flat;
+  j.neckY = 0.45 * flat + twist * 0.4;
   j.lShoulderX = -2.0 * impact * (1 - flat) - 0.3 * flat;
   j.rShoulderX = -1.6 * impact * (1 - flat) - 0.15 * flat;
   j.lShoulderZ = -1.25 * flat;
   j.rShoulderZ = 0.9 * flat;
   j.lElbow = -0.5 * impact * (1 - flat) - 0.3 * flat;
   j.rElbow = -0.3 * impact * (1 - flat) - 0.6 * flat;
-  j.lThigh = -0.7 * buckle + 0.1 * flat;
-  j.rThigh = -0.55 * buckle - 0.25 * flat;
+  j.lThigh = -0.7 * buckle + 0.4 * stagger + 0.1 * flat;
+  j.rThigh = -0.2 * stagger - 0.55 * buckle - 0.25 * flat;
   j.lKnee = 1.3 * buckle + 0.08 * flat;
   j.rKnee = 1.2 * buckle + 0.45 * flat;
-  j.rThighZ = 0.15 * flat;
+  j.rThighZ = 0.15 * flat + Math.sin(c.hitYaw) * 0.1 * flat;
   j.hipY = -0.24 * buckle;
-  j.fallPitch = -1.5 * flat;
+  j.fallPitch = -1.5 * flat * (spin ? 0.8 : 1);
   j.fallDrop = 0.42 * flat;
-  j.fallBack = 0.14 * impact;
+  j.fallBack = 0.1 * impact + Math.cos(c.hitYaw) * 0.14 * flat;
 }
 
 export function targetPose(kind: PoseKind, c: PoseContext, out: Joints): Joints {

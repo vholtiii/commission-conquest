@@ -21,12 +21,14 @@ import { makeDeal, truceBetween } from "./deals";
 import { bossIsJailed, livingBoss } from "./jail";
 import { isDefunct } from "./defection";
 import { familyWealth } from "./victory";
+import { signRivalPact } from "./ai/rivalDiplomacy";
 import { getActiveCrew } from "./crew";
 import { bringCrewOnHit, commitHitCrew, planHit } from "./hitOps";
 import { pickMessageTarget } from "./rivalAI";
 import { resolveCrewTerritoryId } from "./crewLocation";
 import { withCooldown } from "./diplomacy";
 import { cadence } from "./tempo";
+import { seatVotes, seatsHeld } from "./boroughSeats";
 
 export const COMMISSION_INFLUENCE = 25;
 export const COMMISSION_COOLDOWN = 8;
@@ -35,11 +37,19 @@ export const LOBBY_INFLUENCE = 5;
 export const MESSAGE_BASE = 0.35;
 export const MESSAGE_REFUSAL_STEP = 0.15;
 export const SANCTION_WEEKS = 4;
+/** Standing the loser of a ruling or a tax pays. */
+export const RULING_STANDING = 8;
+/** Standing a family pays for refusing the table, on top of a sanction. */
+export const DEFIANCE_STANDING = 12;
 const REFUSAL_RELATION = -10;
 /** How long the table remembers a ruling being ignored. */
 export const DEFIANCE_WINDOW = 12;
 /** Relation every other living family drops to when the table goes to war. */
 const WAR_RELATION = -70;
+/** Relation the player's seat gains with the side it backs, and loses with the other. */
+const PLEDGE_RELATION = 8;
+/** Share of a rival's treasury a tax ruling takes at once. */
+const RIVAL_TAX_SHARE = 0.2;
 /** Already this bad, and a war ask is refused. */
 const ALREADY_AT_WAR = -60;
 /** No case against them: every seat leans this much against a truce or a tax. */
@@ -106,6 +116,15 @@ const VOTE_LINES: Record<string, { for: string; against: string; abstain: string
     abstain: "We'll see who comes out of it standing.",
   },
 };
+
+function dockStanding(state: GameState, family: FamilyName, amount: number): GameState {
+  if (amount <= 0) return state;
+  if (family === state.playerFamily) return { ...state, influence: Math.max(0, state.influence - amount) };
+  return {
+    ...state,
+    rivalInfluence: { ...state.rivalInfluence, [family]: Math.max(0, (state.rivalInfluence?.[family] ?? 0) - amount) },
+  };
+}
 
 function standing(state: GameState, family: FamilyName): number {
   return family === state.playerFamily ? state.influence : (state.rivalInfluence?.[family] ?? 0);
@@ -229,13 +248,18 @@ export function defiances(state: GameState, family: FamilyName): CommissionRulin
   );
 }
 
+/** The accused has actually given the caller something to bring to the table. */
+export function caseAgainst(state: GameState, caller: FamilyName, target: FamilyName): boolean {
+  if (caller === state.playerFamily && state.vendettas.includes(target)) return true;
+  if (getRelation(state.relations, caller, target) <= -30) return true;
+  return recentHits(state, target, caller) > 0;
+}
+
 /** The accused has actually given the player something to bring to the table. */
 export function hasCase(state: GameState, target: FamilyName): boolean {
   const player = state.playerFamily;
   if (!player) return false;
-  if (state.vendettas.includes(target)) return true;
-  if (getRelation(state.relations, player, target) <= -30) return true;
-  return recentHits(state, target, player) > 0;
+  return caseAgainst(state, player, target);
 }
 
 function eligibleSeats(state: GameState, caller: FamilyName, accused: FamilyName): FamilyName[] {
@@ -262,22 +286,28 @@ export function taxBlock(state: GameState, family: FamilyName) {
 export function previewSeats(state: GameState, kind: CommissionCallKind, target: FamilyName): SeatVote[] {
   const player = state.playerFamily;
   if (!player) return [];
+  return askSeats(state, kind, player, target);
+}
+
+/** The opening leans on any family's ask. The player and a rival are weighed the same way. */
+export function askSeats(state: GameState, kind: CommissionCallKind, caller: FamilyName, target: FamilyName): SeatVote[] {
   const ignored = kind === "war" ? defiances(state, target) : [];
   const slighted = new Set(ignored.flatMap((r) => r.forRuling));
-  const frivolous = kind !== "war" && !hasCase(state, target);
-  return eligibleSeats(state, player, target).map((family) => {
-    let lean = seatLean(state, family, player, target);
+  const frivolous = kind !== "war" && !caseAgainst(state, caller, target);
+  return eligibleSeats(state, caller, target).map((family) => {
+    let lean = seatLean(state, family, caller, target);
     if (kind === "war") {
       lean += ignored.length === 0 ? WAR_UNPROVOKED_LEAN : 0.15 * ignored.length + (slighted.has(family) ? 0.15 : 0);
     } else {
       if (frivolous) lean += FRIVOLOUS_LEAN;
       if (kind === "tax") {
-        lean -= TAX_GREED_LEAN;
+        lean += TAX_GREED_LEAN;
         const personality = getFamilyDef(family).personality;
-        if (personality === "economic" || personality === "smuggler") lean -= TAX_MERCHANT_LEAN;
+        if (personality === "economic" || personality === "smuggler") lean += TAX_MERCHANT_LEAN;
       }
     }
-    return { family, lean };
+    const extra = seatsHeld(state, family);
+    return { family, lean, extra };
   });
 }
 
@@ -421,11 +451,14 @@ function voteLine(family: FamilyName, side: "for" | "against" | "abstain", kind:
   return lines[side];
 }
 
-/** The table decided. Every other living family drops to war with the condemned one. */
-function declareWar(state: GameState, condemned: FamilyName): GameState {
+/**
+ * The table decided. Every other living family drops to war with the condemned
+ * one. `sitsOut` is a seat that did not back a call between two other families.
+ */
+function declareWar(state: GameState, condemned: FamilyName, sitsOut?: FamilyName): GameState {
   let relations = state.relations;
   for (const f of livingFamilies(state)) {
-    if (f === condemned) continue;
+    if (f === condemned || f === sitsOut) continue;
     const now = getRelation(relations, f, condemned);
     relations = setRelation(relations, f, condemned, Math.min(now, WAR_RELATION));
   }
@@ -498,16 +531,63 @@ function queueWarHit(state: GameState, from: FamilyName, condemned: FamilyName, 
 export function castVotes(state: GameState, rng: Rng): { state: GameState; logs: TurnLogEntry[] } {
   const call = state.commissionCall;
   if (!call || call.phase !== "lobby") return { state, logs: [] };
+  if (call.thirdParty && call.turn >= state.turn) return { state, logs: [] };
+
+  // A family that fell while the call was open has nothing left to answer for.
+  const gone = [call.caller, call.accused].find((f) => isDefunct(state, f));
+  if (gone) {
+    const refund =
+      call.caller === gone
+        ? state
+        : call.caller === state.playerFamily
+          ? { ...state, influence: state.influence + COMMISSION_INFLUENCE }
+          : {
+              ...state,
+              rivalInfluence: {
+                ...state.rivalInfluence,
+                [call.caller]: (state.rivalInfluence?.[call.caller] ?? 0) + COMMISSION_INFLUENCE,
+              },
+            };
+    return {
+      state: { ...refund, commissionCall: null },
+      logs: [
+        log(
+          state,
+          `log_commission_lapsed_${call.id}`,
+          `The call on ${call.accused} lapses. ${gone} is no longer a family.${call.caller === gone ? "" : ` ${call.caller === state.playerFamily ? "You get" : `${call.caller} gets`} the ${COMMISSION_INFLUENCE} standing back.`}`,
+        ),
+      ],
+    };
+  }
 
   const kind: CommissionCallKind = call.kind ?? "ruling";
-  const seats: SeatVote[] = call.seats.map((s) => {
+  const player = state.playerFamily;
+  let relations = state.relations;
+  if (call.thirdParty && player && call.pledge && call.pledge !== "abstain") {
+    const backed = call.pledge === "caller" ? call.caller : call.accused;
+    const other = call.pledge === "caller" ? call.accused : call.caller;
+    relations = setRelationDelta(setRelationDelta(relations, player, backed, PLEDGE_RELATION), player, other, -PLEDGE_RELATION);
+  }
+  const pledged: GameState = relations === state.relations ? state : { ...state, relations };
+  const seats: SeatVote[] = call.seats.filter((s) => !isDefunct(state, s.family)).map((s) => {
+    if (call.thirdParty && s.family === player) {
+      const vote = call.pledge ?? "abstain";
+      const side = vote === "caller" ? "for" : vote === "accused" ? "against" : "abstain";
+      const line = vote === "abstain" ? "The seat stays out of it." : voteLine(s.family, side, kind);
+      return { ...s, lean: vote === "caller" ? 0.8 : vote === "accused" ? -0.8 : 0, vote, line };
+    }
     const lean = s.lean + (rng.next() - 0.5) * 0.2;
     const vote = lean > 0.2 ? "caller" : lean < -0.2 ? "accused" : "abstain";
     const side = vote === "caller" ? "for" : vote === "accused" ? "against" : "abstain";
     return { ...s, lean, vote, line: voteLine(s.family, side, kind) };
   });
-  const forCaller = seats.filter((s) => s.vote === "caller").length;
-  const against = seats.filter((s) => s.vote === "accused").length;
+  const weight = (s: SeatVote) => 1 + (s.vote === "abstain" ? 0 : (s.extra ?? seatVotes(state, s.family, s.vote ?? "abstain")));
+  let forCaller = seatVotes(state, call.caller, "caller");
+  let against = seatVotes(state, call.accused, "accused");
+  for (const s of seats) {
+    if (s.vote === "caller") forCaller += weight(s);
+    if (s.vote === "accused") against += weight(s);
+  }
   const verdict = forCaller > against ? "caller" : against > forCaller ? "accused" : "deadlock";
 
   // War: the seats that said yes put their guns behind the caller. Nothing to accept.
@@ -525,10 +605,12 @@ export function castVotes(state: GameState, rng: Rng): { state: GameState; logs:
       verdict,
       forRuling: verdict === "caller" ? backers : [],
     };
-    let next: GameState = { ...state, commissionCall: { ...call, seats, phase: "voted", ruling } };
+    let next: GameState = { ...pledged, commissionCall: { ...call, seats, phase: "voted", ruling } };
     const logs: TurnLogEntry[] = [];
     if (verdict === "caller") {
-      next = declareWar(next, call.accused);
+      // On a call between two rivals the player goes to war only if his seat backed it.
+      const sitsOut = call.thirdParty && player && call.pledge !== "caller" ? player : undefined;
+      next = declareWar(next, call.accused, sitsOut);
       const moving: FamilyName[] = [];
       for (const family of livingFamilies(next)) {
         if (family === call.accused || family === next.playerFamily) continue;
@@ -546,9 +628,12 @@ export function castVotes(state: GameState, rng: Rng): { state: GameState; logs:
         ),
       );
     } else {
+      const playerCalled = call.caller === state.playerFamily;
       next = {
         ...next,
-        reputation: { ...next.reputation, respect: Math.max(0, next.reputation.respect - 3) },
+        reputation: playerCalled
+          ? { ...next.reputation, respect: Math.max(0, next.reputation.respect - 3) }
+          : next.reputation,
         relations: setRelationDelta(next.relations, call.caller, call.accused, -5),
       };
       logs.push(
@@ -556,12 +641,16 @@ export function castVotes(state: GameState, rng: Rng): { state: GameState; logs:
           state,
           `log_commission_war_${call.id}`,
           verdict === "deadlock"
-            ? `The Commission deadlocks on war with ${call.accused}. You asked for guns and got silence.`
-            : `The Commission won't follow you into a war with ${call.accused}. It costs you face.`,
+            ? playerCalled
+              ? `The Commission deadlocks on war with ${call.accused}. You asked for guns and got silence.`
+              : `The Commission deadlocks on ${call.caller}'s ask for guns on ${call.accused}.`
+            : playerCalled
+              ? `The Commission won't follow you into a war with ${call.accused}. It costs you face.`
+              : `The Commission won't follow ${call.caller} into a war with ${call.accused}.`,
         ),
       );
     }
-    return { state: { ...next, pendingRulings: [...(next.pendingRulings ?? []), ruling] }, logs };
+    return handOff(next, call, ruling, logs, rng);
   }
 
   if (kind === "tax") {
@@ -590,7 +679,7 @@ export function castVotes(state: GameState, rng: Rng): { state: GameState; logs:
       verdict,
       forRuling,
     };
-    let next: GameState = { ...state, commissionCall: { ...call, seats, phase: "voted", ruling } };
+    let next: GameState = { ...pledged, commissionCall: { ...call, seats, phase: "voted", ruling } };
     const pct = Math.round(CUT_DEFAULT_SHARE * 100);
     const logs = [
       log(
@@ -603,13 +692,13 @@ export function castVotes(state: GameState, rng: Rng): { state: GameState; logs:
             : `The Commission orders the guns down with ${call.accused} for ${weeks} weeks. ${loser} has no take left to tax.`,
       ),
     ];
-    if (verdict === "deadlock" && state.playerFamily) {
+    if (verdict === "deadlock" && call.caller === state.playerFamily) {
       next = {
         ...next,
         reputation: { ...next.reputation, respect: Math.max(0, next.reputation.respect - 2) },
       };
     }
-    return { state: { ...next, pendingRulings: [...(next.pendingRulings ?? []), ruling] }, logs };
+    return handOff(next, call, ruling, logs, rng);
   }
 
   const loser = verdict === "caller" ? call.accused : call.caller;
@@ -633,7 +722,7 @@ export function castVotes(state: GameState, rng: Rng): { state: GameState; logs:
     forRuling,
   };
 
-  let next: GameState = { ...state, commissionCall: { ...call, seats, phase: "voted", ruling } };
+  let next: GameState = { ...pledged, commissionCall: { ...call, seats, phase: "voted", ruling } };
   const logs = [
     log(
       state,
@@ -644,8 +733,7 @@ export function castVotes(state: GameState, rng: Rng): { state: GameState; logs:
     ),
   ];
   if (verdict === "deadlock") {
-    const player = state.playerFamily;
-    if (player) {
+    if (call.caller === state.playerFamily) {
       next = {
         ...next,
         reputation: { ...next.reputation, respect: Math.max(0, next.reputation.respect - 2) },
@@ -664,7 +752,7 @@ export function castVotes(state: GameState, rng: Rng): { state: GameState; logs:
       log(state, `log_commission_frivolous_${call.id}`, "You had no case. The table takes it out of your respect."),
     );
   }
-  return { state: { ...next, pendingRulings: [...(next.pendingRulings ?? []), ruling] }, logs };
+  return handOff(next, call, ruling, logs, rng);
 }
 
 /** Whether the rival accepts a ruling that went against, or for, them. */
@@ -678,7 +766,8 @@ function rivalAccepts(state: GameState, family: FamilyName, ruling: CommissionRu
   const losing = family === state.playerFamily ? 0 : bleeding(state, family);
   if (losing >= 2) return true;
   const player = state.playerFamily;
-  const playerWon = !!player && (ruling.verdict === "caller") === (player === ruling.caller);
+  const playerParty = !!player && (player === ruling.caller || player === ruling.accused);
+  const playerWon = playerParty && (ruling.verdict === "caller") === (player === ruling.caller);
   const bar = playerWon ? -10 - 20 * commissionHealth(state).sway : -10;
   return avg > bar && personality !== "volatile";
 }
@@ -770,47 +859,93 @@ export function answerRuling(
   const rivalAnswer = rivalAccepts(state, rival, ruling) ? "accept" : "refuse";
   const callerAnswer = playerIsCaller ? answer : rivalAnswer;
   const accusedAnswer = playerIsCaller ? rivalAnswer : answer;
+  return applyRuling(state, ruling, callerAnswer, accusedAnswer, rng, { call, playerRefused: answer === "refuse" });
+}
+
+/**
+ * Standing, defiance and sanction for a counted ruling. The player path and a
+ * rival calling on a rival both come through here.
+ */
+function applyRuling(
+  state: GameState,
+  ruling: CommissionRuling,
+  callerAnswer: "accept" | "refuse",
+  accusedAnswer: "accept" | "refuse",
+  rng: Rng,
+  opts: { call?: CommissionCall | null; playerRefused?: boolean },
+): { state: GameState; logs: TurnLogEntry[] } {
+  const player = state.playerFamily;
+  const call = opts.call ?? null;
+  const logs: TurnLogEntry[] = [];
   const settled: CommissionRuling = { ...ruling, callerAnswer, accusedAnswer };
+  const playerParty = !!player && (player === ruling.caller || player === ruling.accused);
+  const other = player === ruling.caller ? ruling.accused : ruling.caller;
 
   let next = state;
+  if (ruling.verdict !== "deadlock" && ruling.kind !== "war") {
+    const loser = ruling.verdict === "caller" ? ruling.accused : ruling.caller;
+    next = dockStanding(next, loser, RULING_STANDING);
+    logs.push(log(state, `log_commission_standing_${ruling.id}`, `${loser} loses ${RULING_STANDING} standing on the ruling.`));
+  }
   const both = callerAnswer === "accept" && accusedAnswer === "accept";
-  if (both && ruling.kind === "tax") {
+  if (both && ruling.kind === "tax" && playerParty && player) {
     const weeks = ruling.terms.weeks ?? TRUCE_DEFAULT_WEEKS;
-    if (!truceBetween(next, player, rival)) {
-      const struck = makeDeal(next, "truce", rival, { cash: 0, standing: 0, weeks }, { weeks, rng });
-      next = { ...struck.state, relations: setRelationDelta(struck.state.relations, player, rival, 5) };
+    if (!truceBetween(next, player, other)) {
+      const struck = makeDeal(next, "truce", other, { cash: 0, standing: 0, weeks }, { weeks, rng });
+      next = { ...struck.state, relations: setRelationDelta(struck.state.relations, player, other, 5) };
     }
     const block = ruling.terms.territoryId
       ? next.territories.find((t) => t.id === ruling.terms.territoryId)
       : undefined;
-    if (block && ruling.terms.share && (block.owner === player || block.owner === rival)) {
-      const payer = block.owner === player ? player : rival;
+    if (block && ruling.terms.share && (block.owner === player || block.owner === other)) {
+      const payer = block.owner === player ? player : other;
       const struck = makeDeal(
         next,
         "cut",
-        rival,
+        other,
         { ...ruling.terms, weeks, share: ruling.terms.share, territoryId: block.id },
         { obligor: payer, weeks, rng },
       );
       next = struck.state;
-      const pct = Math.round(ruling.terms.share * 100);
+      const pct = Math.round((ruling.terms.share ?? 0) * 100);
       logs.push(
         log(
           state,
           `log_commission_tax_deal_${ruling.id}`,
           payer === player
-            ? `Guns down with ${rival} for ${weeks} weeks. ${pct}% of ${block.name}'s take goes to them.`
-            : `Guns down with ${rival} for ${weeks} weeks. ${pct}% of ${block.name}'s take comes to you.`,
+            ? `Guns down with ${other} for ${weeks} weeks. ${pct}% of ${block.name}'s take goes to them.`
+            : `Guns down with ${other} for ${weeks} weeks. ${pct}% of ${block.name}'s take comes to you.`,
         ),
       );
     } else {
-      logs.push(log(state, `log_commission_tax_deal_${ruling.id}`, `Guns down with ${rival} for ${weeks} weeks.`));
+      logs.push(log(state, `log_commission_tax_deal_${ruling.id}`, `Guns down with ${other} for ${weeks} weeks.`));
     }
-  } else if (both) {
-    // Cash is signed from the player's side, which is what applyAgendaTerms expects.
-    const applied = applyAgendaTerms(next, rival, "truce", ruling.terms, rng);
+  } else if (both && ruling.kind === "tax") {
+    const loser = ruling.verdict === "caller" ? ruling.accused : ruling.caller;
+    const winner = loser === ruling.caller ? ruling.accused : ruling.caller;
+    const paid = Math.floor((next.rivalTreasury?.[loser] ?? 0) * RIVAL_TAX_SHARE);
+    next = {
+      ...next,
+      rivalTreasury: {
+        ...(next.rivalTreasury ?? {}),
+        [loser]: Math.max(0, (next.rivalTreasury?.[loser] ?? 0) - paid),
+        [winner]: (next.rivalTreasury?.[winner] ?? 0) + paid,
+      },
+    };
+    const signed = signRivalPact(next, ruling.caller, ruling.accused, "truce", ruling.terms.weeks ?? TRUCE_DEFAULT_WEEKS);
+    next = signed.state;
+    logs.push(signed.log);
+    logs.push(
+      log(state, `log_commission_tax_deal_${ruling.id}`, `${loser} pays ${winner} $${paid} on the tax, and the guns go down.`),
+    );
+  } else if (both && !playerParty) {
+    const signed = signRivalPact(next, ruling.caller, ruling.accused, "truce", ruling.terms.weeks ?? TRUCE_DEFAULT_WEEKS);
+    next = signed.state;
+    logs.push(signed.log);
+  } else if (both && player) {
+    const applied = applyAgendaTerms(next, other, "truce", ruling.terms, rng);
     next = applied.state;
-    logs.push(log(state, `log_commission_truce_${ruling.id}`, applied.lines.join(" ") || `The truce with ${rival} holds.`));
+    logs.push(log(state, `log_commission_truce_${ruling.id}`, applied.lines.join(" ") || `The truce with ${other} holds.`));
   }
 
   const refusers: FamilyName[] = [];
@@ -818,6 +953,7 @@ export function answerRuling(
   if (accusedAnswer === "refuse") refusers.push(ruling.accused);
 
   for (const refuser of refusers) {
+    next = dockStanding(next, refuser, DEFIANCE_STANDING);
     for (const seat of ruling.forRuling) {
       next = { ...next, relations: setRelationDelta(next.relations, refuser, seat, REFUSAL_RELATION) };
     }
@@ -826,7 +962,22 @@ export function answerRuling(
     );
   }
 
-  if (answer === "refuse") {
+  for (const refuser of refusers) {
+    if (refuser === player) continue;
+    if (defiances(state, refuser).length + 1 < 2) continue;
+    next = {
+      ...next,
+      diplomacy: {
+        ...next.diplomacy,
+        rivalSanctions: { ...(next.diplomacy.rivalSanctions ?? {}), [refuser]: state.turn + SANCTION_WEEKS },
+      },
+    };
+    logs.push(
+      log(state, `log_commission_rival_sanction_${refuser}_${state.turn}`, `${refuser} is under sanction for ${SANCTION_WEEKS} weeks. The table won't hear them.`),
+    );
+  }
+
+  if (opts.playerRefused && playerParty) {
     const refusals = (next.diplomacy?.refusals ?? 0) + 1;
     let diplomacy = { ...next.diplomacy, refusals };
     if (refusals >= 2) {
@@ -839,8 +990,6 @@ export function answerRuling(
     next = { ...next, diplomacy };
   }
 
-  // The message. Each refuser rolls; every ruling he has ignored before makes it
-  // likelier, and lobbying seats that backed the ruling softens it for the player.
   const lobbiedForRuling = call ? ruling.forRuling.filter((f) => call.lobbied[f]).length : 0;
   for (const refuser of refusers) {
     const prior = refuser === player ? (state.diplomacy?.refusals ?? 0) : defiances(state, refuser).length;
@@ -867,16 +1016,51 @@ export function answerRuling(
     }
   }
 
-  const history = [...(next.commissionHistory ?? []), settled];
+  const line = logs[logs.length - 1];
+  const headlines =
+    call?.thirdParty && line
+      ? [...(next.headlines ?? []), { ...line, id: `headline_${line.id}` }].slice(-100)
+      : next.headlines;
   return {
     state: {
       ...next,
+      headlines,
       commissionCall: null,
-      commissionHistory: history,
+      commissionHistory: [...(next.commissionHistory ?? []), settled],
       pendingRulings: (next.pendingRulings ?? []).filter((r) => r.id !== ruling.id),
     },
     logs,
   };
+}
+
+/** A third-party call is settled the week it is counted. The player's card is not it. */
+function handOff(
+  state: GameState,
+  call: CommissionCall,
+  ruling: CommissionRuling,
+  logs: TurnLogEntry[],
+  rng: Rng,
+): { state: GameState; logs: TurnLogEntry[] } {
+  if (!call.thirdParty) {
+    return { state: { ...state, pendingRulings: [...(state.pendingRulings ?? []), ruling] }, logs };
+  }
+  if (ruling.kind === "war" || ruling.verdict === "deadlock") {
+    const settled: CommissionRuling = { ...ruling, callerAnswer: "accept", accusedAnswer: "accept" };
+    const line = logs[logs.length - 1];
+    return {
+      state: {
+        ...state,
+        commissionCall: null,
+        commissionHistory: [...(state.commissionHistory ?? []), settled],
+        headlines: line ? [...(state.headlines ?? []), { ...line, id: `headline_${line.id}` }].slice(-100) : state.headlines,
+      },
+      logs,
+    };
+  }
+  const callerAnswer = rivalAccepts(state, ruling.caller, ruling) ? "accept" : "refuse";
+  const accusedAnswer = rivalAccepts(state, ruling.accused, ruling) ? "accept" : "refuse";
+  const finished = applyRuling(state, ruling, callerAnswer, accusedAnswer, rng, { call });
+  return { state: finished.state, logs: [...logs, ...finished.logs] };
 }
 
 /**
@@ -917,6 +1101,103 @@ export function aiCallCommission(
   return {
     state: voted.state,
     logs: [log(state, `log_commission_called_${call.id}`, `${family} calls the Commission over the trouble with you.`), ...voted.logs],
+  };
+}
+
+const TRACK_KIND = { influence: "ruling", wealth: "tax", turf: "war" } as const;
+
+/** Whether the table would hear `family` on `target` this week. The same gates the player's call has. */
+export function canPetition(state: GameState, family: FamilyName, target: FamilyName): boolean {
+  if (family === target || family === state.playerFamily) return false;
+  if (state.commissionCall || (state.pendingRulings?.length ?? 0) > 0) return false;
+  if ((state.diplomacy.rivalCallCooldown?.[family] ?? 0) > state.turn) return false;
+  if ((state.diplomacy.rivalSanctions?.[family] ?? 0) > state.turn) return false;
+  if (standing(state, family) < COMMISSION_INFLUENCE) return false;
+  if (isDefunct(state, family) || isDefunct(state, target)) return false;
+  if (!livingBoss(state, family) || !livingBoss(state, target)) return false;
+  if (bossIsJailed(state, family)) return false;
+  if (target === state.playerFamily && bossIsJailed(state, target)) return false;
+  return eligibleSeats(state, family, target).length > 0;
+}
+
+/**
+ * How a rival reads the room before it spends standing on a call: votes for
+ * less votes against, from the opening leans. The player's seat is left out.
+ */
+export function petitionMargin(state: GameState, family: FamilyName, target: FamilyName, kind: CommissionCallKind): number {
+  let margin = seatVotes(state, family, "caller") - seatVotes(state, target, "accused");
+  for (const s of askSeats(state, kind, family, target)) {
+    if (s.family === state.playerFamily) continue;
+    const weight = 1 + (s.extra ?? 0);
+    if (s.lean > 0.2) margin += weight;
+    else if (s.lean < -0.2) margin -= weight;
+  }
+  return margin;
+}
+
+/**
+ * A rival asks the table to answer a family pulling ahead. A call on the player
+ * is voted the same week. A call on another rival waits a week for the player's seat.
+ */
+export function aiPetition(
+  state: GameState,
+  family: FamilyName,
+  target: FamilyName,
+  kind: CommissionCallKind,
+  rng: Rng,
+): { state: GameState; logs: TurnLogEntry[] } {
+  if (!canPetition(state, family, target)) return { state, logs: [] };
+  const seats = askSeats(state, kind, family, target);
+  const thirdParty = target !== state.playerFamily;
+  const track = (Object.entries(TRACK_KIND).find(([, k]) => k === kind)?.[0] ?? "influence") as CommissionCall["track"];
+  const call: CommissionCall = {
+    id: `commission_${family}_${target}_${state.turn}`,
+    turn: state.turn,
+    kind,
+    caller: family,
+    accused: target,
+    seats,
+    lobbied: {},
+    phase: "lobby",
+    thirdParty,
+    pledge: thirdParty ? "abstain" : undefined,
+    track,
+  };
+  const opened: GameState = {
+    ...state,
+    rivalInfluence: { ...state.rivalInfluence, [family]: standing(state, family) - COMMISSION_INFLUENCE },
+    diplomacy: {
+      ...state.diplomacy,
+      rivalCallCooldown: { ...(state.diplomacy.rivalCallCooldown ?? {}), [family]: state.turn + COMMISSION_COOLDOWN },
+    },
+    commissionCall: call,
+  };
+  const why =
+    kind === "war"
+      ? `${family} asks the Commission for guns on ${target}.`
+      : kind === "tax"
+        ? `${family} asks the Commission to tax ${target}.`
+        : `${family} calls the Commission on ${target}.`;
+  const openedLog = log(state, `log_commission_petition_${call.id}`, why);
+  if (thirdParty) return { state: opened, logs: [openedLog] };
+  const voted = castVotes(opened, rng);
+  return { state: voted.state, logs: [openedLog, ...voted.logs] };
+}
+
+/** The player's seat on a call between two rivals. Abstaining is the default. */
+export function pledgeSeat(
+  state: GameState,
+  side: "caller" | "accused" | "abstain",
+): { state: GameState; log: TurnLogEntry } {
+  const call = state.commissionCall;
+  const player = state.playerFamily;
+  if (!call?.thirdParty || call.phase !== "lobby" || !player) {
+    return { state, log: log(state, `log_pledge_none_${state.turn}`, "There is no call waiting on your seat.") };
+  }
+  const word = side === "caller" ? call.caller : side === "accused" ? call.accused : "neither side";
+  return {
+    state: { ...state, commissionCall: { ...call, pledge: side } },
+    log: log(state, `log_pledge_${call.id}_${side}`, `Your seat backs ${word}.`),
   };
 }
 

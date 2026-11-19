@@ -10,7 +10,8 @@ import { RACKET_VISUALS } from "@/data/racketVisuals";
 import { emptyIntel, hiddenCountIn, hasFreshCasing, spottedThisTurn, visibleCrewIn } from "@/engine/intel";
 import { businessFor, businessSummary, isBusinessStale } from "@/engine/casing";
 import { canSendOnHit } from "@/engine/jobReturn";
-import { isAbandonedTurf } from "@/engine/defection";
+import { abandonedWeeksLeft, isAbandonedTurf } from "@/engine/defection";
+import { boroughSeats } from "@/engine/boroughSeats";
 import { LOCATION_REASON_LABEL, familyHq, isBossUnderground, resolveCrewLocation, resolveCrewTerritoryId } from "@/engine/crewLocation";
 import {
   BOSS_PRESENCE,
@@ -124,6 +125,7 @@ export default function DistrictPanel() {
   const heat = useGameStore((s) => s.heat);
   const rivalHeat = useGameStore((s) => s.rivalHeat);
   const defunctFamilies = useGameStore((s) => s.defunctFamilies ?? []);
+  const defunctSince = useGameStore((s) => s.defunctSince);
   const bribes = useGameStore((s) => s.bribes);
   const lawyerRetainer = useGameStore((s) => s.lawyerRetainer);
   const [caseLookoutId, setCaseLookoutId] = useState("");
@@ -149,6 +151,7 @@ export default function DistrictPanel() {
   const owner = territory.owner ? getFamilyDef(territory.owner) : null;
   const isOwned = territory.owner === playerFamily;
   const abandoned = isAbandonedTurf({ defunctFamilies }, territory);
+  const weeksLeft = abandoned && territory.owner ? abandonedWeeksLeft({ turn, defunctFamilies, defunctSince }, territory.owner) : 0;
   const isRival = !!territory.owner && territory.owner !== playerFamily && !abandoned;
   const visible = visibleCrewIn(locState, territory.id);
   const spotted = isRival ? spottedThisTurn(locState, territory.id) : [];
@@ -1079,11 +1082,25 @@ export default function DistrictPanel() {
           {isOwned && slotsFull && (
             <p className="text-[10px] text-muted-foreground">District full — {racketSlots}/{racketSlots} rackets.</p>
           )}
+          {isOwned && (
+            <Button variant="secondary" className="justify-start" onClick={() => useGameStore.getState().moveCountHouse(territory.id)}>
+              Keep the count house here
+            </Button>
+          )}
+          {isOwned && (() => {
+            const seat = boroughSeats({ territories, defunctFamilies }).find((s) => s.borough === territory.borough);
+            if (!seat || seat.holder === playerFamily) return null;
+            return (
+              <p className="text-[10px] text-muted-foreground">
+                {seat.gap} more block{seat.gap === 1 ? "" : "s"} for the {seat.borough} seat.
+              </p>
+            );
+          })()}
           {!isOwned && (
             <Tip
               content={
                 abandoned
-                  ? "The family is finished. Any idle man — even an associate — can walk in. No fight."
+                  ? `The family is finished. Any idle man can walk in. ${weeksLeft} week${weeksLeft === 1 ? "" : "s"} before this block is nobody's.`
                   : "Move crew in to take this district."
               }
             >

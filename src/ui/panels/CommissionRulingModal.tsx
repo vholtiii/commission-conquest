@@ -51,7 +51,7 @@ export default function CommissionRulingModal() {
         <h2 className="mt-2 text-center font-display text-lg text-steel-light">
           {war
             ? ruling.verdict === "caller"
-              ? `The Commission goes to war with ${ruling.accused}`
+              ? `The Commission goes to war with ${ruling.accused === playerFamily ? "you" : ruling.accused}`
               : deadlock
                 ? "The Commission deadlocks on war"
                 : "The Commission won't go to war"
@@ -65,7 +65,7 @@ export default function CommissionRulingModal() {
         </h2>
         <p className="text-center text-[11px] text-muted-foreground">
           {war
-            ? `You asked for guns on ${ruling.accused} · ${ruling.forCaller} for war, ${ruling.against} against`
+            ? `${ruling.caller === playerFamily ? "You asked" : `${ruling.caller} asked`} for guns on ${ruling.accused === playerFamily ? "you" : ruling.accused} · ${ruling.forCaller} for war, ${ruling.against} against`
             : `${ruling.caller} called it on ${ruling.accused} · ${ruling.forCaller} for the caller, ${ruling.against} against`}
         </p>
 
@@ -75,7 +75,7 @@ export default function CommissionRulingModal() {
               <span className="text-steel-light">{seat.family}</span>
               {seat.vote === "abstain" || !seat.vote
                 ? " abstains"
-                : (seat.vote === "caller") === (ruling.caller === playerFamily)
+                : (ruling.caller === playerFamily ? seat.vote === "caller" : seat.vote === "accused")
                   ? " sides with you"
                   : " sides against you"}
               {seat.line ? ` — “${seat.line}”` : ""}
@@ -98,21 +98,31 @@ export default function CommissionRulingModal() {
               : ""}
           </p>
         )}
-        {war && ruling.verdict === "caller" && (
+        {war && ruling.verdict === "caller" && ruling.accused !== playerFamily && (
           <p className="mt-3 text-sm text-heat">
             Every other family is at war with {ruling.accused}. Their crews are already planning hits. Yours is your own to plan.
           </p>
         )}
-        {war && ruling.verdict !== "caller" && (
+        {war && ruling.verdict === "caller" && ruling.accused === playerFamily && (
+          <p className="mt-3 text-sm text-heat">
+            Every other family is at war with you. Their crews are already planning hits on your men.
+          </p>
+        )}
+        {war && ruling.verdict !== "caller" && ruling.caller === playerFamily && (
           <p className="mt-3 text-[11px] text-heat">
             You asked the table for a war it wouldn't give. That costs face — 3 respect and a little more bad blood with{" "}
             {ruling.accused}.
           </p>
         )}
+        {war && ruling.verdict !== "caller" && ruling.caller !== playerFamily && (
+          <p className="mt-3 text-[11px] text-heat">
+            {ruling.caller} asked the table for a war it wouldn't give.
+          </p>
+        )}
 
         {war ? (
           <Button className="mt-4 w-full" onClick={() => answer("accept")}>
-            {ruling.verdict === "caller" ? "Guns up" : "Leave the table"}
+            {ruling.verdict !== "caller" ? "Leave the table" : ruling.accused === playerFamily ? "Brace for it" : "Guns up"}
           </Button>
         ) : deadlock ? (
           <Button className="mt-4 w-full" onClick={() => answer("accept")}>

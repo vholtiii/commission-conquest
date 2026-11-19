@@ -53,7 +53,18 @@ import { tickBossPresence } from "./bossPresence";
 import { familyHeadless, tickJails } from "./jail";
 import { coolRate } from "./lawyer";
 import { newFlagLogs } from "./auditReads";
-import { checkVictory, familyInfluence, familyWealth, influenceTick, rivalStandingDrivers } from "./victory";
+import {
+  checkVictory,
+  familyInfluence,
+  familyWealth,
+  influenceTick,
+  rivalStandingDrivers,
+  rivalStreakStarts,
+  streakBreakLine,
+  streakBreaks,
+  rivalWeeksNeeded,
+  streakStartLine,
+} from "./victory";
 import { generateRumors } from "./rumors";
 import { tickIncidents } from "./incidents";
 import { hitLogEntry } from "./attribution";
@@ -68,7 +79,8 @@ import { settleDealsAfterHits, shipStandingLiquor, tickDeals } from "./deals";
 import { callInFavors } from "./favors";
 import { walkIns } from "./recruiting";
 import { noteDrivingArrival, noteHitmanPride, tickJobPractice } from "./practice";
-import { expireFreeAgents, settleRivalChair } from "./defection";
+import { expireFreeAgents, isDefunct, settleRivalChair, tickAbandonedTurf } from "./defection";
+import { boroughSeats, seatStanding } from "./boroughSeats";
 import { playerLeaderless, startInterregnum, tickInterregnum } from "./interregnum";
 import { commissionHeld, handsDown, tableHit } from "./mourning";
 import { applyWeeklyStreet } from "./standing";
@@ -252,8 +264,11 @@ function applyHeatToState(state: GameState, amount: number, source: string): Gam
   };
 }
 
+const SANCTION_STANDING = 5;
+
 export function endTurn(state: GameState, rng?: Rng): GameState {
   const random = rng ?? createRng(state.seed + state.turn * 7919);
+  const seatsAtStart = boroughSeats(state);
   let current = advanceDate(state);
   const logs: TurnLogEntry[] = [];
 
@@ -693,13 +708,18 @@ export function endTurn(state: GameState, rng?: Rng): GameState {
   if (street.log) logs.push(street.log);
 
   // Influence tick: respect + fear + street drive growth
-  const infDelta = influenceTick(current.reputation);
-  current.influence = Math.max(0, Math.min(300, current.influence + infDelta));
+  const infDelta = influenceTick(current.reputation) + seatStanding(current, current.playerFamily!);
+  const playerSanction = (current.diplomacy?.sanctionUntil ?? 0) > current.turn ? SANCTION_STANDING : 0;
+  current.influence = Math.max(0, Math.min(300, current.influence + infDelta - playerSanction));
   const rivalInfluence = { ...(current.rivalInfluence ?? {}) };
   for (const family of ALL_FAMILY_NAMES) {
-    if (family === current.playerFamily) continue;
+    if (family === current.playerFamily || isDefunct(current, family)) continue;
+    const sanctioned = (current.diplomacy?.rivalSanctions?.[family] ?? 0) > current.turn ? SANCTION_STANDING : 0;
     const grown =
-      (rivalInfluence[family] ?? 120) + influenceTick(rivalStandingDrivers(current, family));
+      (rivalInfluence[family] ?? 120) +
+      influenceTick(rivalStandingDrivers(current, family)) +
+      seatStanding(current, family) -
+      sanctioned;
     rivalInfluence[family] = Math.max(0, Math.min(300, grown));
   }
   current.rivalInfluence = rivalInfluence;
@@ -712,6 +732,10 @@ export function endTurn(state: GameState, rng?: Rng): GameState {
   const gaveUp = expireFreeAgents(current, random);
   current = gaveUp.state;
   logs.push(...gaveUp.logs);
+
+  const abandoned = tickAbandonedTurf(current);
+  current = abandoned.state;
+  logs.push(...abandoned.logs);
 
   // Respect decides who comes looking for work this week.
   const arrivals = walkIns(current, random);
@@ -842,7 +866,51 @@ export function endTurn(state: GameState, rng?: Rng): GameState {
   const regency = tickInterregnum(current, random);
   current = regency.state;
   logs.push(...regency.logs);
+  for (const seat of boroughSeats(current)) {
+    const was = seatsAtStart.find((s) => s.borough === seat.borough)?.holder ?? null;
+    if (seat.holder === was) continue;
+    logs.push({
+      id: `log_seat_${seat.borough}_${current.turn}`,
+      turn: current.turn,
+      category: "diplomacy",
+      text: seat.holder
+        ? `${seat.holder} takes the ${seat.borough} seat at the Commission.`
+        : `The ${seat.borough} seat is empty.`,
+      family: current.playerFamily ?? undefined,
+    });
+  }
+  const victoryBefore = current.victory;
   current.victory = checkVictory(current);
+  for (const broken of streakBreaks(victoryBefore, current.victory, current.playerFamily)) {
+    const text = streakBreakLine(broken.family, broken.track, broken.weeks, current.playerFamily);
+    const line: TurnLogEntry = {
+      id: `log_streak_break_${broken.family}_${broken.track}_${current.turn}`,
+      turn: current.turn,
+      category: "system",
+      text,
+      family: current.playerFamily ?? undefined,
+    };
+    logs.push(line);
+    current = {
+      ...current,
+      headlines: [...(current.headlines ?? []), { ...line, id: `headline_${line.id}` }].slice(-100),
+    };
+  }
+  for (const start of rivalStreakStarts(victoryBefore, current.victory, rivalWeeksNeeded(current))) {
+    const text = streakStartLine(start.family, start.track, start.left);
+    const line: TurnLogEntry = {
+      id: `log_rival_streak_${start.family}_${start.track}_${current.turn}`,
+      turn: current.turn,
+      category: "system",
+      text,
+      family: current.playerFamily ?? undefined,
+    };
+    logs.push(line);
+    current = {
+      ...current,
+      headlines: [...(current.headlines ?? []), { ...line, id: `headline_${line.id}` }].slice(-100),
+    };
+  }
   current = appendLogs(current, logs);
 
   return current;
