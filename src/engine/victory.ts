@@ -13,7 +13,7 @@ export const INFLUENCE_MULT = 1.55;
 export const WEALTH_FLOOR = 20_000;
 /** The wealth bar climbs by this much every week. */
 export const WEALTH_FLOOR_SLOPE = 1_000;
-export const WEALTH_MULT = 2.75;
+export const WEALTH_MULT = 4.125;
 /**
  * Unwashed cash is worth this much toward the wealth win. Clean cash counts
  * in full, and a wealth win also needs clean cash to be CLEAN_SHARE of the pile.

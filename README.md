@@ -51,7 +51,7 @@ Open http://localhost:3000
 Streaks open on week 10. Short games need 5 weeks, medium 6, long 8. On Easy a rival needs two more. On Hard you need two more.
 
 - **Standing** — clear the bar for your game length and lead the next family by about half again. Borough seats feed standing.
-- **Wealth** — clean cash in full, dirty cash at 55%, two and three quarters times the next family, and clean cash at least 35% of the pile (20% on Easy).
+- **Wealth** — clean cash in full, dirty cash at 55%, four and an eighth times the next family, and clean cash at least 35% of the pile (20% on Easy).
 - **Turf** — hold 40% of the city and half again what the next family holds.
 - **Last family standing** — every other family is finished.
 - **The summit** — on the last week, lead standing or wealth by 10%, or win the district tie-break. On Easy, being first is enough.

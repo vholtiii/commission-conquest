@@ -585,7 +585,7 @@ Length is chosen next to difficulty on a new game (short 30 turns, medium 50, lo
 **Sudden death** counts from turn 10. The streak is 5 weeks on a short game, 6 on medium, 8 on long. On Easy a rival needs 2 more weeks. On Hard you need 2 more weeks yourself (`HARD_PLAYER_EXTRA`: 7 / 8 / 10), and the rivals do not. Three tracks, the same bars for every seated family:
 
 - **Standing.** 150 / 165 / 180 by length, and 1.55× the next family. Borough seats feed this every week.
-- **Wealth.** Clean cash in full plus dirty cash at 55%, at least $20,000 plus $1,000 a week, and 2.75× the next family. Your clean cash must also be at least 35% of clean plus dirty (`CLEAN_SHARE`); on Easy, 20% (`EASY_CLEAN_SHARE`). A rival's single treasury has no clean-share gate.
+- **Wealth.** Clean cash in full plus dirty cash at 55%, at least $20,000 plus $1,000 a week, and 4.125× the next family. Your clean cash must also be at least 35% of clean plus dirty (`CLEAN_SHARE`); on Easy, 20% (`EASY_CLEAN_SHARE`). A rival's single treasury has no clean-share gate.
 - **Turf.** At least 40% of the blocks and 1.5× the next family.
 
 A finished family is not in the count. The player's streak is checked first, so a same-week tie goes to the player. A rival who finishes a streak wins the city, and the end screen names them. The week a rival's streak starts, a log line and a headline say how many weeks are left. Wiping out every other family wins at once: the last family standing.

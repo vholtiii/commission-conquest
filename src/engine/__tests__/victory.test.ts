@@ -49,6 +49,16 @@ describe("wealth win", () => {
     expect(familiesPressingSuddenDeath(clear)).toContain("Moretti");
   });
 
+  it("needs more than four times the next family", () => {
+    const base = game();
+    const short = withMoney(base, 12, 60_000, 0, 1_000);
+    short.rivalTreasury = { ...short.rivalTreasury, Valenti: 20_000 };
+    expect(familiesPressingSuddenDeath(short)).not.toContain("Moretti");
+    const clear = withMoney(base, 12, 85_000, 0, 1_000);
+    clear.rivalTreasury = { ...clear.rivalTreasury, Valenti: 20_000 };
+    expect(familiesPressingSuddenDeath(clear)).toContain("Moretti");
+  });
+
   it("the same pile is not enough at turn 30", () => {
     const s = withMoney(game(), 30, 40_000, 0, 1_000);
     expect(familyWealth(s, "Moretti")).toBe(40_000);
